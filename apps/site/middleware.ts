@@ -79,6 +79,9 @@ export async function middleware(request: NextRequest) {
 
   // /login handles the "not on the allowlist" screen itself for signed-in users.
   if (isLogin) return response;
+  // Self-enroll must be reachable by authed users who are NOT yet testers —
+  // the route verifies the access code itself.
+  if (pathname === '/api/enroll') return response;
 
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (secret && (await testerCookieValid(secret, request.cookies.get(TESTER_COOKIE)?.value, user.id))) {

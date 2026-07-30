@@ -20,7 +20,12 @@ const GROUNDING_INSTRUCTIONS = `GROUNDING INSTRUCTIONS (do these BEFORE any code
    the exact failing request — replay it (curl) to reproduce before the fix and
    to verify after.
 5. ship-task's risk floor is unchanged: traces crossing auth/migrations/tenancy
-   force Tier 2.`;
+   force Tier 2.
+6. The reporter's the host app roles are in report.app_context.reporterRoles
+   (scope lab/department/institution + role name). Reproduce and verify AS THAT
+   ROLE — a bug a departmental admin hits may be invisible to a lab member, and
+   RBAC/permission gates are frequent root causes. Pick test accounts and
+   permission fixtures to match.`;
 
 export interface Envelope {
   instructions: string;

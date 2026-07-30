@@ -113,6 +113,28 @@ export async function POST(request: NextRequest) {
   // JWT path: the reporter is whoever the token verified as — never the body's claim.
   if (verifiedEmail) body.reporterEmail = verifiedEmail;
 
+  // Role snapshot for dispatch context: the reporter's the host app memberships
+  // (lab/department/institution + role names). Failure-tolerant — a report
+  // must still file if the lookup breaks.
+  let appContext: Record<string, unknown> = { ...(body.appContext ?? {}) };
+  if (body.reporterEmail) {
+    try {
+      const { data: profile } = await admin
+        .from('profiles')
+        .select('id, first_name, last_name')
+        .eq('email', body.reporterEmail)
+        .maybeSingle();
+      if (profile) {
+        const name = [profile.first_name, profile.last_name].filter(Boolean).join(' ');
+        if (name) appContext.reporterName = name;
+        const { data: roles } = await admin.rpc('qa_reporter_roles', { uid: profile.id });
+        if (Array.isArray(roles) && roles.length) appContext.reporterRoles = roles;
+      }
+    } catch {
+      // best-effort enrichment only
+    }
+  }
+
   const title = body.description.slice(0, 80).trim() || `Bug on ${body.route}`;
 
   const { data: inserted, error: insertError } = await admin
@@ -135,7 +157,7 @@ export async function POST(request: NextRequest) {
       network_log: body.networkLog,
       screenshots: [],
       viewport: body.viewport,
-      app_context: body.appContext ?? null,
+      app_context: Object.keys(appContext).length ? appContext : null,
     })
     .select('id')
     .single();

@@ -20,13 +20,21 @@ Optional custom domain (qa.example.com): in Cloudflare (example.com zone) add `q
 
 ## 2. Testers
 
-Add allowlisted emails (they sign in with their existing the host app accounts):
+**Self-enroll (default):** any the host app account signs in at the QA site with the team
+**access code** (env `QA_ACCESS_CODE`, currently set) — first successful sign-in adds them to
+`qa_allowed_emails` automatically. Rotate the code: update the env var on Vercel + redeploy.
+
+Manual add / remove:
 
 ```sql
 insert into qa_allowed_emails (email, added_by) values ('tester@lab.edu', 'admin');
+delete from qa_allowed_emails where email = 'former@lab.edu';
 ```
 
-(Supabase SQL editor, or ask Claude — the MCP is connected.)
+Each report automatically captures the reporter's the host app roles
+(lab/department/institution + role name, via `qa_reporter_roles()`) into
+`app_context.reporterRoles`, and Claude's dispatch instructions tell it to reproduce as that
+role — so a departmental-admin bug is tested with departmental-admin permissions.
 
 ## 3. Preview tunnel (remote testers see worktree previews)
 

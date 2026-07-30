@@ -23,7 +23,15 @@ Root `package.json` workspaces: `["apps/site","packages/widget","worker"]`. Node
 - `SUPABASE_SERVICE_ROLE_KEY` — server routes only
 - `QA_INGEST_TOKEN` — random 32-byte hex; widget bundle build stamps NOTHING secret; token is
   passed to the widget at runtime by the host page (see Widget § config)
+- `QA_ACCESS_CODE` — team access code; any authed the host app account that presents it on the
+  login form is self-enrolled into `qa_allowed_emails` via `POST /api/enroll` (middleware
+  exempts that route for authed users; already-enrolled users pass regardless of code)
 - `NEXT_PUBLIC_SITE_URL` — https://qa.example.com (http://localhost:3200 in dev)
+
+Ingest role enrichment: the server resolves the reporter's the host app memberships via the
+security-definer RPC `qa_reporter_roles(uid)` (service-role only) and stores them as
+`app_context.reporterRoles: [{scope, name, role, is_admin}]` plus `app_context.reporterName`;
+the worker's envelope instructions direct Claude to reproduce/verify as that role.
 
 `worker/.env`:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`

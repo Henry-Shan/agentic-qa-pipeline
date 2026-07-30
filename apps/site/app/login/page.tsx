@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [deniedEmail, setDeniedEmail] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -46,9 +47,25 @@ export default function LoginPage() {
     setError(null);
     const supabase = getBrowserClient();
     const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
     if (signInError) {
+      setBusy(false);
       setError(signInError.message);
+      return;
+    }
+    // Any the host app account + the team access code = tester (self-enroll).
+    // Already-enrolled users pass regardless of what's typed in the code field.
+    const enroll = await fetch('/api/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    setBusy(false);
+    if (!enroll.ok) {
+      setError(
+        enroll.status === 403
+          ? 'Wrong access code — check it with your team, then try again.'
+          : 'Could not verify the access code. Try again.',
+      );
       return;
     }
     setMode('checking');
@@ -80,8 +97,8 @@ export default function LoginPage() {
             <div className="text-center">
               <div className="text-sm font-semibold">Not on the tester list yet</div>
               <p className="mt-2 text-[13px] text-ink-2">
-                Your the host app login works, but <b>{deniedEmail}</b> isn&apos;t allowed into QA yet. Ask an
-                admin to add {deniedEmail} to the tester list, then sign in again.
+                Your the host app login works, but <b>{deniedEmail}</b> isn&apos;t enrolled in QA yet. Sign
+                out, then sign in again with the team access code — or ask an admin to add you.
               </p>
               <button
                 onClick={() => void onSignOut()}
@@ -119,6 +136,18 @@ export default function LoginPage() {
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                className={inputCls}
+              />
+              <label className="cap-label mt-3 block" htmlFor="code">
+                Access code
+              </label>
+              <input
+                id="code"
+                type="password"
+                autoComplete="off"
+                placeholder="First time here? Ask your team for the code."
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
                 className={inputCls}
               />
               {error && (
