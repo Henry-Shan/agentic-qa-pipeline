@@ -9,21 +9,14 @@ One-time setup on the dev Mac + cloud. Everything here assumes the repo lives at
 - Supabase: `qa_` tables migrated into the shared the host app project; bucket `qa-screenshots`
 - `apps/site/.env.local` and `worker/.env` exist with real values (never commit)
 
-## 1. Site → Vercel (qa.example.com)
+## 1. Site → Vercel  ✅ DONE
 
-```bash
-cd ~/qa-pipeline/apps/site
-vercel link                 # create/link project "qa-pipeline"
-# add env (values from apps/site/.env.local):
-for k in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY QA_INGEST_TOKEN; do
-  grep "^$k=" .env.local | cut -d= -f2- | vercel env add "$k" production
-done
-printf 'https://qa.example.com' | vercel env add NEXT_PUBLIC_SITE_URL production
-vercel --prod
-```
+Deployed and live at **https://qa-pipeline.vercel.app** (project `qa-pipeline`, all env vars set,
+`NEXT_PUBLIC_SITE_URL=https://qa-pipeline.vercel.app`). Redeploy: `cd apps/site && vercel --prod`.
 
-DNS: in Cloudflare (example.com zone) add `qa` as CNAME → `cname.vercel-dns.com`, then add the
-domain to the Vercel project (`vercel domains add qa.example.com` or dashboard).
+Optional custom domain (qa.example.com): in Cloudflare (example.com zone) add `qa` as CNAME →
+`cname.vercel-dns.com`, run `vercel domains add qa.example.com`, then update
+`NEXT_PUBLIC_SITE_URL` env + the the host app `NEXT_PUBLIC_QA_WIDGET_URL` accordingly.
 
 ## 2. Testers
 
