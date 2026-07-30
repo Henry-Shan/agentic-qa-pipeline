@@ -1,0 +1,145 @@
+# Shared contracts — site · widget · worker
+
+Single source of truth for every interface. If you need to deviate, STOP and flag it — do not
+silently change a shape another component depends on. DB shapes: see `db/0001_qa_schema.sql`.
+
+## Repo layout (npm workspaces)
+
+```
+qa-pipeline/
+  apps/site/         Next.js (App Router, TS, Tailwind v4) — Vercel
+  packages/widget/   dependency-free TS → esbuild IIFE → apps/site/public/widget.js
+  worker/            Node 22+ ESM TS daemon (tsx dev / esbuild dist) — the Mac
+  db/                SQL migrations (applied via Supabase MCP)
+  contracts/         this file
+```
+
+Root `package.json` workspaces: `["apps/site","packages/widget","worker"]`. Node ≥22.
+
+## Environment
+
+`apps/site/.env.local` (and Vercel env):
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — shared the host app project
+- `SUPABASE_SERVICE_ROLE_KEY` — server routes only
+- `QA_INGEST_TOKEN` — random 32-byte hex; widget bundle build stamps NOTHING secret; token is
+  passed to the widget at runtime by the host page (see Widget § config)
+- `NEXT_PUBLIC_SITE_URL` — https://qa.example.com (http://localhost:3200 in dev)
+
+`worker/.env`:
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- `RUNNER_REPO=/Users/YOU/qa-pipeline-runner/the host app`
+- `WORKTREE_BASE=/Users/YOU/qa-pipeline-worktrees`
+- `CLAUDE_BIN=/opt/homebrew/bin/claude`
+- `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
+- `PREVIEW_MODE=local|tunnel` · `PREVIEW_DOMAIN=qa-preview.example.com` · `CF_TUNNEL_NAME=qa-pipeline`
+- `SITE_URL=https://qa.example.com`
+
+## Status model (exact strings, used by all three)
+
+`qa_reports.status`: `queued | running | pr_ready | preview | rework | verified | shipped | failed | blocked | stopped | cancelled`
+
+`qa_runs.phase` (live pipeline label): `starting | grounding | testing | implementing | verifying | feature_test | pr | preview | done`
+
+Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
+
+## Widget → Site: `POST {SITE_URL}/api/ingest`
+
+Headers: `content-type: application/json`, `x-qa-token: <QA_INGEST_TOKEN>`.
+CORS: allow origins `https://example.com`, `https://www.example.com`, `http://localhost:*` —
+implement OPTIONS preflight; reject other origins and bad tokens with 403.
+
+```ts
+interface IngestBody {
+  kind: 'bug' | 'feature';
+  description: string;              // tester's sentence
+  reporterEmail?: string;           // provided by host page config
+  route: string;                    // location.pathname
+  pageTitle: string;
+  component?: string;               // data-sentry-component of picked element
+  sourceFile?: string;              // data-sentry-source-file
+  selector?: string;                // computed CSS selector
+  testid?: string;
+  elementText?: string;             // ≤120 chars
+  clickTrail: Array<{ ts: number; route: string; text?: string; testid?: string; component?: string }>; // ≤50
+  consoleLog: Array<{ ts: number; level: 'error'|'warn'; text: string }>;                              // ≤50, each ≤500 chars
+  networkLog: Array<{ ts: number; method: string; url: string; status: number; ms: number; bodySnippet?: string }>; // ≤40, snippet ≤2000 chars, non-2xx always kept
+  viewport: { w: number; h: number; dpr: number };
+  appContext?: Record<string, string>;
+  screenshotDataUrl?: string;       // PNG data URL ≤4MB, element pre-marked
+}
+// 200 → { id: number; url: string }  (url = task page)
+```
+
+Server behavior: validate + clamp sizes; scrub any `authorization|cookie|token|apikey` value that
+survived client scrubbing; upload screenshot to bucket `qa-screenshots` as `report-<id>/marked.png`;
+title = first 80 chars of description (fallback `Bug on <route>`); insert `qa_reports`
+status `queued`; insert `qa_events` (type `system`, "filed by <email>").
+
+## Site pages
+
+- `/login` — Supabase email+password (the host app accounts). After login, RPC `qa_is_tester()`;
+  non-allowlisted → signed-out screen with "ask an admin to add your email".
+- `/` — board. Tabs: All / Fixing / Preview / Queued / Shipped (+count). Card: title, reporter,
+  age, kind, status pill, live pipeline, `log_tail` when running. Realtime via postgres_changes on
+  `qa_reports`+`qa_runs`; fallback 5s poll.
+- `/task/[id]` — three zones (matches approved prototype):
+  1. Grounding trace chips (`qa_runs.grounding: [{label, file?}]`) + log (from `qa_events`,
+     type `log|phase|error|question`, autoscroll).
+  2. Result card: Open preview (`preview_url`, disabled until `preview_status='live'`), PR link,
+     `files_changed: [{file, add, del}]`.
+  3. Steer box (always enabled): textarea + **Send** → insert `qa_messages` kind `steer`;
+     **■ Stop** → kind `stop`; verdict buttons when status ∈ {pr_ready, preview}:
+     **It's fixed** → kind `verdict_fixed`, **Still broken** (+note) → kind `verdict_broken`.
+- Screenshots rendered via server-created signed URLs.
+- Design: match prototype — teal `#0F766E/#14B8A6` accent, cool paper ground, Avenir Next/system
+  stack, amber=running, green=verified, red=broken. Clean and minimal, no clutter.
+
+## Worker behavior
+
+- **Claim**: poll 3s. `update qa_reports set status='running' where id = (select id from qa_reports
+  where status='queued' order by id limit 1 for update skip locked) returning *` — respect
+  MAX_RUNS, RUNS_PER_DAY, pause file `~/.qa-pipeline/PAUSED`.
+- **Envelope**: `~/.qa-pipeline/runs/<reportId>/envelope.json` = full report row + local screenshot
+  paths (downloaded from bucket) + last 10 `qa_area_notes` for the matching area (area =
+  `sourceFile` dir or route segment) + instructions header (grounding rules from spec §Grounding).
+- **Dispatch**: single-flight lock around worktree setup. Spawn (cwd = RUNNER_REPO, detached pgid):
+  `claude -p "<PREAMBLE>\n/ship-task 'Read and execute the task envelope at <abs path>'"
+  --session-id <uuid> --output-format stream-json --verbose --dangerously-skip-permissions`
+  env: `MANAGER_MODE=1 MANAGER_URL=http://127.0.0.1:$SHIM_PORT MANAGER_SESSION_ID=<uuid>`.
+  PREAMBLE (adapted from manager's relay): never AskUserQuestion; POST progress beacons
+  `{phase}` to `$MANAGER_URL/api/progress`; report hand-off to `/api/runinfo`; questions via
+  `/api/ask` + poll `/api/answer`; stop at PR-ready; never merge.
+  Insert `qa_runs` row on spawn. Parse stream-json: assistant text → `qa_events` type `log`
+  (throttle 1/2s, tail 200 chars → `qa_runs.log_tail`); `{"type":"result"}` → settle:
+  success→ keep status from runinfo; error/stopped sentinel → report `blocked|failed` + reason.
+- **Shim** (localhost only): `POST /api/runinfo {session_id, pr_url, branch, worktree, test_plan?,
+  files_changed?, grounding?}` → update run+report `pr_ready`, kick preview.
+  `POST /api/featuretest {session_id, verdict...}` → `qa_runs.featuretest`.
+  `POST /api/ask {session_id, question, options?}` → event type `question`, report `blocked`.
+  `GET /api/answer?session_id=` → oldest pending `qa_messages` (steer/answer) → deliver, report
+  back to `running`. `POST /api/progress {phase}` → `qa_runs.phase` + event type `phase`.
+- **Steer/stop watcher** (poll 2s, pending `qa_messages`):
+  `stop` → SIGINT pgid → status `stopped`. `steer` mid-run → SIGINT, then
+  `claude --resume <sid> -p "<note + continue instructions>"` same env/flags (new attempt on same
+  `qa_runs` row lineage: attempt+1). `steer|verdict_broken` after done → same resume path, report
+  `rework`. `verdict_fixed` → report `verified` + event.
+- **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree:
+  `npm --prefix apps/web run dev -- --port <p>` with `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`,
+  nohup, pid file `<wt>/.qa/preview.pid`; poll health 90s → `preview_status live`,
+  `preview_url` = `http://localhost:<p>` (PREVIEW_MODE=local) or
+  `https://preview-<runId>.<PREVIEW_DOMAIN>` (tunnel: regenerate cloudflared ingress yaml + restart
+  managed cloudflared child + `cloudflared tunnel route dns` once per hostname).
+  LRU: >MAX_PREVIEWS → kill oldest idle. Teardown on shipped/cancelled via repo's
+  `teardown-worktree.sh`.
+- **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
+  `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
+- Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans
+  (runs with dead pids → `blocked` with reason).
+
+## Definition of done (integration gate)
+
+- `npm install` at root succeeds; `npm run typecheck` (all workspaces) clean;
+  `npm run build:widget` emits `apps/site/public/widget.js` ≤80KB gz;
+  `npm run build` in `apps/site` passes; `worker: npm run selftest` (shim boots, claims a seeded
+  fake report against a MOCK dispatcher, statuses transition queued→running→pr_ready→preview(local,
+  mocked server)→verified via a scripted message; no real claude spawn in selftest).
