@@ -1,0 +1,29 @@
+{
+  "name": "@qa-pipeline/worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Mac daemon: claims queued qa_reports, dispatches headless ship-task runs, serves the localhost shim, manages previews and verdict loops.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/worker.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/worker.js --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "selftest": "tsx src/selftest.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.52.0",
+    "execa": "^9.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.25.8",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

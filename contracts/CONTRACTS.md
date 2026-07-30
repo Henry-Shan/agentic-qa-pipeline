@@ -44,19 +44,31 @@ Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/
 
 ## Widget → Site: `POST {SITE_URL}/api/ingest`
 
-Headers: `content-type: application/json`, `x-qa-token: <QA_INGEST_TOKEN>`.
+Headers: `content-type: application/json` + ONE of two auth alternatives:
+1. **`authorization: Bearer <supabase access token>`** (preferred) — the widget obtains it at
+   submit time from the host page's `window.QAPipeline.getToken()` bridge (awaited, 3s timeout;
+   static token is the fallback if the bridge fails). The server verifies the JWT with the
+   service-role client (`auth.getUser(jwt)`); the verified email must exist in
+   `qa_allowed_emails`, and it OVERRIDES the body's `reporterEmail` — the body's claim is never
+   trusted on this path. Bad/unverifiable JWT → 401; email not allowlisted → 403.
+2. **`x-qa-token: <QA_INGEST_TOKEN>`** (no Authorization header) — static token, timing-safe
+   compare; body `reporterEmail` is trusted as provided.
+
 CORS: allow origins `https://example.com`, `https://www.example.com`, `http://localhost:*` —
-implement OPTIONS preflight; reject other origins and bad tokens with 403.
+implement OPTIONS preflight; `access-control-allow-headers` must include `content-type`,
+`x-qa-token`, `authorization` (preflight and response paths); reject other origins and bad
+tokens with 403.
 
 ```ts
 interface IngestBody {
   kind: 'bug' | 'feature';
   description: string;              // tester's sentence
-  reporterEmail?: string;           // provided by host page config
+  reporterEmail?: string;           // host page config; on the JWT path the server replaces it
+                                    // with the VERIFIED email
   route: string;                    // location.pathname
   pageTitle: string;
-  component?: string;               // data-sentry-component of picked element
-  sourceFile?: string;              // data-sentry-source-file
+  component?: string;               // data-sentry-component OR data-component of picked element
+  sourceFile?: string;              // data-sentry-source-file OR data-source-file
   selector?: string;                // computed CSS selector
   testid?: string;
   elementText?: string;             // ≤120 chars
@@ -105,15 +117,20 @@ status `queued`; insert `qa_events` (type `system`, "filed by <email>").
 - **Dispatch**: single-flight lock around worktree setup. Spawn (cwd = RUNNER_REPO, detached pgid):
   `claude -p "<PREAMBLE>\n/ship-task 'Read and execute the task envelope at <abs path>'"
   --session-id <uuid> --output-format stream-json --verbose --dangerously-skip-permissions`
-  env: `MANAGER_MODE=1 MANAGER_URL=http://127.0.0.1:$SHIM_PORT MANAGER_SESSION_ID=<uuid>`.
-  PREAMBLE (adapted from manager's relay): never AskUserQuestion; POST progress beacons
+  env: `MANAGER_MODE=1 MANAGER_URL=http://127.0.0.1:$SHIM_PORT MANAGER_SESSION_ID=<uuid>
+  QA_SHIM_TOKEN=<per-boot random hex>`.
+  PREAMBLE (adapted from manager's relay): never AskUserQuestion; every callback curl includes
+  header `x-qa-shim: $QA_SHIM_TOKEN`; POST progress beacons
   `{phase}` to `$MANAGER_URL/api/progress`; report hand-off to `/api/runinfo`; questions via
   `/api/ask` + poll `/api/answer`; stop at PR-ready; never merge.
   Insert `qa_runs` row on spawn. Parse stream-json: assistant text → `qa_events` type `log`
   (throttle 1/2s, tail 200 chars → `qa_runs.log_tail`); `{"type":"result"}` → settle:
   success→ keep status from runinfo; error/stopped sentinel → report `blocked|failed` + reason.
-- **Shim** (localhost only): `POST /api/runinfo {session_id, pr_url, branch, worktree, test_plan?,
-  files_changed?, grounding?}` → update run+report `pr_ready`, kick preview.
+- **Shim** (localhost only): every request must carry `x-qa-shim: $QA_SHIM_TOKEN` — a per-boot
+  random hex token the worker exports into each spawned run's env; wrong/missing header → 401
+  (constant-time compare). `POST /api/runinfo {session_id, pr_url, branch, worktree, test_plan?,
+  files_changed?, grounding?}` → update run+report `pr_ready`, kick preview. `worktree` is
+  resolved and must live inside `WORKTREE_BASE`, else 400 + error event.
   `POST /api/featuretest {session_id, verdict...}` → `qa_runs.featuretest`.
   `POST /api/ask {session_id, question, options?}` → event type `question`, report `blocked`.
   `GET /api/answer?session_id=` → oldest pending `qa_messages` (steer/answer) → deliver, report

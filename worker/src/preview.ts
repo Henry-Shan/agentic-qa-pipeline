@@ -1,0 +1,246 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import { execa } from 'execa';
+import type { QaRun } from './db';
+import type { Ctx, PreviewHandle } from './state';
+import { log, sleep } from './util';
+
+const PORT_SCAN_START = 3300;
+const PORT_SCAN_STEP = 10;
+const PORT_SCAN_END = 3990;
+const HEALTH_TIMEOUT_MS = 120_000;
+
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen({ port, host: '127.0.0.1' }, () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+async function findFreePort(ctx: Ctx): Promise<number | null> {
+  const taken = new Set([...ctx.state.previews.values()].map((p) => p.port));
+  for (let port = PORT_SCAN_START; port <= PORT_SCAN_END; port += PORT_SCAN_STEP) {
+    if (taken.has(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return null;
+}
+
+async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      // any HTTP response (even 404/500 while compiling) counts as "up"
+      await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2_000) });
+      return true;
+    } catch {
+      await sleep(1_500);
+    }
+  }
+  return false;
+}
+
+/** On pr_ready: start the worktree's dev server and publish the preview URL. */
+export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
+  if (ctx.state.previews.has(run.id)) return;
+  if (!run.worktree) {
+    await ctx.db.insertEvent({
+      report_id: run.report_id,
+      run_id: run.id,
+      type: 'error',
+      message: 'no worktree reported in runinfo — cannot start a preview',
+    });
+    return;
+  }
+  await ctx.db.updateRun(run.id, { preview_status: 'starting' });
+  const port = await findFreePort(ctx);
+  if (port === null) {
+    await ctx.db.updateRun(run.id, { preview_status: 'down' });
+    await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'error', message: 'no free preview port in 3300-3990' });
+    return;
+  }
+
+  const qaDir = path.join(run.worktree, '.qa');
+  fs.mkdirSync(qaDir, { recursive: true });
+  const logPath = path.join(qaDir, 'preview.log');
+  const cmd = ctx.cfg.previewCmd
+    ? `${ctx.cfg.previewCmd} ${port}`
+    : `npm --prefix ${shq(path.join(run.worktree, 'apps/web'))} run dev -- --port ${port}`;
+  const out = fs.openSync(logPath, 'a');
+  const child = spawn('bash', ['-c', cmd], {
+    detached: true,
+    stdio: ['ignore', out, out],
+    env: { ...process.env, NEXT_PUBLIC_API_BASE_URL: 'https://api.example.com', PORT: String(port) },
+  });
+  fs.closeSync(out);
+  child.unref();
+  const pid = child.pid;
+  if (!pid) {
+    await ctx.db.updateRun(run.id, { preview_status: 'down' });
+    await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'error', message: 'preview process failed to spawn' });
+    return;
+  }
+  fs.writeFileSync(path.join(qaDir, 'preview.pid'), String(pid));
+  log('preview', `starting preview for run ${run.id} on port ${port} (pid ${pid})`);
+
+  if (!(await waitHealthy(port, HEALTH_TIMEOUT_MS))) {
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
+    await ctx.db.updateRun(run.id, { preview_status: 'down' });
+    await ctx.db.insertEvent({
+      report_id: run.report_id,
+      run_id: run.id,
+      type: 'error',
+      message: `preview never became healthy on port ${port} (see ${logPath})`,
+    });
+    return;
+  }
+
+  const handle: PreviewHandle = {
+    runId: run.id,
+    reportId: run.report_id,
+    worktree: run.worktree,
+    port,
+    pid,
+    hostname: null,
+    startedAt: Date.now(),
+  };
+  ctx.state.previews.set(run.id, handle);
+
+  let url = `http://localhost:${port}`;
+  if (ctx.cfg.previewMode === 'tunnel') {
+    handle.hostname = `preview-${run.id}.${ctx.cfg.previewDomain}`;
+    url = `https://${handle.hostname}`;
+    await syncTunnel(ctx);
+  }
+  await ctx.db.updateRun(run.id, { preview_status: 'live', preview_url: url, preview_port: port });
+  // Health wait can take up to 120s: only pr_ready may advance to preview, so a
+  // late-healthy dev server never regresses verified/stopped/blocked.
+  await ctx.db.updateReportIfStatus(run.report_id, 'pr_ready', { status: 'preview' });
+  await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: `preview live: ${url}` });
+  await enforcePreviewCap(ctx);
+}
+
+async function enforcePreviewCap(ctx: Ctx): Promise<void> {
+  while (ctx.state.previews.size > ctx.cfg.maxPreviews) {
+    const oldest = [...ctx.state.previews.values()].sort((a, b) => a.startedAt - b.startedAt).at(0);
+    if (!oldest) return;
+    await stopPreview(ctx, oldest, `evicted — MAX_PREVIEWS=${ctx.cfg.maxPreviews}`);
+  }
+}
+
+export async function stopPreview(ctx: Ctx, handle: PreviewHandle, reason: string): Promise<void> {
+  try {
+    process.kill(-handle.pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(handle.pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
+  }
+  ctx.state.previews.delete(handle.runId);
+  await ctx.db.updateRun(handle.runId, { preview_status: 'down' });
+  await ctx.db.insertEvent({ report_id: handle.reportId, run_id: handle.runId, type: 'system', message: `preview stopped: ${reason}` });
+  log('preview', `stopped preview for run ${handle.runId}: ${reason}`);
+  if (ctx.cfg.previewMode === 'tunnel') await syncTunnel(ctx);
+}
+
+export async function stopAllPreviews(ctx: Ctx): Promise<void> {
+  for (const handle of [...ctx.state.previews.values()]) {
+    await stopPreview(ctx, handle, 'worker shutting down');
+  }
+  if (cfChild) {
+    try {
+      cfChild.kill('SIGTERM');
+    } catch {
+      // already dead
+    }
+    cfChild = null;
+  }
+}
+
+// ---- cloudflared (PREVIEW_MODE=tunnel) -------------------------------------
+
+let cfChild: ChildProcess | null = null;
+
+/** Regenerate the ingress yaml, route new hostnames once, restart cloudflared. */
+async function syncTunnel(ctx: Ctx): Promise<void> {
+  const yml = path.join(ctx.cfg.qaHome, 'cloudflared.yml');
+  const entries = [...ctx.state.previews.values()].filter((p) => p.hostname !== null);
+  const lines = [`tunnel: ${ctx.cfg.cfTunnelName}`, 'ingress:'];
+  for (const p of entries) {
+    lines.push(`  - hostname: ${p.hostname}`, `    service: http://localhost:${p.port}`);
+  }
+  lines.push('  - service: http_status:404', '');
+  fs.writeFileSync(yml, lines.join('\n'));
+
+  // `cloudflared tunnel route dns` once per new hostname (persisted set = idempotent)
+  const routedPath = path.join(ctx.cfg.qaHome, 'routed-hostnames.json');
+  let routed: Set<string>;
+  try {
+    routed = new Set(JSON.parse(fs.readFileSync(routedPath, 'utf8')) as string[]);
+  } catch {
+    routed = new Set();
+  }
+  for (const p of entries) {
+    if (!p.hostname || routed.has(p.hostname)) continue;
+    const r = await execa('cloudflared', ['tunnel', 'route', 'dns', ctx.cfg.cfTunnelName, p.hostname], {
+      reject: false,
+      timeout: 60_000,
+    });
+    if (r.exitCode === 0 || /already exists/i.test(`${r.stdout ?? ''}${r.stderr ?? ''}`)) {
+      routed.add(p.hostname);
+    } else {
+      log('preview', `cloudflared route dns failed for ${p.hostname}: ${r.stderr ?? r.stdout ?? 'unknown'}`);
+    }
+  }
+  fs.writeFileSync(routedPath, JSON.stringify([...routed]));
+
+  if (cfChild) {
+    try {
+      cfChild.kill('SIGTERM');
+    } catch {
+      // already dead
+    }
+    cfChild = null;
+  }
+  if (entries.length === 0) return;
+  const out = fs.openSync(path.join(ctx.cfg.qaHome, 'cloudflared.log'), 'a');
+  cfChild = spawn('cloudflared', ['tunnel', '--config', yml, 'run', ctx.cfg.cfTunnelName], {
+    stdio: ['ignore', out, out],
+  });
+  fs.closeSync(out);
+  cfChild.once('close', (code) => log('preview', `managed cloudflared exited (code ${code})`));
+}
+
+// ---- worktree teardown -----------------------------------------------------
+
+/** Prefer the repo's teardown-worktree.sh; fall back to git worktree remove. */
+export async function teardownWorktree(ctx: Ctx, worktree: string): Promise<void> {
+  const name = path.basename(worktree);
+  const script = path.join(ctx.cfg.runnerRepo, '.claude', 'skills', 'ship-task', 'teardown-worktree.sh');
+  if (fs.existsSync(script)) {
+    const r = await execa('bash', [script, name], { cwd: ctx.cfg.runnerRepo, reject: false, timeout: 120_000 });
+    if (r.exitCode === 0) {
+      log('preview', `worktree torn down via teardown-worktree.sh: ${worktree}`);
+      return;
+    }
+    log('preview', `teardown-worktree.sh exited ${r.exitCode} — falling back to git worktree remove`);
+  }
+  await execa('git', ['-C', ctx.cfg.runnerRepo, 'worktree', 'remove', '--force', worktree], { reject: false, timeout: 60_000 });
+  await execa('git', ['-C', ctx.cfg.runnerRepo, 'worktree', 'prune'], { reject: false, timeout: 60_000 });
+  log('preview', `worktree removed: ${worktree}`);
+}

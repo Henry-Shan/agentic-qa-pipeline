@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>the host app — Department Inventory (widget demo)</title>
+  <style>
+    :root {
+      --paper: #f7f9fa; --stage: #fff; --ink: #16232e; --ink-2: #4a5a68; --ink-3: #8496a4;
+      --line: #dde4e9; --line-soft: #e9eef2; --blue: #3b82f6;
+      --green: #15803d; --green-soft: #e8f6ec; --amber: #b45309; --amber-soft: #fdf3e3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--paper); color: var(--ink);
+      font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; font-size: 15px; line-height: 1.5;
+    }
+    main { max-width: 860px; margin: 0 auto; padding: 40px 24px 120px; }
+    .crumbs { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+    .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+    h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+    .actions { display: flex; gap: 8px; }
+    button {
+      border: 1px solid var(--line); background: var(--stage); color: var(--ink-2);
+      border-radius: 8px; padding: 7px 13px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--stage); border: 1px solid var(--line); border-radius: 12px; }
+    th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); padding: 10px 14px; border-bottom: 1px solid var(--line); }
+    td { padding: 11px 14px; border-bottom: 1px solid var(--line-soft); color: var(--ink-2); }
+    td:first-child { color: var(--ink); font-weight: 500; }
+    .tag { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+    .tag.ok { background: var(--green-soft); color: var(--green); }
+    .tag.low { background: var(--amber-soft); color: var(--amber); }
+    .hint { margin-top: 22px; font-size: 12.5px; color: var(--ink-3); max-width: 60ch; }
+  </style>
+</head>
+<body>
+  <main data-sentry-component="InventoryView" data-sentry-source-file="InventoryView.tsx">
+    <div class="crumbs">Departments · <b>Molecular Biology</b></div>
+    <div class="page-head">
+      <h1>Department Inventory</h1>
+      <div class="actions">
+        <button data-testid="export-btn">Export</button>
+        <button
+          id="manageLabAccess"
+          data-testid="manage-lab-access"
+          data-sentry-component="ManageLabAccess"
+          data-sentry-source-file="ManageLabAccess.tsx"
+        >Manage Lab Access</button>
+        <button class="primary" data-testid="add-item">+ Add Item</button>
+      </div>
+    </div>
+    <table data-testid="inventory-table">
+      <thead><tr><th>Item</th><th>Qty</th><th>Location</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Taq DNA Polymerase</td><td>14 vials</td><td>Freezer B · −20 °C</td><td><span class="tag ok">In stock</span></td></tr>
+        <tr><td>DMEM Medium 500 mL</td><td>6 bottles</td><td>Cold room 2</td><td><span class="tag low">Low</span></td></tr>
+        <tr><td>Pipette tips 200 µL</td><td>32 racks</td><td>Bench 4 shelf</td><td><span class="tag ok">In stock</span></td></tr>
+        <tr><td>Anti-GFP antibody</td><td>3 vials</td><td>Freezer A · −80 °C</td><td><span class="tag low">Low</span></td></tr>
+      </tbody>
+    </table>
+    <p class="hint">
+      Click <b>Manage Lab Access</b> to seed the buffers with a console error and a same-origin
+      404 API call, then use the 🐛 bubble to file a report. Point the site dev server at
+      <code>http://localhost:3200</code> for the full ingest round-trip — without it the failure
+      toast keeps the drawer (and your text) intact.
+    </p>
+  </main>
+
+  <script>
+    document.getElementById('manageLabAccess').addEventListener('click', async () => {
+      const labs = null;
+      try {
+        labs.map((l) => l);
+      } catch (err) {
+        console.error('TypeError:', err.message);
+      }
+      // Same-origin /api call that 404s (esbuild's dev server has no /api directory).
+      // The query token must arrive at the QA board as [redacted].
+      try {
+        await fetch('/api/departments/42/lab-access?token=demo-secret-token-123');
+      } catch {}
+    });
+  </script>
+  <script
+    src="/widget.js"
+    defer
+    data-qa-endpoint="http://localhost:3200"
+    data-qa-token="dev-local-token"
+    data-qa-email="tester@example.com"
+  ></script>
+</body>
+</html>

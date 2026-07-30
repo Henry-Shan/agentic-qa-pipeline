@@ -1,0 +1,21 @@
+{
+  "name": "@qa-pipeline/widget",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --format=iife --target=es2020 --sourcemap --legal-comments=none --outfile=../../apps/site/public/widget.js",
+    "dev": "esbuild src/index.ts --bundle --format=iife --target=es2020 --sourcemap --outfile=demo/widget.js --watch --servedir=demo --serve=127.0.0.1:4300",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "modern-screenshot": "^4.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
