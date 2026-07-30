@@ -282,6 +282,21 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   }
 
   /**
+   * Frame handshake step 4 (contracts § Widget host integration): when the app
+   * runs inside the QA site's /capture iframe, tell the parent a report was
+   * filed so it can navigate to the task page. targetOrigin is the configured
+   * endpoint's origin — only the QA site can receive it.
+   */
+  function notifyParentFiled(id: number, url: string): void {
+    if (window.self === window.top) return;
+    try {
+      window.parent.postMessage({ type: 'qa-pipeline:filed', id, url }, new URL(cfg.endpoint).origin);
+    } catch {
+      // Malformed endpoint — skip; the toast link still works.
+    }
+  }
+
+  /**
    * Submit-time auth, in order: (a) the host's `window.QAPipeline.getToken`
    * session bridge (awaited, 3s timeout) → `Authorization: Bearer`; (b) the
    * configured static token → `x-qa-token`; (c) neither → null (not configured).
@@ -355,6 +370,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       // only a relative fallback ("/task/N") needs the endpoint prefix.
       const link = out.url.startsWith('http') ? out.url : `${cfg.endpoint}${out.url}`;
       toast('ok', `Report #${out.id} filed — Claude starts now`, link);
+      notifyParentFiled(out.id, link);
     } catch {
       send.disabled = false;
       send.textContent = SEND_LABEL;

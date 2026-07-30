@@ -26,6 +26,34 @@ Config is read from `document.currentScript`'s dataset at load. Fallback: a
 origin. **No auth (static token or `getToken`) → the widget stays dormant**: no
 buffers, no UI, no requests.
 
+### Frame handshake (embedded capture mode)
+
+In production the host (example.com) does NOT load the widget unconditionally —
+its loader is frame-gated. The full protocol (messages 1–3 live in the host
+loader and the QA site's `/capture` page; message 4 is implemented here):
+
+1. Host loader, only when `window.self !== window.top`: posts
+   `{type:'qa-pipeline:hello'}` to `window.parent` (targetOrigin `'*'`),
+   retrying every 1s (max 30) until activated.
+2. QA `/capture` page: on a hello whose `event.origin` matches the origin of
+   `NEXT_PUBLIC_CAPTURE_URL`, replies
+   `{type:'qa-pipeline:activate', endpoint, email}` via
+   `event.source.postMessage(…, event.origin)`.
+3. Host loader: on an activate whose `event.origin` is in
+   `NEXT_PUBLIC_QA_SITE_ORIGINS`, injects this widget script once with
+   `data-qa-endpoint`/`data-qa-email` from the activate payload plus the
+   `getToken` bridge. Duplicate activates are ignored.
+4. **This widget**: after a successful submit, when `window.self !== window.top`,
+   posts `{type:'qa-pipeline:filed', id, url}` to `window.parent` with
+   targetOrigin = origin of the configured endpoint.
+5. QA `/capture` page: on `qa-pipeline:filed` (same origin check as hello),
+   client-side navigates to the task page path parsed from `url`.
+
+Security property: activation requires a parent whose origin is allow-listed in
+`NEXT_PUBLIC_QA_SITE_ORIGINS`; direct visitors to example.com never see the
+widget. Submission auth is unchanged — the embedded session JWT verified
+server-side against `qa_allowed_emails`.
+
 ### Auth: session-token bridge vs. static token
 
 Resolved **at submit time**, in this order:

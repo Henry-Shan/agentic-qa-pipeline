@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+import Link from 'next/link';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
 import { TABS, tabOf, type TabKey } from '@/lib/status';
@@ -85,20 +86,28 @@ export function Board({
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap gap-1" role="tablist" aria-label="Filter reports">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            role="tab"
-            aria-selected={tab === t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold ${
-              tab === t.key ? 'bg-qa-soft text-qa' : 'text-ink-3 hover:text-ink'
-            }`}
-          >
-            {t.label} <b className="ml-0.5 tabular-nums">{counts[t.key]}</b>
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter reports">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={tab === t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold ${
+                tab === t.key ? 'bg-qa-soft text-qa' : 'text-ink-3 hover:text-ink'
+              }`}
+            >
+              {t.label} <b className="ml-0.5 tabular-nums">{counts[t.key]}</b>
+            </button>
+          ))}
+        </div>
+        <Link
+          href="/capture"
+          className="inline-flex flex-none items-center gap-1.5 rounded-lg bg-qa px-4 py-2 text-[13px] font-bold text-on-accent shadow-card transition-colors hover:bg-qa-bright"
+        >
+          ＋ Report an issue
+        </Link>
       </div>
 
       {visible.length === 0 ? (

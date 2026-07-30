@@ -27,6 +27,8 @@ Root `package.json` workspaces: `["apps/site","packages/widget","worker"]`. Node
   login form is self-enrolled into `qa_allowed_emails` via `POST /api/enroll` (middleware
   exempts that route for authed users; already-enrolled users pass regardless of code)
 - `NEXT_PUBLIC_SITE_URL` — https://qa.example.com (http://localhost:3200 in dev)
+- `NEXT_PUBLIC_CAPTURE_URL` — the the host app instance embedded full-screen by `/capture`
+  (default https://example.com; local dogfood http://localhost:3005)
 
 Ingest role enrichment: the server resolves the reporter's the host app memberships via the
 security-definer RPC `qa_reporter_roles(uid)` (service-role only) and stores them as
@@ -95,6 +97,43 @@ survived client scrubbing; upload screenshot to bucket `qa-screenshots` as `repo
 title = first 80 chars of description (fallback `Bug on <route>`); insert `qa_reports`
 status `queued`; insert `qa_events` (type `system`, "filed by <email>").
 
+## Widget host integration — frame handshake (the host app ⇄ QA site)
+
+The widget never loads for direct visitors to example.com. The host loader
+(`apps/web/components/qa/QAWidgetLoader.tsx` in the the host app repo) is FRAME-GATED: it renders
+null and does nothing unless the app runs inside an iframe AND an origin-verified postMessage
+handshake with the QA site's `/capture` page completes. (This REPLACES the former
+`NEXT_PUBLIC_QA_TESTER_EMAILS`/`NEXT_PUBLIC_QA_TESTER_DOMAINS` email gating.)
+
+Messages (exact shapes, implement exactly):
+
+1. **hello** — loader (the host app), only when `window.self !== window.top`:
+   `window.parent.postMessage({type:'qa-pipeline:hello'}, '*')`, retried every 1s (max 30)
+   until activated.
+2. **activate** — QA `/capture` page, on a hello whose `event.origin` === origin of
+   `NEXT_PUBLIC_CAPTURE_URL`: `event.source.postMessage({type:'qa-pipeline:activate',
+   endpoint: <NEXT_PUBLIC_SITE_URL>, email: <signed-in QA session email>}, event.origin)`.
+3. Loader, on an activate whose `event.origin` ∈ `NEXT_PUBLIC_QA_SITE_ORIGINS`
+   (comma-separated; default when unset: the origin of `NEXT_PUBLIC_QA_WIDGET_URL`):
+   inject the widget script (src `NEXT_PUBLIC_QA_WIDGET_URL`) ONCE with
+   `data-qa-endpoint` = activate.endpoint, `data-qa-email` = activate.email, and set the
+   `window.QAPipeline.getToken` session bridge before injection. Duplicate activates ignored.
+4. **filed** — widget, after a successful submit, only when `window.self !== window.top`:
+   `window.parent.postMessage({type:'qa-pipeline:filed', id, url}, <origin of the configured
+   endpoint>)`.
+5. QA `/capture` page, on a filed (same origin check as hello): client-side navigate
+   (`router.push`) to the task page path parsed from `url`.
+
+Env — QA site: `NEXT_PUBLIC_CAPTURE_URL` (embedded the host app URL), `NEXT_PUBLIC_SITE_URL`
+(the activate endpoint). the host app: `NEXT_PUBLIC_QA_WIDGET_URL` (widget bundle URL; unset =
+feature fully dormant), `NEXT_PUBLIC_QA_SITE_ORIGINS` (parent origins allowed to activate,
+e.g. `https://qa-pipeline.vercel.app,http://localhost:3200`).
+
+Security property: activation requires a parent whose origin is in
+`NEXT_PUBLIC_QA_SITE_ORIGINS` — direct visitors to example.com never see the widget.
+Submission auth is unchanged: the embedded the host app session's JWT (via the `getToken` bridge)
+is verified server-side against `qa_allowed_emails` (see § Widget → Site).
+
 ## Site pages
 
 - `/login` — Supabase email+password (the host app accounts). After login, RPC `qa_is_tester()`;
@@ -102,6 +141,11 @@ status `queued`; insert `qa_events` (type `system`, "filed by <email>").
 - `/` — board. Tabs: All / Fixing / Preview / Queued / Shipped (+count). Card: title, reporter,
   age, kind, status pill, live pipeline, `log_tail` when running. Realtime via postgres_changes on
   `qa_reports`+`qa_runs`; fallback 5s poll.
+- `/capture` — "Report an issue": full-screen iframe of `NEXT_PUBLIC_CAPTURE_URL` under a slim
+  h-12 bar (← Board link, title, hint). Runs the frame handshake above: answers hello with
+  activate (signed-in tester's email), navigates to the task page on filed. If no hello within
+  8s, shows a dismissible "the widget hasn't loaded inside this copy of the host app" note and
+  keeps listening. Board header links here via "＋ Report an issue".
 - `/task/[id]` — three zones (matches approved prototype):
   1. Grounding trace chips (`qa_runs.grounding: [{label, file?}]`) + log (from `qa_events`,
      type `log|phase|error|question`, autoscroll).
