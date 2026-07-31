@@ -61,73 +61,24 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   let toastEl: HTMLElement | null = null;
   let picking = false;
 
-  // ---- fab + menu ----------------------------------------------------------
+  // ---- fab -----------------------------------------------------------------
   const fab = h('button', 'qa-fab', '🐛');
   fab.type = 'button';
-  fab.setAttribute('aria-label', 'Report a bug or request a feature');
-  fab.setAttribute('aria-haspopup', 'menu');
-  fab.setAttribute('aria-expanded', 'false');
-  fab.addEventListener('click', () => (menu.hidden ? openMenu() : closeMenu()));
+  fab.setAttribute('aria-label', 'Report an issue');
+  fab.addEventListener('click', () => void startReport());
 
-  const menu = h('div', 'qa-menu');
-  menu.hidden = true;
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'QA Pipeline');
-
-  function menuItem(icon: string, title: string, sub: string, onPick: () => void): void {
-    const btn = h('button', 'mi');
-    btn.type = 'button';
-    btn.setAttribute('role', 'menuitem');
-    btn.appendChild(h('span', 'mic', icon));
-    const label = h('span');
-    label.appendChild(document.createTextNode(title));
-    label.appendChild(h('span', 'sub', sub));
-    btn.appendChild(label);
-    btn.addEventListener('click', onPick);
-    menu.appendChild(btn);
-  }
-  menuItem('⊕', 'Report an issue', "Point at what's broken", () => void startReport('bug'));
-  menuItem('✦', 'Request a feature', "Describe what's missing", () => void startReport('feature'));
-  menuItem('▤', 'My reports', 'Open the QA board', () => {
-    window.open(cfg.endpoint, '_blank', 'noopener');
-    closeMenu();
-  });
-
-  root.append(menu, fab);
-
-  function openMenu(): void {
-    if (drawer || picking) return;
-    menu.hidden = false;
-    fab.setAttribute('aria-expanded', 'true');
-  }
-  function closeMenu(): void {
-    menu.hidden = true;
-    fab.setAttribute('aria-expanded', 'false');
-  }
-
-  document.addEventListener(
-    'click',
-    (e) => {
-      if (!menu.hidden && !e.composedPath().includes(host)) closeMenu();
-    },
-    true,
-  );
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !menu.hidden) closeMenu();
-  });
+  root.append(fab);
 
   // ---- report flow ---------------------------------------------------------
-  async function startReport(kind: 'bug' | 'feature'): Promise<void> {
-    closeMenu();
+  // One flow for everything: fab → element picker → form. Esc skips the picker
+  // (feature ideas have nothing to point at) — picked = bug, skipped = feature.
+  async function startReport(): Promise<void> {
     if (picking || drawer) return;
     picking = true;
     fab.hidden = true;
     try {
-      let element: Element | null = null;
-      if (kind === 'bug') {
-        element = await pickElement(root, { ignore: host });
-        if (!element) return; // Esc — cancelled
-      }
+      const element = await pickElement(root, { ignore: host });
+      const kind: 'bug' | 'feature' = element ? 'bug' : 'feature';
       const shot = await captureShot(element, host);
       const draft: Draft = { kind, meta: element ? elementMeta(element) : {}, shot };
       if (element) draft.selector = buildSelector(element);
@@ -253,13 +204,10 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       panel.appendChild(chips);
     }
 
-    panel.appendChild(h('div', 'cap-label', draft.kind === 'bug' ? "What's wrong?" : 'What do you need?'));
+    panel.appendChild(h('div', 'cap-label', "What's wrong? / New feature?"));
     const desc = h('textarea', 'desc');
     desc.required = true;
-    desc.placeholder =
-      draft.kind === 'bug'
-        ? 'One sentence: what happened, and what did you expect?'
-        : 'One sentence: what should this do?';
+    desc.placeholder = 'One sentence: what happened — or what should this do?';
     desc.addEventListener('input', () => desc.classList.remove('invalid'));
     panel.appendChild(desc);
 
@@ -401,5 +349,5 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     );
   }
 
-  return { host, open: openMenu };
+  return { host, open: () => void startReport() };
 }

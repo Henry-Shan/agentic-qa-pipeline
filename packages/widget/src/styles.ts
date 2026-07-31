@@ -41,19 +41,6 @@ button { font-family: inherit; }
 }
 .qa-fab:hover { transform: scale(1.06); }
 .qa-fab:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
-.qa-menu {
-  position: fixed; right: 22px; bottom: 80px; z-index: 20;
-  background: var(--stage); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: var(--shadow-big); padding: 6px; min-width: 224px;
-}
-.qa-menu .mi {
-  display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px;
-  font-size: 13.5px; font-weight: 600; color: var(--ink); cursor: pointer;
-  border: none; background: none; width: 100%; text-align: left;
-}
-.qa-menu .mi:hover, .qa-menu .mi:focus-visible { background: var(--qa-soft); color: var(--qa); outline: none; }
-.qa-menu .mic { width: 20px; text-align: center; flex: none; }
-.qa-menu .sub { display: block; font-size: 11.5px; color: var(--ink-3); font-weight: 400; }
 
 /* ---- picker ---- */
 .qa-veil { position: fixed; inset: 0; z-index: 40; cursor: crosshair; background: rgba(22,35,46,.07); }
