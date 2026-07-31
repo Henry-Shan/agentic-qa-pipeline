@@ -1,12 +1,13 @@
 // Pure geometry + layout for the /canvas view. No DOM, no React — deterministic
 // so server render, hydration, and every client recompute agree.
 //
-// Layout model: fixed Figma-style SECTION containers (directory, inventory, …)
-// flow left→right and wrap into rows. Inside a section each report renders as
-// an independent block pair (screenshot card + sticky note) packed into an
-// index-based grid. Saved positions are absolute world coords and override the
-// grid slot; section rects are sized from the default grid only, so layout
-// never depends on drag state.
+// Layout model (Figma reference): fixed SECTION containers stack VERTICALLY,
+// one per row, in a fixed order. Every section has the same comfortable width;
+// height is auto from its content grid — block pairs (screenshot card + sticky
+// note) flow left→right and wrap within the section width. Empty sections
+// collapse to a slim chip-only bar. Saved positions are absolute world coords
+// and override the grid slot; section rects are sized from the default grid
+// only, so layout never depends on drag state.
 
 import type { QaReport } from '@/lib/types';
 
@@ -19,18 +20,16 @@ export const PAIR_W = SHOT_W + PAIR_GAP + STICKY_W; // 414
 export const PAIR_H = 200; // grid cell height (shot 140 / clamped sticky ~150)
 
 // ---- section chrome ----
+export const SECTION_W = 1180; // fixed width — one section per row
 export const SECTION_PAD_X = 28;
-export const SECTION_PAD_TOP = 60; // room for the label chip
+export const SECTION_PAD_TOP = 64; // 28px content padding + room for the label chip
 export const SECTION_PAD_BOTTOM = 28;
 export const CELL_GAP_X = 32;
 export const CELL_GAP_Y = 36;
-export const SECTION_COLS = 2; // block pairs per row inside a section
-export const EMPTY_SECTION_W = 240;
-export const EMPTY_SECTION_H = 54; // just the chip, like an empty Figma section
-export const SECTION_GAP = 48; // gap between sections on the canvas
+export const EMPTY_SECTION_H = 56; // slim chip-only bar, full section width
+export const SECTION_GAP = 24; // vertical gap between stacked sections
 export const CANVAS_ORIGIN_X = 60;
 export const CANVAS_ORIGIN_Y = 60;
-export const ROW_MAX_W = 2040; // wrap sections into a new row past this width
 
 export type SectionName =
   | 'directory'
@@ -43,7 +42,7 @@ export type SectionName =
   | 'settings'
   | 'other';
 
-/** Fixed on-canvas order. `other` is appended only when something maps to it. */
+/** Fixed top→bottom order. `other` is appended only when something maps to it. */
 export const SECTION_ORDER: readonly SectionName[] = [
   'directory',
   'inventory',
@@ -98,6 +97,8 @@ export interface SectionSpec {
   h: number;
   /** Reports whose default grid slot lives in this section. */
   count: number;
+  /** Block-pair columns that fit inside the section width. */
+  cols: number;
 }
 
 export interface Point {
@@ -105,7 +106,13 @@ export interface Point {
   y: number;
 }
 
-/** Fixed sections sized to their content, flowed into wrapping rows. */
+/** Block-pair columns that fit in the fixed section width (≥1). */
+function columnsPerSection(): number {
+  const innerW = SECTION_W - SECTION_PAD_X * 2;
+  return Math.max(1, Math.floor((innerW + CELL_GAP_X) / (PAIR_W + CELL_GAP_X)));
+}
+
+/** Fixed-order sections stacked top→bottom, one per row, sized to content. */
 export function computeSections(reports: QaReport[]): SectionSpec[] {
   const counts = new Map<SectionName, number>();
   for (const report of reports) {
@@ -115,39 +122,25 @@ export function computeSections(reports: QaReport[]): SectionSpec[] {
   const names: SectionName[] = [...SECTION_ORDER];
   if ((counts.get('other') ?? 0) > 0) names.push('other');
 
-  const sized = names.map((name) => {
-    const count = counts.get(name) ?? 0;
-    if (count === 0) return { name, w: EMPTY_SECTION_W, h: EMPTY_SECTION_H, count };
-    const cols = Math.min(SECTION_COLS, count);
-    const rows = Math.ceil(count / cols);
-    return {
-      name,
-      w: SECTION_PAD_X * 2 + cols * PAIR_W + (cols - 1) * CELL_GAP_X,
-      h: SECTION_PAD_TOP + rows * PAIR_H + (rows - 1) * CELL_GAP_Y + SECTION_PAD_BOTTOM,
-      count,
-    };
-  });
-
+  const cols = columnsPerSection();
   const out: SectionSpec[] = [];
-  let x = CANVAS_ORIGIN_X;
   let y = CANVAS_ORIGIN_Y;
-  let rowH = 0;
-  for (const s of sized) {
-    if (x > CANVAS_ORIGIN_X && x + s.w > ROW_MAX_W) {
-      x = CANVAS_ORIGIN_X;
-      y += rowH + SECTION_GAP;
-      rowH = 0;
-    }
-    out.push({ ...s, x, y });
-    x += s.w + SECTION_GAP;
-    rowH = Math.max(rowH, s.h);
+  for (const name of names) {
+    const count = counts.get(name) ?? 0;
+    const rows = Math.ceil(count / cols);
+    const h =
+      count === 0
+        ? EMPTY_SECTION_H
+        : SECTION_PAD_TOP + rows * PAIR_H + (rows - 1) * CELL_GAP_Y + SECTION_PAD_BOTTOM;
+    out.push({ name, x: CANVAS_ORIGIN_X, y, w: SECTION_W, h, count, cols });
+    y += h + SECTION_GAP;
   }
   return out;
 }
 
 /** Default grid slot (absolute world coords) for pair `index` in a section. */
 export function defaultPairPos(section: SectionSpec, index: number): Point {
-  const cols = Math.min(SECTION_COLS, Math.max(1, section.count));
+  const cols = Math.max(1, section.cols);
   return {
     x: section.x + SECTION_PAD_X + (index % cols) * (PAIR_W + CELL_GAP_X),
     y: section.y + SECTION_PAD_TOP + Math.floor(index / cols) * (PAIR_H + CELL_GAP_Y),

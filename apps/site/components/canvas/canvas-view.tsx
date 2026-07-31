@@ -53,6 +53,11 @@ const HINTS: Record<Tool, string> = {
 
 const STICKY_HINT = 'Describe the bug or the feature idea…';
 
+// Zoom limits (30%–160%), shared by wheel/pinch zoom and the −/＋ buttons.
+const MIN_SCALE = 0.3;
+const MAX_SCALE = 1.6;
+const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+
 function upsertBlock(list: QaCanvasBlock[], block: QaCanvasBlock): QaCanvasBlock[] {
   // A pos row is keyed by report_id (temp negative-id rows get replaced by the
   // server row); text rows are keyed by id.
@@ -85,6 +90,23 @@ export function CanvasView({
   const [livePos, setLivePos] = useState<{ key: string; x: number; y: number } | null>(null);
   /** Report id whose "Delete everything?" popover is open. */
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  /** Report ids whose block pair is fading out after a confirmed delete. */
+  const [fadingIds, setFadingIds] = useState<Set<number>>(new Set());
+  /** Bottom-center toast — delete progress / failure. */
+  const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((kind: 'info' | 'error', text: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ kind, text });
+    toastTimer.current = setTimeout(() => setToast(null), kind === 'error' ? 6000 : 4000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   const vpRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -371,19 +393,52 @@ export function CanvasView({
 
   /**
    * "Delete everything" for a report: queue a `destroy` message (the worker
-   * tears down the run, PR, worktree, and row) and cancel the report so it
-   * disappears from views immediately.
+   * tears down the run, PR, worktree, and row) and cancel the report.
+   * Optimistic — the pair fades out (~200ms) and leaves local state at once;
+   * a toast tracks progress. Supabase returns errors as VALUES, not throws —
+   * both writes must be checked or failures vanish silently. On failure the
+   * pair is restored and the actual error surfaces in an error toast.
    */
   async function destroyReport(reportId: number) {
     setConfirmDelete(null);
     setSelected((s) => (s?.kind === 'sticky' && s.reportId === reportId ? null : s));
     draftReportIds.current.delete(reportId);
-    setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status: 'cancelled' as const } : r)));
+    const prevStatus = reports.find((r) => r.id === reportId)?.status;
+
+    setFadingIds((prev) => new Set(prev).add(reportId));
+    const fadeTimer = window.setTimeout(() => {
+      setFadingIds((prev) => {
+        if (!prev.has(reportId)) return prev;
+        const next = new Set(prev);
+        next.delete(reportId);
+        return next;
+      });
+      setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status: 'cancelled' as const } : r)));
+    }, 200);
+    showToast('info', 'Deleting — code changes, PR, and worktree are being cleaned up.');
+
     const supabase = getBrowserClient();
-    await supabase
+    let { error } = await supabase
       .from('qa_messages')
       .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' });
-    await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId);
+    if (!error) {
+      ({ error } = await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId));
+    }
+    if (error) {
+      // Restore the block pair and surface the failure. Clearing the fade timer
+      // covers writes that fail faster than the 200ms fade (e.g. RLS denial).
+      clearTimeout(fadeTimer);
+      setFadingIds((prev) => {
+        if (!prev.has(reportId)) return prev;
+        const next = new Set(prev);
+        next.delete(reportId);
+        return next;
+      });
+      if (prevStatus && prevStatus !== 'cancelled') {
+        setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status: prevStatus } : r)));
+      }
+      showToast('error', `Delete failed — ${error.message}`);
+    }
   }
 
   const deleteSelected = useCallback(async () => {
@@ -563,10 +618,53 @@ export function CanvasView({
     return () => window.removeEventListener('keydown', onKey);
   }, [deleteSelected]);
 
+  // ---------- wheel: Figma model ----------
+  // Plain wheel/trackpad scroll pans; ctrl/cmd+wheel (and trackpad pinch, which
+  // browsers deliver as ctrl+wheel) zooms TO THE CURSOR — the world point under
+  // the pointer stays anchored. Native non-passive listener because React's
+  // synthetic onWheel cannot reliably preventDefault page scroll.
+  useEffect(() => {
+    const el = vpRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if ((e.target as HTMLElement | null)?.closest('[data-pane]')) return; // panel scrolls itself
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        const rect = el.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        setView((v) => {
+          const scale = clampScale(v.scale * Math.exp(-e.deltaY * 0.0024));
+          return {
+            x: px - ((px - v.x) / v.scale) * scale,
+            y: py - ((py - v.y) / v.scale) * scale,
+            scale,
+          };
+        });
+      } else {
+        setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
   // ---------- render ----------
 
-  const zoom = (delta: number) =>
-    setView((v) => ({ ...v, scale: Math.min(1.4, Math.max(0.4, Math.round((v.scale + delta) * 10) / 10)) }));
+  /** −/＋ buttons zoom in 10% steps anchored to the viewport centre. */
+  const zoom = (delta: number) => {
+    const rect = vpRef.current?.getBoundingClientRect();
+    const cx = (rect?.width ?? 0) / 2;
+    const cy = (rect?.height ?? 0) / 2;
+    setView((v) => {
+      const scale = clampScale(Math.round((v.scale + delta) * 10) / 10);
+      return {
+        x: cx - ((cx - v.x) / v.scale) * scale,
+        y: cy - ((cy - v.y) / v.scale) * scale,
+        scale,
+      };
+    });
+  };
 
   const paneReport =
     selected?.kind === 'sticky' ? (reports.find((r) => r.id === selected.reportId) ?? null) : null;
@@ -623,11 +721,7 @@ export function CanvasView({
         className={`relative h-[max(480px,calc(100dvh-192px))] overflow-hidden rounded-b-[14px] border border-line bg-canvas shadow-card ${
           tool !== 'select' ? 'cursor-crosshair' : panning ? 'cursor-grabbing' : 'cursor-grab'
         }`}
-        style={{
-          backgroundImage: 'radial-gradient(color-mix(in srgb, var(--ink-3) 16%, transparent) 1px, transparent 1px)',
-          backgroundSize: '24px 24px',
-          touchAction: 'none',
-        }}
+        style={{ touchAction: 'none' }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -641,8 +735,24 @@ export function CanvasView({
             transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
             transformOrigin: '0 0',
             touchAction: 'none',
+            willChange: 'transform',
           }}
         >
+          {/* Dot grid lives IN world space so it pans and scales with the canvas,
+              exactly like Figma. Oversized so dots cover any pan position. */}
+          <div
+            aria-hidden
+            className="absolute"
+            style={{
+              left: -7992,
+              top: -7992,
+              width: worldW + 15984,
+              height: worldH + 15984,
+              backgroundImage: 'radial-gradient(#E3E6E9 1.5px, transparent 1.5px)',
+              backgroundSize: '24px 24px',
+            }}
+          />
+
           {sections.map((s) => (
             <SectionBox key={s.name} section={s} />
           ))}
@@ -654,6 +764,8 @@ export function CanvasView({
               x={p.x}
               y={p.y}
               selected={selected?.kind === 'sticky' && selected.reportId === p.report.id}
+              dragging={livePos?.key === `s${p.report.id}`}
+              removing={fadingIds.has(p.report.id)}
               edit={editProps(`s${p.report.id}`)}
               confirmingDelete={confirmDelete === p.report.id}
               onRequestDelete={() => setConfirmDelete(p.report.id)}
@@ -674,7 +786,7 @@ export function CanvasView({
           ))}
 
           {active.length === 0 && textItems.length === 0 ? (
-            <div className="absolute text-[13px] text-ink-3" style={{ left: 250, top: 20 }}>
+            <div className="absolute text-[13px] text-ink-3" style={{ left: 64, top: 20 }}>
               No reports yet — press <b className="text-ink-2">S</b> and click inside a section to drop a note, or
               file one from the widget.
             </div>
@@ -688,6 +800,17 @@ export function CanvasView({
             userEmail={userEmail}
             onClose={() => setSelected(null)}
           />
+        ) : null}
+
+        {toast ? (
+          <div
+            role="status"
+            className={`pointer-events-none absolute bottom-4 left-1/2 z-30 max-w-[calc(100%-32px)] -translate-x-1/2 rounded-lg px-3.5 py-2 text-center text-[12px] font-semibold text-white shadow-pop ${
+              toast.kind === 'error' ? 'bg-red' : 'bg-ink/90'
+            }`}
+          >
+            {toast.text}
+          </div>
         ) : null}
       </div>
     </div>

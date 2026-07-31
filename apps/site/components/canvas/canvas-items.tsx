@@ -60,6 +60,8 @@ export function BlockPair({
   x,
   y,
   selected,
+  dragging,
+  removing,
   edit,
   confirmingDelete,
   onRequestDelete,
@@ -70,6 +72,10 @@ export function BlockPair({
   x: number;
   y: number;
   selected: boolean;
+  /** Pointer is currently dragging this pair — lift it slightly. */
+  dragging: boolean;
+  /** Confirmed delete — fade the pair out (~200ms) before removal. */
+  removing: boolean;
   edit: EditProps | null;
   confirmingDelete: boolean;
   onRequestDelete: () => void;
@@ -82,15 +88,24 @@ export function BlockPair({
   return (
     <div
       data-block={`s${report.id}`}
-      className={`group absolute flex items-start rounded-lg ${
-        selected ? 'outline outline-[2.5px] outline-offset-4 outline-qa-bright' : ''
+      className={`group absolute flex items-start rounded-lg transition-[opacity,transform] duration-200 ${
+        editing ? '' : 'cursor-move'
+      } ${selected ? 'outline outline-[2.5px] outline-offset-4 outline-qa-bright' : ''} ${
+        removing ? 'pointer-events-none opacity-0' : ''
       }`}
-      style={{ left: x, top: y, gap: PAIR_GAP, zIndex: selected || editing || confirmingDelete ? 10 : undefined }}
+      style={{
+        left: x,
+        top: y,
+        gap: PAIR_GAP,
+        zIndex: dragging || selected || editing || confirmingDelete ? 10 : undefined,
+        // Position stays transform-free (left/top); the lift is a pure scale.
+        transform: dragging ? 'scale(1.01)' : undefined,
+      }}
     >
       <div
-        className={`relative flex-none overflow-hidden rounded-xl border border-line bg-stage shadow-card ${
-          done ? 'opacity-60' : ''
-        }`}
+        className={`relative flex-none overflow-hidden rounded-xl border border-line bg-stage ${
+          dragging ? 'shadow-pop' : 'shadow-card'
+        } ${done ? 'opacity-60' : ''}`}
         style={{ width: SHOT_W }}
       >
         {report.screenshots.length > 0 ? (
@@ -125,7 +140,9 @@ export function BlockPair({
           report.kind === 'feature'
             ? 'bg-sticky-feat text-sticky-feat-deep'
             : 'bg-sticky-bug text-sticky-bug-deep'
-        } ${done ? 'opacity-60' : ''} ${editing ? 'cursor-text shadow-pop' : 'cursor-default shadow-card'}`}
+        } ${done ? 'opacity-60' : ''} ${
+          editing ? 'cursor-text shadow-pop' : dragging ? 'shadow-pop' : 'shadow-card'
+        }`}
         style={{ width: STICKY_W }}
       >
         <button
@@ -190,7 +207,7 @@ export function TextLabel({
       data-block={`t${block.id}`}
       className={`absolute min-w-[60px] max-w-[300px] select-none px-1.5 py-1 text-[13px] font-semibold text-ink-2 ${
         selected ? 'rounded outline outline-2 outline-offset-2 outline-qa-bright' : ''
-      } ${editing ? 'cursor-text' : 'cursor-default'}`}
+      } ${editing ? 'cursor-text' : 'cursor-move'}`}
       style={{ left: x, top: y, zIndex: selected || editing ? 10 : undefined }}
     >
       <div

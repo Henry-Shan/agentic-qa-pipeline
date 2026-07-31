@@ -30,22 +30,35 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [events, setEvents] = useState<QaEvent[]>(initialEvents);
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
   const [destroyBusy, setDestroyBusy] = useState(false);
+  const [destroyError, setDestroyError] = useState<string | null>(null);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
 
   // "Delete everything": queue a `destroy` message (the worker tears down the
-  // run, PR, worktree, and row) and cancel the report so it disappears now.
+  // run, PR, worktree, and row) and cancel the report. Supabase returns errors
+  // as values, not throws — BOTH writes must be checked or failures vanish
+  // silently. On success we navigate home immediately (the worker cleanup
+  // continues in the background); on failure the button re-enables and the
+  // actual error shows underneath it.
   async function destroyEverything() {
     if (destroyBusy) return;
     setDestroyBusy(true);
+    setDestroyError(null);
+    setConfirmingDestroy(false);
     const supabase = getBrowserClient();
-    const { error } = await supabase
+    let { error } = await supabase
       .from('qa_messages')
       .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' });
-    if (!error) await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId);
-    setDestroyBusy(false);
-    setConfirmingDestroy(false);
-    if (!error) router.replace('/');
+    if (!error) {
+      ({ error } = await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId));
+    }
+    if (error) {
+      setDestroyBusy(false);
+      setDestroyError(`Delete failed — ${error.message}`);
+      return;
+    }
+    // Keep the button in its "Deleting…" state while the router swaps pages.
+    router.replace('/');
   }
 
   const refetch = useCallback(async () => {
@@ -137,11 +150,26 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
             <button
               onClick={() => setConfirmingDestroy((v) => !v)}
               disabled={destroyBusy}
+              aria-busy={destroyBusy}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red/40 bg-stage px-3.5 py-2 text-[12.5px] font-semibold text-red transition-colors hover:bg-red-soft disabled:opacity-50"
             >
-              <TrashIcon size={13} />
-              Delete everything
+              {destroyBusy ? (
+                <>
+                  <span className="spinner" aria-hidden />
+                  Deleting…
+                </>
+              ) : (
+                <>
+                  <TrashIcon size={13} />
+                  Delete everything
+                </>
+              )}
             </button>
+            {destroyError ? (
+              <p role="alert" className="mt-1.5 text-[11.5px] font-medium leading-[1.45] text-red">
+                {destroyError}
+              </p>
+            ) : null}
             {confirmingDestroy ? (
               <ConfirmDestroy
                 className="absolute bottom-full right-0 z-20 mb-2 w-[250px]"

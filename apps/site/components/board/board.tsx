@@ -62,13 +62,17 @@ export function Board({
     () => void refetch(),
   );
 
-  const counts: Record<TabKey, number> = { all: reports.length, fixing: 0, preview: 0, queued: 0, shipped: 0 };
-  for (const report of reports) {
+  // Cancelled reports never show on the board — a cancelled row is a tombstone
+  // the worker is still tearing down (it deletes the row when done).
+  const live = reports.filter((r) => r.status !== 'cancelled');
+
+  const counts: Record<TabKey, number> = { all: live.length, fixing: 0, preview: 0, queued: 0, shipped: 0 };
+  for (const report of live) {
     const key = tabOf(report.status);
     if (key) counts[key]++;
   }
 
-  const visible = tab === 'all' ? reports : reports.filter((r) => tabOf(r.status) === tab);
+  const visible = tab === 'all' ? live : live.filter((r) => tabOf(r.status) === tab);
 
   return (
     <div>
