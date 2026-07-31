@@ -2,8 +2,9 @@
 
 // /canvas — the living Figma board. Fixed section containers (directory,
 // inventory, …), one independent block pair per report (screenshot card +
-// sticky note), free text labels, pan/zoom, drag-persist, edit-in-place, and
-// add-block tools. Data flows: server-fetched initial state → Supabase
+// sticky note), free text labels, FigJam-style arrows between blocks, pan/zoom,
+// drag-persist (drop a pair inside a section to move it there), edit-in-place,
+// and add-block tools. Data flows: server-fetched initial state → Supabase
 // realtime (5s poll fallback) → optimistic local writes.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -15,41 +16,73 @@ import {
   PAIR_H,
   PAIR_W,
   SECTION_ROUTE,
+  TEXT_BLOCK_H,
+  TEXT_BLOCK_W,
   computeSections,
   defaultPairPos,
+  isSectionName,
+  nearestEdgeAnchors,
   sectionAt,
+  sectionHeight,
   sectionOf,
+  type Point,
+  type Rect,
+  type SectionName,
 } from '@/lib/canvas-layout';
-import type { QaCanvasBlock, QaReport, QaRun } from '@/lib/types';
+import type { ArrowEndpoint, ArrowMeta, QaCanvasBlock, QaReport, QaRun } from '@/lib/types';
 import { ViewSwitch } from '@/components/view-switch';
-import { BlockPair, SectionBox, TextLabel, type EditProps } from '@/components/canvas/canvas-items';
+import { ArrowLine, BlockPair, SectionBox, TextLabel, type EditProps } from '@/components/canvas/canvas-items';
 import { TaskPane } from '@/components/canvas/task-pane';
 
-type Tool = 'select' | 'sticky' | 'text';
+type Tool = 'select' | 'sticky' | 'text' | 'arrow';
 
-type Selection = { kind: 'sticky'; reportId: number } | { kind: 'text'; blockId: number };
+type Selection =
+  | { kind: 'sticky'; reportId: number }
+  | { kind: 'text'; blockId: number }
+  | { kind: 'arrow'; blockId: number };
 
 interface DragState {
-  mode: 'pan' | 'move';
+  mode: 'pan' | 'move' | 'arrow';
   key: string | null;
   startX: number;
   startY: number;
   origX: number;
   origY: number;
   moved: boolean;
+  /** For report-pair moves: the section the pair belonged to when the drag started. */
+  fromSection?: SectionName;
 }
 
 const TOOLS: ReadonlyArray<{ key: Tool; label: string; kbd: string }> = [
   { key: 'select', label: '▲ Move', kbd: 'V' },
   { key: 'sticky', label: '▣ Sticky', kbd: 'S' },
   { key: 'text', label: 'T Text', kbd: 'T' },
+  { key: 'arrow', label: '→ Arrow', kbd: 'A' },
 ];
 
 const HINTS: Record<Tool, string> = {
-  select: 'Move tool — drag blocks, double-click to edit',
+  select: 'Move tool — drag blocks, double-click to edit, drop a block inside a section to move it there',
   sticky: 'Click inside a section to drop a note — it files a real report',
   text: 'Click anywhere to add a text label',
+  arrow: 'Press on a block and drag to another block to connect them',
 };
+
+// Blocks/arrows address each other by key: `s{reportId}` (pair) / `t{blockId}` (label).
+const endpointKey = (e: ArrowEndpoint) => (e.t === 'report' ? `s${e.id}` : `t${e.id}`);
+const keyEndpoint = (key: string): ArrowEndpoint =>
+  key.startsWith('s') ? { t: 'report', id: Number(key.slice(1)) } : { t: 'text', id: Number(key.slice(1)) };
+
+/** Runtime guard for qa_canvas_blocks.meta on kind='arrow' rows (jsonb — trust nothing). */
+function parseArrowMeta(meta: unknown): ArrowMeta | null {
+  if (!meta || typeof meta !== 'object') return null;
+  const ok = (e: unknown): e is ArrowEndpoint => {
+    if (!e || typeof e !== 'object') return false;
+    const { t, id } = e as { t?: unknown; id?: unknown };
+    return (t === 'report' || t === 'text') && typeof id === 'number' && Number.isFinite(id);
+  };
+  const { from, to } = meta as { from?: unknown; to?: unknown };
+  return ok(from) && ok(to) ? { from, to } : null;
+}
 
 const STICKY_HINT = 'Describe the bug or the feature idea…';
 
@@ -88,6 +121,10 @@ export function CanvasView({
   const [selected, setSelected] = useState<Selection | null>(null);
   const [editing, setEditing] = useState<{ key: string; snapshot: string } | null>(null);
   const [livePos, setLivePos] = useState<{ key: string; x: number; y: number } | null>(null);
+  /** Section under the pointer while a report pair is being dragged (drop target). */
+  const [hoverSection, setHoverSection] = useState<{ name: SectionName; expand: boolean } | null>(null);
+  /** Live arrow being dragged out of a block with the Arrow tool. */
+  const [arrowDraft, setArrowDraft] = useState<{ fromKey: string; x: number; y: number } | null>(null);
   /** Report id whose "Delete everything?" popover is open. */
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   /** Report ids whose block pair is fading out after a confirmed delete. */
@@ -119,6 +156,8 @@ export function CanvasView({
   /** Reports/text labels created from this canvas session, still unconfirmed by a first edit. */
   const draftReportIds = useRef(new Set<number>());
   const draftTextIds = useRef(new Set<number>());
+  /** Orphaned arrow rows already sent for deletion — never issue the delete twice. */
+  const orphanArrowIds = useRef(new Set<number>());
 
   const mergeBlock = useCallback((block: QaCanvasBlock) => {
     setBlocks((prev) => upsertBlock(prev, block));
@@ -180,20 +219,27 @@ export function CanvasView({
   // ---------- derived layout (deterministic; default placement is index-based) ----------
 
   const active = reports.filter((r) => r.status !== 'cancelled');
-  const sections = computeSections(active);
-  const sectionByName = new Map(sections.map((s) => [s.name, s]));
 
   const posByReport = new Map<number, QaCanvasBlock>();
   for (const b of blocks) {
     if (b.kind === 'pos' && b.report_id !== null) posByReport.set(b.report_id, b);
   }
 
+  // A report's section: the per-block `section` override (set by dropping the
+  // pair inside another section) wins over the route-derived mapping.
+  const effectiveSection = (r: QaReport): SectionName => {
+    const override = posByReport.get(r.id)?.section;
+    return isSectionName(override) ? override : sectionOf(r.route);
+  };
+  const sections = computeSections(active, effectiveSection);
+  const sectionByName = new Map(sections.map((s) => [s.name, s]));
+
   // Every report keeps its index slot in its section's grid (sorted by id), so
   // slots never reshuffle when a neighbour is dragged away.
   const pairItems: Array<{ report: QaReport; x: number; y: number }> = [];
-  const bySection = new Map<ReturnType<typeof sectionOf>, QaReport[]>();
+  const bySection = new Map<SectionName, QaReport[]>();
   for (const report of active) {
-    const name = sectionOf(report.route);
+    const name = effectiveSection(report);
     const group = bySection.get(name);
     if (group) group.push(report);
     else bySection.set(name, [report]);
@@ -223,6 +269,30 @@ export function CanvasView({
   for (const s of pairItems) posByKey.set(`s${s.report.id}`, { x: s.x, y: s.y });
   for (const t of textItems) posByKey.set(`t${t.block.id}`, { x: t.x, y: t.y });
 
+  // Arrow endpoints resolve through posByKey, so they track live drag positions.
+  const rectOf = (key: string): Rect | null => {
+    const p = posByKey.get(key);
+    if (!p) return null;
+    return key.startsWith('s')
+      ? { x: p.x, y: p.y, w: PAIR_W, h: PAIR_H }
+      : { x: p.x, y: p.y, w: TEXT_BLOCK_W, h: TEXT_BLOCK_H };
+  };
+  const arrowItems: Array<{ id: number; from: Point; to: Point }> = [];
+  for (const b of blocks) {
+    if (b.kind !== 'arrow') continue;
+    const meta = parseArrowMeta(b.meta);
+    if (!meta) continue;
+    const ra = rectOf(endpointKey(meta.from));
+    const rb = rectOf(endpointKey(meta.to));
+    if (!ra || !rb) continue; // endpoint missing → orphan cleanup effect handles the row
+    arrowItems.push({ id: b.id, ...nearestEdgeAnchors(ra, rb) });
+  }
+  let draftArrowLine: { from: Point; to: Point } | null = null;
+  if (arrowDraft) {
+    const ra = rectOf(arrowDraft.fromKey);
+    if (ra) draftArrowLine = nearestEdgeAnchors(ra, { x: arrowDraft.x, y: arrowDraft.y, w: 0, h: 0 });
+  }
+
   let worldW = 1700;
   let worldH = 900;
   for (const s of sections) {
@@ -238,13 +308,35 @@ export function CanvasView({
     worldH = Math.max(worldH, t.y + 120);
   }
 
+  // An arrow whose endpoint block is gone (report destroyed / text label
+  // deleted / meta malformed) can never render again — delete the row when
+  // detected. Guarded by orphanArrowIds so a poll resurrecting the row before
+  // the DB delete lands never re-issues the delete.
+  useEffect(() => {
+    const validKeys = new Set<string>();
+    for (const r of reports) if (r.status !== 'cancelled') validKeys.add(`s${r.id}`);
+    for (const b of blocks) if (b.kind === 'text') validKeys.add(`t${b.id}`);
+    const orphans = blocks
+      .filter((b) => {
+        if (b.kind !== 'arrow' || b.id <= 0 || orphanArrowIds.current.has(b.id)) return false;
+        const meta = parseArrowMeta(b.meta);
+        return !meta || !validKeys.has(endpointKey(meta.from)) || !validKeys.has(endpointKey(meta.to));
+      })
+      .map((b) => b.id);
+    if (orphans.length === 0) return;
+    for (const id of orphans) orphanArrowIds.current.add(id);
+    setBlocks((prev) => prev.filter((b) => !orphans.includes(b.id)));
+    setSelected((s) => (s?.kind === 'arrow' && orphans.includes(s.blockId) ? null : s));
+    void getBrowserClient().from('qa_canvas_blocks').delete().in('id', orphans);
+  }, [blocks, reports]);
+
   // ---------- persistence ----------
 
-  function persistStickyPos(reportId: number, x: number, y: number) {
+  function persistStickyPos(reportId: number, x: number, y: number, section?: SectionName) {
     setBlocks((prev) => {
       const existing = prev.find((b) => b.kind === 'pos' && b.report_id === reportId);
       const next: QaCanvasBlock = existing
-        ? { ...existing, x, y, updated_by: userEmail }
+        ? { ...existing, x, y, ...(section ? { section } : {}), updated_by: userEmail }
         : {
             id: -reportId,
             kind: 'pos',
@@ -252,6 +344,8 @@ export function CanvasView({
             text: null,
             x,
             y,
+            meta: null,
+            section: section ?? null,
             updated_by: userEmail,
             updated_at: new Date().toISOString(),
           };
@@ -259,13 +353,48 @@ export function CanvasView({
     });
     void getBrowserClient()
       .from('qa_canvas_blocks')
-      .upsert({ report_id: reportId, kind: 'pos', x, y, updated_by: userEmail }, { onConflict: 'report_id' })
+      // `section` is written only when the drop joins a section — otherwise the
+      // column keeps whatever it held (upsert updates only the sent columns).
+      .upsert(
+        { report_id: reportId, kind: 'pos', x, y, ...(section ? { section } : {}), updated_by: userEmail },
+        { onConflict: 'report_id' },
+      )
       .select()
       .single()
       .then(({ data, error }: { data: unknown; error: unknown }) => {
         if (error || !data) void refetch();
         else mergeBlock(data as QaCanvasBlock);
       });
+  }
+
+  /**
+   * Drop a report pair inside a different section: persist the section override
+   * and snap the pair to the section's next free grid slot. Layout (slot coords
+   * and the target's grown height) is recomputed as if the join already
+   * happened, so the written coords land exactly where the grid will render.
+   */
+  function dropIntoSection(reportId: number, name: SectionName): boolean {
+    const nextSectionFor = (r: QaReport) => (r.id === reportId ? name : effectiveSection(r));
+    const spec = computeSections(active, nextSectionFor).find((s) => s.name === name);
+    if (!spec) return false;
+    const group = active.filter((r) => nextSectionFor(r) === name).sort((a, b) => a.id - b.id);
+    const taken: Point[] = [];
+    group.forEach((r, index) => {
+      if (r.id === reportId) return;
+      const saved = posByReport.get(r.id);
+      taken.push(saved ? { x: saved.x, y: saved.y } : defaultPairPos(spec, index));
+    });
+    for (let i = 0; i <= group.length; i++) {
+      const slot = defaultPairPos(spec, i);
+      const occupied = taken.some(
+        (p) => Math.abs(p.x - slot.x) < PAIR_W / 2 && Math.abs(p.y - slot.y) < PAIR_H / 2,
+      );
+      if (!occupied) {
+        persistStickyPos(reportId, slot.x, slot.y, name);
+        return true;
+      }
+    }
+    return false;
   }
 
   function persistTextPos(blockId: number, x: number, y: number) {
@@ -315,6 +444,8 @@ export function CanvasView({
         text: null,
         x,
         y,
+        meta: null,
+        section: null,
         updated_by: userEmail,
         updated_at: report.created_at,
       },
@@ -371,6 +502,26 @@ export function CanvasView({
   async function deleteTextBlock(blockId: number) {
     draftTextIds.current.delete(blockId);
     setSelected((s) => (s?.kind === 'text' && s.blockId === blockId ? null : s));
+    setBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    await getBrowserClient().from('qa_canvas_blocks').delete().eq('id', blockId);
+  }
+
+  /** Arrow-tool release over a second block: persist the connector. */
+  async function createArrow(fromKey: string, toKey: string) {
+    const meta: ArrowMeta = { from: keyEndpoint(fromKey), to: keyEndpoint(toKey) };
+    const { data, error } = await getBrowserClient()
+      .from('qa_canvas_blocks')
+      .insert({ kind: 'arrow', meta, x: 0, y: 0, updated_by: userEmail })
+      .select()
+      .single();
+    if (error || !data) return;
+    const block = data as QaCanvasBlock;
+    mergeBlock(block);
+    setSelected({ kind: 'arrow', blockId: block.id });
+  }
+
+  async function deleteArrowBlock(blockId: number) {
+    setSelected((s) => (s?.kind === 'arrow' && s.blockId === blockId ? null : s));
     setBlocks((prev) => prev.filter((b) => b.id !== blockId));
     await getBrowserClient().from('qa_canvas_blocks').delete().eq('id', blockId);
   }
@@ -447,6 +598,8 @@ export function CanvasView({
     if (sel.kind === 'sticky') {
       // Deleting a report is a full teardown — always route through the confirm popover.
       setConfirmDelete(sel.reportId);
+    } else if (sel.kind === 'arrow') {
+      await deleteArrowBlock(sel.blockId);
     } else {
       setSelected(null);
       await deleteTextBlock(sel.blockId);
@@ -533,10 +686,20 @@ export function CanvasView({
     const target = e.target as HTMLElement;
     if (target.closest('[data-pane]')) return;
     if (confirmDelete !== null) setConfirmDelete(null);
+
+    // Arrows live in the SVG layer — clicking one selects it (no drag). The
+    // placement tools ignore arrows so a note can still be dropped over one.
+    const arrowEl = target.closest<SVGElement>('[data-arrow]');
+    const arrowId = Number(arrowEl?.dataset.arrow ?? NaN);
+    if (Number.isFinite(arrowId) && tool !== 'sticky' && tool !== 'text') {
+      setSelected({ kind: 'arrow', blockId: arrowId });
+      return;
+    }
+
     const blockEl = target.closest<HTMLElement>('[data-block]');
     const key = blockEl?.dataset.block ?? null;
 
-    if (tool !== 'select' && !key) {
+    if ((tool === 'sticky' || tool === 'text') && !key) {
       const p = worldPoint(e);
       if (tool === 'sticky') void addSticky(p.x, p.y);
       else void addTextLabel(p.x, p.y);
@@ -545,10 +708,29 @@ export function CanvasView({
     }
     if (key && editingRef.current?.key === key) return; // caret placement inside the editor
 
+    if (tool === 'arrow' && key) {
+      // Arrow tool: press on a block starts a live connector out of it.
+      const p = worldPoint(e);
+      dragRef.current = { mode: 'arrow', key, startX: e.clientX, startY: e.clientY, origX: 0, origY: 0, moved: false };
+      setArrowDraft({ fromKey: key, x: p.x, y: p.y });
+      vpRef.current?.setPointerCapture(e.pointerId);
+      return;
+    }
+
     if (key) {
       const base = posByKey.get(key);
       if (!base) return;
-      dragRef.current = { mode: 'move', key, startX: e.clientX, startY: e.clientY, origX: base.x, origY: base.y, moved: false };
+      const dragged = key.startsWith('s') ? reports.find((r) => r.id === Number(key.slice(1))) : undefined;
+      dragRef.current = {
+        mode: 'move',
+        key,
+        startX: e.clientX,
+        startY: e.clientY,
+        origX: base.x,
+        origY: base.y,
+        moved: false,
+        fromSection: dragged ? effectiveSection(dragged) : undefined,
+      };
     } else {
       dragRef.current = { mode: 'pan', key: null, startX: e.clientX, startY: e.clientY, origX: view.x, origY: view.y, moved: false };
       setPanning(true);
@@ -562,8 +744,25 @@ export function CanvasView({
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
-    if (d.mode === 'pan') setView((v) => ({ ...v, x: d.origX + dx, y: d.origY + dy }));
-    else if (d.key) setLivePos({ key: d.key, x: d.origX + dx / view.scale, y: d.origY + dy / view.scale });
+    if (d.mode === 'pan') {
+      setView((v) => ({ ...v, x: d.origX + dx, y: d.origY + dy }));
+    } else if (d.mode === 'arrow') {
+      const p = worldPoint(e);
+      setArrowDraft((prev) => (prev ? { ...prev, x: p.x, y: p.y } : prev));
+    } else if (d.key) {
+      setLivePos({ key: d.key, x: d.origX + dx / view.scale, y: d.origY + dy / view.scale });
+      if (d.key.startsWith('s')) {
+        // Live drop-target feedback: hit-test the POINTER's world position
+        // against section rects; a section a join would grow also expands.
+        const p = worldPoint(e);
+        const hovered = sectionAt(sections, p.x, p.y);
+        setHoverSection((prev) => {
+          const next = hovered ? { name: hovered.name, expand: hovered.name !== d.fromSection } : null;
+          if (prev?.name === next?.name && prev?.expand === next?.expand) return prev;
+          return next;
+        });
+      }
+    }
   }
 
   function onPointerUp(e: React.PointerEvent) {
@@ -571,16 +770,41 @@ export function CanvasView({
     dragRef.current = null;
     setPanning(false);
     if (!d) return;
+    if (d.mode === 'arrow') {
+      // Resolve the release target through the DOM (pointer capture retargets
+      // events to the viewport, but elementFromPoint sees the real stack).
+      setArrowDraft(null);
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const toKey = el?.closest<HTMLElement>('[data-block]')?.dataset.block ?? null;
+      if (d.key && toKey && toKey !== d.key) {
+        void createArrow(d.key, toKey);
+        setTool('select'); // arrow placed — hand back to Move
+      }
+      return; // release over nothing (or the source block) cancels, tool stays
+    }
     if (d.mode === 'move' && d.key) {
       if (d.moved) {
         const x = d.origX + (e.clientX - d.startX) / view.scale;
         const y = d.origY + (e.clientY - d.startY) / view.scale;
-        if (d.key.startsWith('s')) persistStickyPos(Number(d.key.slice(1)), x, y);
-        else persistTextPos(Number(d.key.slice(1)), x, y);
+        if (d.key.startsWith('s')) {
+          const reportId = Number(d.key.slice(1));
+          const p = worldPoint(e);
+          const target = sectionAt(sections, p.x, p.y);
+          if (target && target.name !== d.fromSection) {
+            // Dropped inside another section — join it (snap to next free slot).
+            if (!dropIntoSection(reportId, target.name)) persistStickyPos(reportId, x, y);
+          } else {
+            // Own section or open canvas: keep the free-form dropped position.
+            persistStickyPos(reportId, x, y);
+          }
+        } else {
+          persistTextPos(Number(d.key.slice(1)), x, y);
+        }
       } else {
         selectKey(d.key);
       }
       setLivePos(null);
+      setHoverSection(null);
     } else if (d.mode === 'pan' && !d.moved) {
       setSelected(null);
       if (editingRef.current) (document.activeElement as HTMLElement | null)?.blur();
@@ -606,9 +830,12 @@ export function CanvasView({
       if (k === 'v') setTool('select');
       else if (k === 's') setTool('sticky');
       else if (k === 't') setTool('text');
+      else if (k === 'a') setTool('arrow');
       else if (k === 'escape') {
         setConfirmDelete(null);
         setSelected(null);
+        setArrowDraft(null);
+        if (dragRef.current?.mode === 'arrow') dragRef.current = null;
       } else if ((k === 'delete' || k === 'backspace') && selectedRef.current) {
         e.preventDefault();
         void deleteSelected();
@@ -717,10 +944,10 @@ export function CanvasView({
       <div
         ref={vpRef}
         role="application"
-        aria-label="Canvas board — drag to pan, V/S/T tools, double-click a sticky to edit"
+        aria-label="Canvas board — drag to pan, V/S/T/A tools, double-click a sticky to edit"
         className={`relative h-[max(480px,calc(100dvh-192px))] overflow-hidden rounded-b-[14px] border border-line bg-canvas shadow-card ${
           tool !== 'select' ? 'cursor-crosshair' : panning ? 'cursor-grabbing' : 'cursor-grab'
-        }`}
+        } ${tool === 'arrow' ? '[&_[data-block]]:cursor-crosshair' : ''}`}
         style={{ touchAction: 'none' }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -753,9 +980,38 @@ export function CanvasView({
             }}
           />
 
-          {sections.map((s) => (
-            <SectionBox key={s.name} section={s} />
-          ))}
+          {sections.map((s) => {
+            const hovered = hoverSection?.name === s.name;
+            // Preview the grown rect: the height with one more member, or a
+            // small breath when the next slot already fits in the last row.
+            const previewH =
+              hovered && hoverSection.expand
+                ? Math.max(sectionHeight(s.count + 1, s.cols), s.h + 10)
+                : undefined;
+            return <SectionBox key={s.name} section={s} hovered={hovered} previewH={previewH} />;
+          })}
+
+          {/* World SVG layer — arrows sit above sections, under the blocks they
+              connect. pointer-events is inherited-off; each arrow's fat hit
+              path re-enables it for click-to-select. */}
+          <svg
+            width={worldW}
+            height={worldH}
+            viewBox={`0 0 ${worldW} ${worldH}`}
+            className="absolute left-0 top-0"
+            style={{ pointerEvents: 'none', overflow: 'visible' }}
+          >
+            {arrowItems.map((a) => (
+              <ArrowLine
+                key={a.id}
+                id={a.id}
+                from={a.from}
+                to={a.to}
+                selected={selected?.kind === 'arrow' && selected.blockId === a.id}
+              />
+            ))}
+            {draftArrowLine ? <ArrowLine from={draftArrowLine.from} to={draftArrowLine.to} /> : null}
+          </svg>
 
           {pairItems.map((p) => (
             <BlockPair
@@ -768,6 +1024,7 @@ export function CanvasView({
               removing={fadingIds.has(p.report.id)}
               edit={editProps(`s${p.report.id}`)}
               confirmingDelete={confirmDelete === p.report.id}
+              onEdit={() => startEdit(`s${p.report.id}`)}
               onRequestDelete={() => setConfirmDelete(p.report.id)}
               onConfirmDelete={() => void destroyReport(p.report.id)}
               onCancelDelete={() => setConfirmDelete(null)}
@@ -782,6 +1039,8 @@ export function CanvasView({
               y={t.y}
               selected={selected?.kind === 'text' && selected.blockId === t.block.id}
               edit={editProps(`t${t.block.id}`)}
+              onEdit={() => startEdit(`t${t.block.id}`)}
+              onDelete={() => void deleteTextBlock(t.block.id)}
             />
           ))}
 

@@ -1,4 +1,5 @@
-// DB row shapes — hand-derived from db/0001_qa_schema.sql (no codegen).
+// DB row shapes — hand-derived from db/0001_qa_schema.sql + later migrations
+// (0002 canvas blocks, 0004 arrows/sections). No codegen.
 
 export type ReportKind = 'bug' | 'feature';
 
@@ -150,9 +151,26 @@ export interface QaMessage {
   created_at: string;
 }
 
-export type CanvasBlockKind = 'pos' | 'text';
+export type CanvasBlockKind = 'pos' | 'text' | 'arrow';
 
-/** qa_canvas_blocks — kind 'pos' pins a report's sticky on /canvas; kind 'text' is a free label. */
+/** One end of a canvas arrow — a report block pair or a free text label. */
+export interface ArrowEndpoint {
+  t: 'report' | 'text';
+  /** report endpoints use qa_reports.id; text endpoints use the qa_canvas_blocks row id. */
+  id: number;
+}
+
+/** qa_canvas_blocks.meta for kind='arrow'. */
+export interface ArrowMeta {
+  from: ArrowEndpoint;
+  to: ArrowEndpoint;
+}
+
+/**
+ * qa_canvas_blocks (db/0002 + db/0004) — kind 'pos' pins a report's block pair
+ * on /canvas (with an optional `section` override for which section it belongs
+ * to); kind 'text' is a free label; kind 'arrow' connects two blocks via meta.
+ */
 export interface QaCanvasBlock {
   id: number;
   kind: CanvasBlockKind;
@@ -160,6 +178,10 @@ export interface QaCanvasBlock {
   text: string | null;
   x: number;
   y: number;
+  /** Arrow endpoints (kind='arrow'); null for other kinds. Runtime-guarded before use. */
+  meta: ArrowMeta | null;
+  /** Section key override (kind='pos') — wins over the route-derived section mapping. */
+  section: string | null;
   updated_by: string | null;
   updated_at: string;
 }

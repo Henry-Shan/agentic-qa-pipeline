@@ -6,7 +6,7 @@
 // and reaches these through data-block attributes + the edit props.
 
 import type { FocusEvent, KeyboardEvent, Ref } from 'react';
-import { PAIR_GAP, SHOT_H, SHOT_W, STICKY_W, type SectionSpec } from '@/lib/canvas-layout';
+import { PAIR_GAP, SHOT_H, SHOT_W, STICKY_W, type Point, type SectionSpec } from '@/lib/canvas-layout';
 import { STATUS_PILL } from '@/lib/status';
 import { initialOf, relativeAge } from '@/lib/format';
 import { useDisplayName } from '@/lib/display-names';
@@ -36,12 +36,32 @@ function MiniPill({ status }: { status: ReportStatus }) {
   );
 }
 
-/** Fixed Figma-style section: tinted rounded rect with a chunky label chip. */
-export function SectionBox({ section }: { section: SectionSpec }) {
+/**
+ * Fixed Figma-style section: tinted rounded rect with a chunky label chip.
+ * While a report block is dragged over it, `hovered` lights it up as a drop
+ * target and `previewH` (when joining would grow it) expands the rect to show
+ * room being made for one more grid slot — purely visual, layout is untouched.
+ */
+export function SectionBox({
+  section,
+  hovered,
+  previewH,
+}: {
+  section: SectionSpec;
+  hovered?: boolean;
+  previewH?: number;
+}) {
   return (
     <div
-      className="absolute rounded-2xl bg-section"
-      style={{ left: section.x, top: section.y, width: section.w, height: section.h }}
+      className="absolute rounded-2xl transition-[height,background-color,box-shadow] duration-150 ease-out"
+      style={{
+        left: section.x,
+        top: section.y,
+        width: section.w,
+        height: previewH ?? section.h,
+        background: hovered ? 'color-mix(in srgb, var(--qa) 8%, var(--section))' : 'var(--section)',
+        boxShadow: hovered ? '0 0 0 1.5px var(--qa-bright)' : undefined,
+      }}
       aria-hidden
     >
       <span className="absolute left-3 top-2.5 inline-block rounded-[9px] bg-ink-3/85 px-3 py-1 text-[15px] font-bold leading-[1.4] text-white">
@@ -64,6 +84,7 @@ export function BlockPair({
   removing,
   edit,
   confirmingDelete,
+  onEdit,
   onRequestDelete,
   onConfirmDelete,
   onCancelDelete,
@@ -78,6 +99,8 @@ export function BlockPair({
   removing: boolean;
   edit: EditProps | null;
   confirmingDelete: boolean;
+  /** Pencil hover button — enters edit mode directly (same as double-click). */
+  onEdit: () => void;
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
@@ -154,6 +177,17 @@ export function BlockPair({
         >
           <TrashIcon size={12} />
         </button>
+        {!editing ? (
+          <button
+            data-pane
+            onClick={onEdit}
+            aria-label="Edit note"
+            title="Edit"
+            className="absolute right-6 top-1 grid size-5 place-items-center rounded text-[11px] leading-none text-current opacity-0 transition-opacity hover:opacity-100! group-hover:opacity-50"
+          >
+            ✎
+          </button>
+        ) : null}
         <div
           ref={edit?.ref}
           contentEditable={editing}
@@ -194,18 +228,23 @@ export function TextLabel({
   y,
   selected,
   edit,
+  onEdit,
+  onDelete,
 }: {
   block: QaCanvasBlock;
   x: number;
   y: number;
   selected: boolean;
   edit: EditProps | null;
+  /** Pencil hover button — enters edit mode directly (same as double-click). */
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   const editing = edit !== null;
   return (
     <div
       data-block={`t${block.id}`}
-      className={`absolute min-w-[60px] max-w-[300px] select-none px-1.5 py-1 text-[13px] font-semibold text-ink-2 ${
+      className={`group absolute min-w-[60px] max-w-[300px] select-none px-1.5 py-1 text-[13px] font-semibold text-ink-2 ${
         selected ? 'rounded outline outline-2 outline-offset-2 outline-qa-bright' : ''
       } ${editing ? 'cursor-text' : 'cursor-move'}`}
       style={{ left: x, top: y, zIndex: selected || editing ? 10 : undefined }}
@@ -221,6 +260,87 @@ export function TextLabel({
       >
         {editing ? edit.snapshot : (block.text ?? '')}
       </div>
+      {!editing ? (
+        <span className="absolute left-full top-1/2 ml-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            data-pane
+            onClick={onEdit}
+            aria-label="Edit label"
+            title="Edit"
+            className="grid size-5 place-items-center rounded border border-line bg-stage text-[11px] leading-none text-ink-3 shadow-card hover:text-ink"
+          >
+            ✎
+          </button>
+          <button
+            data-pane
+            onClick={onDelete}
+            aria-label="Delete label"
+            title="Delete"
+            className="grid size-5 place-items-center rounded border border-line bg-stage text-ink-3 shadow-card hover:text-red"
+          >
+            <TrashIcon size={11} />
+          </button>
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * FigJam-style connector rendered in the world SVG layer: a subtle dashed
+ * quadratic curve between two blocks' nearest edge midpoints with a solid
+ * arrowhead at the target. When `id` is set, a fat transparent twin path makes
+ * the whole curve clickable (data-arrow → selection in canvas-view). Pure math
+ * from the two anchor points — identical on server and client.
+ */
+export function ArrowLine({
+  id,
+  from,
+  to,
+  selected,
+}: {
+  /** qa_canvas_blocks row id; omitted for the live draft arrow while dragging. */
+  id?: number;
+  from: Point;
+  to: Point;
+  selected?: boolean;
+}) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Subtle perpendicular bow — grows with distance, capped so long arrows stay calm.
+  const bow = Math.min(48, len * 0.14);
+  const cx = (from.x + to.x) / 2 + (-dy / len) * bow;
+  const cy = (from.y + to.y) / 2 + (dx / len) * bow;
+  // Head sits along the end tangent (control point → target).
+  const hx = to.x - cx;
+  const hy = to.y - cy;
+  const hlen = Math.hypot(hx, hy) || 1;
+  const ux = hx / hlen;
+  const uy = hy / hlen;
+  const HEAD = 8;
+  // Pull the dashed curve back so it ends where the head begins.
+  const endX = to.x - ux * (HEAD - 2);
+  const endY = to.y - uy * (HEAD - 2);
+  const d = `M ${from.x} ${from.y} Q ${cx} ${cy} ${endX} ${endY}`;
+  const headD = `M ${to.x} ${to.y} L ${to.x - ux * HEAD - uy * HEAD * 0.42} ${
+    to.y - uy * HEAD + ux * HEAD * 0.42
+  } L ${to.x - ux * HEAD + uy * HEAD * 0.42} ${to.y - uy * HEAD - ux * HEAD * 0.42} Z`;
+  const color = selected ? 'var(--qa-bright)' : '#9AA4AF';
+  return (
+    <g>
+      <path d={d} fill="none" stroke={color} strokeWidth={1.8} strokeDasharray="6 5" strokeLinecap="round" />
+      <path d={headD} fill={color} stroke="none" />
+      {id !== undefined ? (
+        <path
+          d={d}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={14}
+          data-arrow={id}
+          style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+        />
+      ) : null}
+    </g>
   );
 }
