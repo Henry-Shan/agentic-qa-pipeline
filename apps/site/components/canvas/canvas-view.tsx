@@ -1,9 +1,10 @@
 'use client';
 
-// /canvas — the living Figma board. Screens (one frame per route), report
-// stickies wired to their screen, free text labels, pan/zoom, drag-persist,
-// edit-in-place, and add-block tools. Data flows: server-fetched initial state
-// → Supabase realtime (5s poll fallback) → optimistic local writes.
+// /canvas — the living Figma board. Fixed section containers (directory,
+// inventory, …), one independent block pair per report (screenshot card +
+// sticky note), free text labels, pan/zoom, drag-persist, edit-in-place, and
+// add-block tools. Data flows: server-fetched initial state → Supabase
+// realtime (5s poll fallback) → optimistic local writes.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -11,25 +12,17 @@ import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
 import { latestByReport, upsertReport } from '@/lib/merge';
 import {
-  DEFAULT_FRAME_H,
-  DEFAULT_STICKY_H,
-  FRAME_W,
-  FRAME_Y,
-  SPINE_Y,
-  STICKY_W,
-  autoPlace,
-  computeFrames,
-  humanizeRoute,
-  nearestEdgeMidpoint,
-  nearestFrameRoute,
-  routeOf,
-  stickyEdgePoint,
-  wirePath,
-  type FrameSpec,
+  PAIR_H,
+  PAIR_W,
+  SECTION_ROUTE,
+  computeSections,
+  defaultPairPos,
+  sectionAt,
+  sectionOf,
 } from '@/lib/canvas-layout';
 import type { QaCanvasBlock, QaReport, QaRun } from '@/lib/types';
 import { ViewSwitch } from '@/components/view-switch';
-import { ScreenFrame, StickyNote, TextLabel, type EditProps } from '@/components/canvas/canvas-items';
+import { BlockPair, SectionBox, TextLabel, type EditProps } from '@/components/canvas/canvas-items';
 import { TaskPane } from '@/components/canvas/task-pane';
 
 type Tool = 'select' | 'sticky' | 'text';
@@ -53,8 +46,8 @@ const TOOLS: ReadonlyArray<{ key: Tool; label: string; kbd: string }> = [
 ];
 
 const HINTS: Record<Tool, string> = {
-  select: 'Move tool — drag stickies, double-click to edit',
-  sticky: 'Click anywhere to drop a sticky — it files a real report',
+  select: 'Move tool — drag blocks, double-click to edit',
+  sticky: 'Click inside a section to drop a note — it files a real report',
   text: 'Click anywhere to add a text label',
 };
 
@@ -90,7 +83,8 @@ export function CanvasView({
   const [selected, setSelected] = useState<Selection | null>(null);
   const [editing, setEditing] = useState<{ key: string; snapshot: string } | null>(null);
   const [livePos, setLivePos] = useState<{ key: string; x: number; y: number } | null>(null);
-  const [, setSizeTick] = useState(0); // bumps when a measured element resizes → wires recompute
+  /** Report id whose "Delete everything?" popover is open. */
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
 
   const vpRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -103,14 +97,6 @@ export function CanvasView({
   /** Reports/text labels created from this canvas session, still unconfirmed by a first edit. */
   const draftReportIds = useRef(new Set<number>());
   const draftTextIds = useRef(new Set<number>());
-  const sizes = useRef(new Map<string, { w: number; h: number }>());
-
-  const onSize = useCallback((key: string, w: number, h: number) => {
-    const prev = sizes.current.get(key);
-    if (prev && Math.abs(prev.w - w) < 0.5 && Math.abs(prev.h - h) < 0.5) return;
-    sizes.current.set(key, { w, h });
-    setSizeTick((t) => t + 1);
-  }, []);
 
   const mergeBlock = useCallback((block: QaCanvasBlock) => {
     setBlocks((prev) => upsertBlock(prev, block));
@@ -169,27 +155,38 @@ export function CanvasView({
     },
   );
 
-  // ---------- derived layout (deterministic; auto-placement is index-based) ----------
+  // ---------- derived layout (deterministic; default placement is index-based) ----------
 
   const active = reports.filter((r) => r.status !== 'cancelled');
-  const frames = computeFrames(active);
+  const sections = computeSections(active);
+  const sectionByName = new Map(sections.map((s) => [s.name, s]));
 
   const posByReport = new Map<number, QaCanvasBlock>();
   for (const b of blocks) {
     if (b.kind === 'pos' && b.report_id !== null) posByReport.set(b.report_id, b);
   }
 
-  const stickyItems: Array<{ report: QaReport; frame: FrameSpec; x: number; y: number }> = [];
-  for (const frame of frames) {
-    let autoIdx = 0;
-    const group = active.filter((r) => routeOf(r) === frame.route).sort((a, b) => a.id - b.id);
-    for (const report of group) {
+  // Every report keeps its index slot in its section's grid (sorted by id), so
+  // slots never reshuffle when a neighbour is dragged away.
+  const pairItems: Array<{ report: QaReport; x: number; y: number }> = [];
+  const bySection = new Map<ReturnType<typeof sectionOf>, QaReport[]>();
+  for (const report of active) {
+    const name = sectionOf(report.route);
+    const group = bySection.get(name);
+    if (group) group.push(report);
+    else bySection.set(name, [report]);
+  }
+  for (const [name, group] of bySection) {
+    const section = sectionByName.get(name);
+    if (!section) continue;
+    group.sort((a, b) => a.id - b.id);
+    group.forEach((report, index) => {
       const saved = posByReport.get(report.id);
-      const base = saved ? { x: saved.x, y: saved.y } : autoPlace(frame.x, autoIdx++);
+      const base = saved ? { x: saved.x, y: saved.y } : defaultPairPos(section, index);
       const key = `s${report.id}`;
       const p = livePos?.key === key ? livePos : base;
-      stickyItems.push({ report, frame, x: p.x, y: p.y });
-    }
+      pairItems.push({ report, x: p.x, y: p.y });
+    });
   }
 
   const textItems = blocks
@@ -201,40 +198,23 @@ export function CanvasView({
     });
 
   const posByKey = new Map<string, { x: number; y: number }>();
-  for (const s of stickyItems) posByKey.set(`s${s.report.id}`, { x: s.x, y: s.y });
+  for (const s of pairItems) posByKey.set(`s${s.report.id}`, { x: s.x, y: s.y });
   for (const t of textItems) posByKey.set(`t${t.block.id}`, { x: t.x, y: t.y });
-
-  const sizeOf = (key: string) => sizes.current.get(key);
-
-  const wires = stickyItems.map((s) => {
-    const sz = sizeOf(`s${s.report.id}`) ?? { w: STICKY_W, h: DEFAULT_STICKY_H };
-    const frameH = sizeOf(`f${s.frame.route}`)?.h ?? DEFAULT_FRAME_H;
-    const to = nearestEdgeMidpoint(
-      { x: s.frame.x, y: FRAME_Y, w: FRAME_W, h: frameH },
-      s.x + sz.w / 2,
-      s.y + sz.h / 2,
-    );
-    const from = stickyEdgePoint({ x: s.x, y: s.y, w: sz.w, h: sz.h }, to);
-    return { id: s.report.id, d: wirePath(from, to), to };
-  });
 
   let worldW = 1700;
   let worldH = 900;
-  for (const f of frames) {
-    worldW = Math.max(worldW, f.x + FRAME_W + 320);
-    worldH = Math.max(worldH, FRAME_Y + (sizeOf(`f${f.route}`)?.h ?? DEFAULT_FRAME_H) + 320);
+  for (const s of sections) {
+    worldW = Math.max(worldW, s.x + s.w + 220);
+    worldH = Math.max(worldH, s.y + s.h + 220);
   }
-  for (const s of stickyItems) {
-    worldW = Math.max(worldW, s.x + 340);
-    worldH = Math.max(worldH, s.y + 300);
+  for (const p of pairItems) {
+    worldW = Math.max(worldW, p.x + PAIR_W + 220);
+    worldH = Math.max(worldH, p.y + PAIR_H + 220);
   }
   for (const t of textItems) {
     worldW = Math.max(worldW, t.x + 340);
     worldH = Math.max(worldH, t.y + 120);
   }
-
-  const spineFirst = frames[0];
-  const spineLast = frames[frames.length - 1];
 
   // ---------- persistence ----------
 
@@ -279,8 +259,9 @@ export function CanvasView({
 
   async function addSticky(wx: number, wy: number) {
     // A canvas sticky is a REAL report: it queues and autofires like any other.
+    // The route comes from the SECTION the click lands in.
     const supabase = getBrowserClient();
-    const route = frames.length > 0 ? nearestFrameRoute(frames, wx) : '/';
+    const route = SECTION_ROUTE[sectionAt(sections, wx, wy)?.name ?? 'other'];
     const { data, error } = await supabase
       .from('qa_reports')
       .insert({
@@ -296,7 +277,7 @@ export function CanvasView({
     if (error || !data) return;
     const report = data as QaReport;
     draftReportIds.current.add(report.id);
-    const x = wx - STICKY_W / 2;
+    const x = wx - PAIR_W / 2;
     const y = wy - 20;
     const { data: blockRow } = await supabase
       .from('qa_canvas_blocks')
@@ -388,20 +369,31 @@ export function CanvasView({
       .eq('id', blockId);
   }
 
+  /**
+   * "Delete everything" for a report: queue a `destroy` message (the worker
+   * tears down the run, PR, worktree, and row) and cancel the report so it
+   * disappears from views immediately.
+   */
+  async function destroyReport(reportId: number) {
+    setConfirmDelete(null);
+    setSelected((s) => (s?.kind === 'sticky' && s.reportId === reportId ? null : s));
+    draftReportIds.current.delete(reportId);
+    setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status: 'cancelled' as const } : r)));
+    const supabase = getBrowserClient();
+    await supabase
+      .from('qa_messages')
+      .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' });
+    await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId);
+  }
+
   const deleteSelected = useCallback(async () => {
     const sel = selectedRef.current;
     if (!sel) return;
-    setSelected(null);
-    const supabase = getBrowserClient();
     if (sel.kind === 'sticky') {
-      // Never hard-delete someone's report from the canvas — cancel it instead.
-      const id = sel.reportId;
-      draftReportIds.current.delete(id);
-      setReports((prev) => prev.map((r) => (r.id === id ? { ...r, status: 'cancelled' as const } : r)));
-      setBlocks((prev) => prev.filter((b) => b.report_id !== id));
-      await supabase.from('qa_canvas_blocks').delete().eq('report_id', id);
-      await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', id);
+      // Deleting a report is a full teardown — always route through the confirm popover.
+      setConfirmDelete(sel.reportId);
     } else {
+      setSelected(null);
       await deleteTextBlock(sel.blockId);
     }
   }, []);
@@ -485,6 +477,7 @@ export function CanvasView({
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest('[data-pane]')) return;
+    if (confirmDelete !== null) setConfirmDelete(null);
     const blockEl = target.closest<HTMLElement>('[data-block]');
     const key = blockEl?.dataset.block ?? null;
 
@@ -558,8 +551,10 @@ export function CanvasView({
       if (k === 'v') setTool('select');
       else if (k === 's') setTool('sticky');
       else if (k === 't') setTool('text');
-      else if (k === 'escape') setSelected(null);
-      else if ((k === 'delete' || k === 'backspace') && selectedRef.current) {
+      else if (k === 'escape') {
+        setConfirmDelete(null);
+        setSelected(null);
+      } else if ((k === 'delete' || k === 'backspace') && selectedRef.current) {
         e.preventDefault();
         void deleteSelected();
       }
@@ -648,71 +643,22 @@ export function CanvasView({
             touchAction: 'none',
           }}
         >
-          <svg
-            className="pointer-events-none absolute left-0 top-0 overflow-visible"
-            width={worldW}
-            height={worldH}
-            aria-hidden
-          >
-            {/* section hierarchy: dashed spine across the top + a drop arrow per screen */}
-            {spineFirst && spineLast ? (
-              <path
-                d={`M ${spineFirst.x - 130} ${SPINE_Y} L ${spineLast.x + 270} ${SPINE_Y}`}
-                fill="none"
-                stroke="var(--wire)"
-                strokeWidth={2}
-                strokeDasharray="7 6"
-                opacity={0.8}
-              />
-            ) : null}
-            {frames.map((f) => (
-              <g key={f.route}>
-                <path
-                  d={`M ${f.x + 10} ${SPINE_Y} L ${f.x + 10} ${SPINE_Y + 48}`}
-                  fill="none"
-                  stroke="var(--wire)"
-                  strokeWidth={2}
-                  strokeDasharray="7 6"
-                  opacity={0.8}
-                />
-                <polygon
-                  points={`${f.x + 10},${SPINE_Y + 56} ${f.x + 4},${SPINE_Y + 44} ${f.x + 16},${SPINE_Y + 44}`}
-                  fill="var(--wire)"
-                />
-              </g>
-            ))}
-            {/* sticky → screen wires */}
-            {wires.map((w) => (
-              <g key={w.id}>
-                <path d={w.d} fill="none" stroke="var(--wire)" strokeWidth={1.7} strokeDasharray="5 5" />
-                <circle cx={w.to.x} cy={w.to.y} r={3.5} fill="var(--qa-bright)" />
-              </g>
-            ))}
-          </svg>
-
-          {frames.map((f) => (
-            <div
-              key={`zone-${f.route}`}
-              className="absolute bg-canvas px-2.5 text-[15px] font-bold tracking-[0.01em] text-ink-2"
-              style={{ left: f.x - 70, top: SPINE_Y - 14 }}
-            >
-              {humanizeRoute(f.route)}
-            </div>
+          {sections.map((s) => (
+            <SectionBox key={s.name} section={s} />
           ))}
 
-          {frames.map((f) => (
-            <ScreenFrame key={f.route} frame={f} onSize={onSize} />
-          ))}
-
-          {stickyItems.map((s) => (
-            <StickyNote
-              key={s.report.id}
-              report={s.report}
-              x={s.x}
-              y={s.y}
-              selected={selected?.kind === 'sticky' && selected.reportId === s.report.id}
-              edit={editProps(`s${s.report.id}`)}
-              onSize={onSize}
+          {pairItems.map((p) => (
+            <BlockPair
+              key={p.report.id}
+              report={p.report}
+              x={p.x}
+              y={p.y}
+              selected={selected?.kind === 'sticky' && selected.reportId === p.report.id}
+              edit={editProps(`s${p.report.id}`)}
+              confirmingDelete={confirmDelete === p.report.id}
+              onRequestDelete={() => setConfirmDelete(p.report.id)}
+              onConfirmDelete={() => void destroyReport(p.report.id)}
+              onCancelDelete={() => setConfirmDelete(null)}
             />
           ))}
 
@@ -728,9 +674,9 @@ export function CanvasView({
           ))}
 
           {active.length === 0 && textItems.length === 0 ? (
-            <div className="absolute text-[13px] text-ink-3" style={{ left: 250, top: 150 }}>
-              No reports yet — press <b className="text-ink-2">S</b> and click to drop a note, or file one from the
-              widget.
+            <div className="absolute text-[13px] text-ink-3" style={{ left: 250, top: 20 }}>
+              No reports yet — press <b className="text-ink-2">S</b> and click inside a section to drop a note, or
+              file one from the widget.
             </div>
           ) : null}
         </div>

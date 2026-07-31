@@ -67,28 +67,32 @@ interface SpawnSpec {
   envelopePath?: string;
 }
 
-// Serialize dispatch STARTS: ship-task's setup-worktree pulls the base branch
-// in the runner checkout, and two concurrent setups corrupt it. The gate lets
-// the caller return as soon as ITS spawn happened, but holds the NEXT spawn
-// for dispatchStaggerMs.
-let spawnGate: Promise<void> = Promise.resolve();
+// Serialize sections that touch the runner checkout: ship-task's setup-worktree
+// pulls the base branch there, and destroy's teardown-worktree.sh mutates its
+// worktree registrations — two concurrent ones corrupt it. Dispatch STARTS and
+// report destroys share this single FIFO gate.
+let runnerGate: Promise<void> = Promise.resolve();
 
+/** Run fn exclusively w.r.t. every other runner-checkout critical section. */
+export function withRunnerLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = runnerGate;
+  let release!: () => void;
+  runnerGate = new Promise<void>((r) => {
+    release = r;
+  });
+  return prev.then(fn).finally(release);
+}
+
+// The gate lets the caller return as soon as ITS spawn happened, but holds the
+// NEXT critical section for dispatchStaggerMs.
 function spawnGated(ctx: Ctx, spec: SpawnSpec): Promise<ChildProcess> {
   return new Promise((resolve, reject) => {
-    const prev = spawnGate;
-    let release!: () => void;
-    spawnGate = new Promise<void>((r) => {
-      release = r;
-    });
-    void prev.then(async () => {
+    void withRunnerLock(async () => {
       try {
-        const child = spawnClaude(ctx, spec);
-        resolve(child);
+        resolve(spawnClaude(ctx, spec));
         await sleep(ctx.cfg.mockDispatch ? 0 : ctx.cfg.dispatchStaggerMs);
       } catch (e) {
         reject(e as Error);
-      } finally {
-        release();
       }
     });
   });

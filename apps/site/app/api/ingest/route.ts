@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
   //  (b) `x-qa-token` static token (no Authorization header) — timing-safe
   //      compare; body reporterEmail is trusted as before.
   let verifiedEmail: string | null = null;
+  let verifiedDisplayName: string | null = null;
   const authorization = request.headers.get('authorization');
   if (authorization) {
     const jwt = /^bearer\s+(.+)$/i.exec(authorization.trim())?.[1]?.trim();
@@ -72,13 +73,14 @@ export async function POST(request: NextRequest) {
     }
     const { data: allowed } = await admin
       .from('qa_allowed_emails')
-      .select('email')
+      .select('email, display_name')
       .eq('email', email)
       .maybeSingle();
     if (!allowed) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403, headers });
     }
     verifiedEmail = email;
+    verifiedDisplayName = (allowed as { display_name?: string | null }).display_name ?? null;
   } else {
     const expected = process.env.QA_INGEST_TOKEN;
     const provided = request.headers.get('x-qa-token') ?? '';
@@ -134,6 +136,9 @@ export async function POST(request: NextRequest) {
       // best-effort enrichment only
     }
   }
+  // The tester's chosen QA display name wins over the the host app profile name
+  // (which stays as the fallback set above).
+  if (verifiedDisplayName) appContext.reporterName = verifiedDisplayName;
 
   const title = body.description.slice(0, 80).trim() || `Bug on ${body.route}`;
 

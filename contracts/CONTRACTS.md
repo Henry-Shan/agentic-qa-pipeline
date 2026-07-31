@@ -48,6 +48,22 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 
 `qa_reports.status`: `queued | running | pr_ready | preview | rework | verified | shipped | failed | blocked | stopped | cancelled`
 
+`qa_messages.kind` now includes **`destroy`** — full teardown request for a report. The worker,
+on a pending destroy message: SIGINT any live run · stop the preview server · run the repo's
+`teardown-worktree.sh` on the run's worktree · close the PR and delete its remote branch
+(`gh pr close <n> --delete-branch`, non-fatal if already closed/merged) · delete the report's
+screenshots from the `qa-screenshots` bucket · hard-delete the `qa_reports` row (cascades runs/
+events/messages/canvas pos) · remove `~/.qa-pipeline/runs/<id>`. The UI sets the report status
+to `cancelled` immediately when queueing a destroy so it disappears from views; the row's actual
+deletion lands when the worker completes.
+
+**Display names**: `qa_allowed_emails.display_name` (chosen at login from `qa_tester_names`,
+which testers may append to; seeded: owner, mika) is the identity ALL UI surfaces show —
+board cards, canvas stickies, task meta, events, `updated_by` labels — falling back to the
+email local-part when unset. `reporter_email` remains the auth truth; the login flow saves the
+choice via `POST /api/enroll` (`{code?, name}`), and ingest copies it into
+`app_context.reporterName` (taking precedence over the the host app profile name).
+
 `qa_runs.phase` (live pipeline label): `starting | grounding | testing | implementing | verifying | feature_test | pr | preview | done`
 
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.

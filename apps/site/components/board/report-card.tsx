@@ -1,5 +1,8 @@
+'use client';
+
 import Link from 'next/link';
-import { initialOf, nameOf, relativeAge } from '@/lib/format';
+import { initialOf, relativeAge } from '@/lib/format';
+import { useDisplayName } from '@/lib/display-names';
 import type { QaReport, QaRun } from '@/lib/types';
 import { StatusPill } from '@/components/status-pill';
 import { Pipeline } from '@/components/pipeline';
@@ -7,6 +10,7 @@ import { Pipeline } from '@/components/pipeline';
 export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
   const fixing = report.status === 'running' || report.status === 'rework';
   const codeHint = report.source_file ?? report.component;
+  const reporter = useDisplayName(report.reporter_email);
 
   return (
     <Link
@@ -17,9 +21,9 @@ export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
         <div className="min-w-0">
           <h3 className="text-[14.5px] font-semibold">{report.title}</h3>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-ink-3">
-            <span className="flex items-center gap-1.5">
-              <span className="avatar">{initialOf(report.reporter_email)}</span>
-              {nameOf(report.reporter_email)} ·{' '}
+            <span className="flex items-center gap-1.5" title={report.reporter_email ?? undefined}>
+              <span className="avatar">{initialOf(reporter)}</span>
+              {reporter} ·{' '}
               <span suppressHydrationWarning>{relativeAge(report.created_at)}</span>
             </span>
             <span

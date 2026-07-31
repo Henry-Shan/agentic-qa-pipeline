@@ -1,4 +1,5 @@
 import type { QaMessage, QaReport } from './db';
+import { handleDestroy } from './destroy';
 import { killRunGroup, resumeRun, waitForExit } from './dispatch';
 import type { Ctx, RunHandle } from './state';
 import { log, nowIso } from './util';
@@ -20,8 +21,10 @@ export function startSteerLoop(ctx: Ctx): NodeJS.Timeout {
 
 async function tick(ctx: Ctx): Promise<void> {
   const msgs = await ctx.db.pendingMessages(ctx.cfg.onlyReportId);
-  // stops jump the queue: a steer-resume can take a while and must not delay one
-  const ordered = [...msgs].sort((a, b) => (a.kind === 'stop' ? 0 : 1) - (b.kind === 'stop' ? 0 : 1) || a.id - b.id);
+  // stops (then destroys) jump the queue: a steer-resume can take a while and
+  // must not delay one
+  const prio = (m: QaMessage): number => (m.kind === 'stop' ? 0 : m.kind === 'destroy' ? 1 : 2);
+  const ordered = [...msgs].sort((a, b) => prio(a) - prio(b) || a.id - b.id);
   for (const msg of ordered) {
     await handleMessage(ctx, msg);
   }
@@ -46,6 +49,8 @@ async function handleMessage(ctx: Ctx, msg: QaMessage): Promise<void> {
       return handleSteerOrBroken(ctx, msg, report, live ? handle : null);
     case 'answer':
       return handleOrphanAnswer(ctx, msg, report, live);
+    case 'destroy':
+      return handleDestroy(ctx, msg, report, live ? handle : null);
     default:
       await ctx.db.updateMessage(msg.id, 'done');
   }

@@ -1,7 +1,9 @@
 // End-to-end selftest against the REAL Supabase project (qa_ tables only),
 // with a MOCK dispatcher and MOCK preview server — no real claude spawn.
-// Asserts queued → running → pr_ready → preview(live) → verified, then cleans
-// up every row and tmp dir it created. Run: npm run selftest
+// Asserts queued → running → pr_ready → preview(live) → verified, then a
+// destroy leg (message kind `destroy` → preview dead, worktree gone, report
+// row hard-deleted with runs/messages cascade-gone; gh mocked away), then
+// cleans up every row and tmp dir it created. Run: npm run selftest
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,6 +41,15 @@ const results: StepResult[] = [];
 function record(name: string, ok: boolean, detail = ''): void {
   results.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`);
+}
+
+function readPid(pidFile: string): number | null {
+  try {
+    const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
 }
 
 async function check(name: string, pred: () => Promise<boolean>, timeoutMs: number): Promise<void> {
@@ -111,6 +122,33 @@ async function main(): Promise<void> {
       'verdict: verdict_fixed -> verified',
       async () => (await db.getReport(id))?.status === 'verified',
       30_000,
+    );
+
+    // ---- destroy leg: full teardown via a qa_messages kind 'destroy' ----
+    // The mock worktree is not a real git worktree, so teardown-worktree.sh
+    // fails non-fatally and the handler's rm fallback (guarded to
+    // WORKTREE_BASE) removes the dir.
+    const previewPid = worktree ? readPid(path.join(worktree, '.qa', 'preview.pid')) : null;
+    record('destroy: preview pid captured', previewPid !== null, `pid ${previewPid ?? 'none'}`);
+    if (previewPid === null) throw new Error('destroy leg: no preview pid to verify against');
+
+    await db.insertMessage({ report_id: id, kind: 'destroy', body: '', author_email: 'selftest@example.com' });
+    await check(
+      'destroy: qa_reports row gone',
+      async () => (await db.getReport(id)) === null,
+      120_000,
+    );
+    await check('destroy: preview process dead', async () => !pidAlive(previewPid), 15_000);
+    record('destroy: runs cascade-gone', (await db.runsForReport(id)).length === 0);
+    record('destroy: messages cascade-gone', (await db.messagesForReport(id)).length === 0);
+    record(
+      'destroy: mock worktree dir removed',
+      worktree !== null && !fs.existsSync(worktree),
+      worktree ?? '(no worktree)',
+    );
+    record(
+      'destroy: runs/<id> artifacts dir removed',
+      !fs.existsSync(path.join(scratchHome, 'runs', String(id))),
     );
   } catch (e) {
     if (results.every((r) => r.ok)) record('selftest', false, (e as Error).message);

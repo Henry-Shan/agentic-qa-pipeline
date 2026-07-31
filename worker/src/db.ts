@@ -16,7 +16,7 @@ export type ReportStatus =
   | 'cancelled';
 export type RunStatus = 'running' | 'done' | 'stopped' | 'failed' | 'limited';
 export type PreviewStatus = 'none' | 'starting' | 'live' | 'down';
-export type MessageKind = 'steer' | 'stop' | 'verdict_fixed' | 'verdict_broken' | 'answer';
+export type MessageKind = 'steer' | 'stop' | 'verdict_fixed' | 'verdict_broken' | 'answer' | 'destroy';
 export type MessageStatus = 'pending' | 'delivered' | 'done';
 
 // Row shapes hand-derived from db/0001_qa_schema.sql.
@@ -229,6 +229,12 @@ export class Db {
     return (r.data as QaRun | null) ?? null;
   }
 
+  async runsForReport(reportId: number): Promise<QaRun[]> {
+    const r = await this.c.from('qa_runs').select('*').eq('report_id', reportId).order('id', { ascending: true });
+    if (r.error) throw new Error(`runsForReport ${reportId}: ${r.error.message}`);
+    return (r.data as QaRun[] | null) ?? [];
+  }
+
   async latestRunWithPr(reportId: number): Promise<QaRun | null> {
     const r = await this.c
       .from('qa_runs')
@@ -332,6 +338,12 @@ export class Db {
     return (r.data as QaMessage | null) ?? null;
   }
 
+  async messagesForReport(reportId: number): Promise<QaMessage[]> {
+    const r = await this.c.from('qa_messages').select('*').eq('report_id', reportId).order('id', { ascending: true });
+    if (r.error) throw new Error(`messagesForReport ${reportId}: ${r.error.message}`);
+    return (r.data as QaMessage[] | null) ?? [];
+  }
+
   async updateMessage(id: number, status: MessageStatus): Promise<void> {
     const r = await this.c.from('qa_messages').update({ status }).eq('id', id);
     if (r.error) throw new Error(`updateMessage ${id}: ${r.error.message}`);
@@ -367,5 +379,30 @@ export class Db {
     const r = await this.c.storage.from(SCREENSHOT_BUCKET).download(storagePath);
     if (r.error || !r.data) return null;
     return new Uint8Array(await r.data.arrayBuffer());
+  }
+
+  /**
+   * Remove every object under `report-<id>/` in the qa-screenshots bucket
+   * (recursive: storage list() only returns one level, folders have a null id).
+   * Returns the number of objects removed; an empty/absent folder is 0.
+   */
+  async deleteReportScreenshots(reportId: number): Promise<number> {
+    const paths: string[] = [];
+    const walk = async (folder: string): Promise<void> => {
+      const r = await this.c.storage.from(SCREENSHOT_BUCKET).list(folder, { limit: 1000 });
+      if (r.error) throw new Error(`screenshot list ${folder}: ${r.error.message}`);
+      for (const entry of r.data ?? []) {
+        if (!entry.name) continue;
+        const p = `${folder}/${entry.name}`;
+        if ((entry as { id: string | null }).id === null) await walk(p);
+        else paths.push(p);
+      }
+    };
+    await walk(`report-${reportId}`);
+    if (paths.length > 0) {
+      const r = await this.c.storage.from(SCREENSHOT_BUCKET).remove(paths);
+      if (r.error) throw new Error(`screenshot remove report-${reportId}/: ${r.error.message}`);
+    }
+    return paths.length;
   }
 }

@@ -6,7 +6,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { getBrowserClient } from '@/lib/supabase/client';
-import { nameOf, relativeAge } from '@/lib/format';
+import { relativeAge } from '@/lib/format';
+import { useDisplayName } from '@/lib/display-names';
 import { StatusPill } from '@/components/status-pill';
 import type { QaReport, QaRun } from '@/lib/types';
 
@@ -24,6 +25,7 @@ export function TaskPane({
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const reporter = useDisplayName(report.reporter_email);
   const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
 
   async function sendSteer() {
@@ -63,7 +65,7 @@ export function TaskPane({
       </div>
       <h4 className="mb-1 mt-2 text-[13px] font-semibold leading-[1.35]">{report.title}</h4>
       <div className="text-[11px] text-ink-3">
-        {nameOf(report.reporter_email)}
+        <span title={report.reporter_email ?? undefined}>{reporter}</span>
         {report.route ? ` · ${report.route}` : ''} ·{' '}
         <span suppressHydrationWarning>{relativeAge(report.created_at)}</span>
       </div>

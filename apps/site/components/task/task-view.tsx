@@ -2,11 +2,14 @@
 
 import { useCallback, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
+import { useDisplayName } from '@/lib/display-names';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { StatusPill } from '@/components/status-pill';
 import { Pipeline } from '@/components/pipeline';
+import { ConfirmDestroy, TrashIcon } from '@/components/confirm-delete';
 import { ReportContext } from '@/components/task/report-context';
 import { GroundingChips } from '@/components/task/grounding-chips';
 import { EventLog } from '@/components/task/event-log';
@@ -21,10 +24,29 @@ interface Props {
 }
 
 export function TaskView({ initialReport, initialRun, initialEvents, userEmail }: Props) {
+  const router = useRouter();
   const [report, setReport] = useState<QaReport>(initialReport);
   const [run, setRun] = useState<QaRun | null>(initialRun);
   const [events, setEvents] = useState<QaEvent[]>(initialEvents);
+  const [confirmingDestroy, setConfirmingDestroy] = useState(false);
+  const [destroyBusy, setDestroyBusy] = useState(false);
+  const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
+
+  // "Delete everything": queue a `destroy` message (the worker tears down the
+  // run, PR, worktree, and row) and cancel the report so it disappears now.
+  async function destroyEverything() {
+    if (destroyBusy) return;
+    setDestroyBusy(true);
+    const supabase = getBrowserClient();
+    const { error } = await supabase
+      .from('qa_messages')
+      .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' });
+    if (!error) await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId);
+    setDestroyBusy(false);
+    setConfirmingDestroy(false);
+    if (!error) router.replace('/');
+  }
 
   const refetch = useCallback(async () => {
     const supabase = getBrowserClient();
@@ -75,6 +97,12 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
         </Link>
         <span className="font-mono text-[11.5px] text-ink-3">
           task #{report.id}
+          {report.reporter_email ? (
+            <>
+              {' · '}
+              <span title={report.reporter_email}>filed by {reporter}</span>
+            </>
+          ) : null}
           {run?.branch ? ` · branch ${run.branch}` : ''}
         </span>
       </div>
@@ -104,6 +132,25 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
           <ResultCard run={run} />
           <div className="cap-label mt-4">Talk to Claude — anytime</div>
           <SteerBox reportId={report.id} status={report.status} userEmail={userEmail} />
+
+          <div className="relative mt-5">
+            <button
+              onClick={() => setConfirmingDestroy((v) => !v)}
+              disabled={destroyBusy}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red/40 bg-stage px-3.5 py-2 text-[12.5px] font-semibold text-red transition-colors hover:bg-red-soft disabled:opacity-50"
+            >
+              <TrashIcon size={13} />
+              Delete everything
+            </button>
+            {confirmingDestroy ? (
+              <ConfirmDestroy
+                className="absolute bottom-full right-0 z-20 mb-2 w-[250px]"
+                busy={destroyBusy}
+                onConfirm={() => void destroyEverything()}
+                onCancel={() => setConfirmingDestroy(false)}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
