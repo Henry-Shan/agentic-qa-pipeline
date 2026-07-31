@@ -14,7 +14,8 @@
 // All visuals live inside the widget's shadow-DOM overlay
 // (pointer-events: none); the only host-page writes are the executed steps.
 
-import type { ClickTrailEntry } from './types';
+import { stepKind, stepLabel } from './trail-list';
+import type { ClickTrailEntry, StepMark } from './types';
 
 export interface ReplayRequest {
   route: string;
@@ -42,6 +43,14 @@ export interface ReplayOptions {
   ignore?: Element;
   /** Override for tests; defaults to matchMedia('(prefers-reduced-motion: reduce)'). */
   reducedMotion?: boolean;
+  /**
+   * Step-marker sink for the dedicated "after the fix" recorder (contract
+   * §Session replay): called with `{i, kind, label}` immediately before each
+   * resolved step executes, so the recording carries its own step index. `i` is
+   * the 1-based index of the step being executed — the same number the on-screen
+   * caption shows.
+   */
+  onStep?: (mark: StepMark) => void;
 }
 
 const STEP_MS = 1_200; // cadence between steps
@@ -322,7 +331,8 @@ async function ensureRoute(route: string, c: Cancellation): Promise<void> {
   await c.sleep(NAV_SETTLE_MS);
 }
 
-function stepLabel(entry: ClickTrailEntry): string {
+/** Short name for the on-screen caption chip ("3 · clicked Save"). */
+function captionName(entry: ClickTrailEntry): string {
   return entry.text ?? entry.testid ?? entry.component ?? 'element';
 }
 
@@ -425,7 +435,7 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
   async function runClickStep(el: Element, index: number, entry: ClickTrailEntry): Promise<void> {
     const rect = await glideTo(el);
     if (c.cancelled) return;
-    pulse(rect, `${index} · clicked ${stepLabel(entry)}`, CAPTION_MS);
+    pulse(rect, `${index} · clicked ${captionName(entry)}`, CAPTION_MS);
     await c.sleep(CLICK_BEAT_MS);
     if (c.cancelled) return;
     try {
@@ -497,7 +507,7 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     const rect = await glideTo(field);
     if (c.cancelled) return;
     const desired = entry.value === 'checked';
-    pulse(rect, `${index} · toggled ${stepLabel(entry)}`, CAPTION_MS);
+    pulse(rect, `${index} · toggled ${captionName(entry)}`, CAPTION_MS);
     await c.sleep(CLICK_BEAT_MS);
     if (c.cancelled) return;
     if (field.checked !== desired) {
@@ -609,6 +619,16 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
       if (!el || !el.isConnected) {
         skipped++;
         continue;
+      }
+      // Step marker into the "after the fix" recording — emitted from here
+      // because the engine is the only place that knows which step is running.
+      // A sink must never break the replay.
+      if (opts.onStep) {
+        try {
+          opts.onStep({ i: i + 1, kind: stepKind(entry), label: stepLabel(entry) });
+        } catch {
+          /* the recording just misses this marker */
+        }
       }
       if (entry.kind === 'input') {
         const field = fieldOf(el);

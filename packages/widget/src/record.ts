@@ -13,8 +13,10 @@
 // lightest overall — that is the choice ('rrweb' has sideEffects:false and
 // __PURE__ annotations, so the unused exports drop cleanly).
 
-import { record } from 'rrweb';
+import { addCustomEvent, record } from 'rrweb';
 import type { eventWithTime } from 'rrweb';
+import { QA_STEP_TAG } from './marks';
+import type { StepMark } from './types';
 
 const CHECKOUT_EVERY_MS = 60_000;
 /** IngestBody.replayEvents client cap — measured AFTER JSON.stringify (contract). */
@@ -26,11 +28,21 @@ const SENSITIVE_AUTOCOMPLETE_RE = /password|cc-|card|otp/i;
 export interface Recorder {
   /** Concatenated buffered events: previous checkout window + current one. */
   events(): eventWithTime[];
+  /**
+   * Emit a trail-step marker into the recording (contract §Session replay):
+   * `addCustomEvent('qa-step', {i, kind, label})`. A no-op when this recorder
+   * never armed, was disposed, or rrweb is not recording — marking must never
+   * throw into the capture path.
+   */
+  mark(mark: StepMark): void;
   /** Exact length JSON.stringify(events()) would have, computed lazily. */
   byteEstimate(): number;
   /** Stop recording and release the buffered windows. */
   dispose(): void;
 }
+
+/** rrweb's addCustomEvent — injectable for tests. */
+export type AddCustomEventFn = (tag: string, payload: unknown) => void;
 
 /** The subset of rrweb's record() the recorder needs — injectable for tests. */
 export type RecordFn = (options: {
@@ -57,7 +69,10 @@ export function maskInputValue(text: string, element: HTMLElement): string {
   return '*'.repeat(text.length);
 }
 
-export function startRecorder(recordFn: RecordFn = record as RecordFn): Recorder {
+export function startRecorder(
+  recordFn: RecordFn = record as RecordFn,
+  addCustom: AddCustomEventFn = addCustomEvent as AddCustomEventFn,
+): Recorder {
   // Two checkout windows: `previous` + `current`. events() concatenates them.
   let previous: eventWithTime[] = [];
   let current: eventWithTime[] = [];
@@ -95,6 +110,15 @@ export function startRecorder(recordFn: RecordFn = record as RecordFn): Recorder
 
   return {
     events: () => [...previous, ...current],
+    mark: (mark) => {
+      if (!stop) return; // never armed, or already disposed
+      try {
+        addCustom(QA_STEP_TAG, mark);
+      } catch {
+        // rrweb's addCustomEvent throws when nothing is recording — the step
+        // is still in the trail, it just carries no marker in this recording.
+      }
+    },
     byteEstimate: () => {
       // Exact serialized size: Σ item lengths + (n-1) commas + 2 brackets.
       let n = 0;

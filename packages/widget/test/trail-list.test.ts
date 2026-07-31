@@ -4,7 +4,7 @@
 // auto-scroll when the tester was already following the newest step.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTrailList, isNearBottom, stepView } from '../src/trail-list';
+import { createTrailList, isNearBottom, stepIcon, stepLabel, stepView } from '../src/trail-list';
 import type { ClickTrailEntry } from '../src/types';
 
 let ts = 1000;
@@ -38,6 +38,86 @@ describe('stepView — icons and labels', () => {
       label: 'toggled Agree · checked',
     });
     expect(stepView(route('/labs/7'))).toEqual({ icon: '→', label: '/labs/7' });
+  });
+
+  it('is composed from stepIcon + stepLabel — the label the marker payload carries', () => {
+    for (const entry of [click('Save'), click('pressed Enter'), typed('hi'), route('/labs/7')]) {
+      expect(stepView(entry)).toEqual({ icon: stepIcon(entry), label: stepLabel(entry) });
+    }
+  });
+});
+
+// Two-way sync with the mini player (contract "Player UX"): row → player via
+// onPick, player → row via setActive.
+describe('createTrailList — list ↔ player sync', () => {
+  it('reports the 0-based row index when a row is clicked', () => {
+    const picks: number[] = [];
+    const list = createTrailList([click('Open'), click('Save'), route('/labs/7')], {
+      ...following,
+      onPick: (i) => picks.push(i),
+    });
+    rows(list.el)[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    rows(list.el)[2]?.querySelector('.rs-lbl')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picks).toEqual([1, 2]);
+  });
+
+  it('picks rows appended live, with no rebinding', () => {
+    const a = click('Open');
+    const picks: number[] = [];
+    const list = createTrailList([a], { ...following, onPick: (i) => picks.push(i) });
+    list.sync([a, click('Save')]);
+    rows(list.el)[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picks).toEqual([1]);
+  });
+
+  it('ignores clicks on the empty-state row and stops after dispose()', () => {
+    const picks: number[] = [];
+    const list = createTrailList([], { ...following, onPick: (i) => picks.push(i) });
+    list.el.querySelector('.replay-empty')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picks).toEqual([]);
+
+    const a = click('Open');
+    const live = createTrailList([a], { ...following, onPick: (i) => picks.push(i) });
+    live.dispose();
+    rows(live.el)[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picks).toEqual([]);
+  });
+
+  it('highlights exactly one row and reports it', () => {
+    const list = createTrailList([click('Open'), click('Save'), click('Send')], following);
+    expect(list.active()).toBe(-1);
+    list.setActive(1);
+    expect(list.active()).toBe(1);
+    expect(rows(list.el).map((li) => li.classList.contains('active'))).toEqual([false, true, false]);
+    list.setActive(2);
+    expect(rows(list.el).map((li) => li.classList.contains('active'))).toEqual([false, false, true]);
+  });
+
+  it('clears the highlight on null or an out-of-range index', () => {
+    const list = createTrailList([click('Open'), click('Save')], following);
+    list.setActive(1);
+    list.setActive(null);
+    expect(list.active()).toBe(-1);
+    list.setActive(9);
+    expect(list.active()).toBe(-1);
+    expect(rows(list.el).some((li) => li.classList.contains('active'))).toBe(false);
+  });
+
+  it('keeps the highlight on the same row while new steps append', () => {
+    const a = click('Open');
+    const b = click('Save');
+    const list = createTrailList([a, b], following);
+    list.setActive(0);
+    list.sync([a, b, click('Send'), click('Done')]);
+    expect(list.active()).toBe(0);
+    expect(rows(list.el).map((li) => li.classList.contains('active'))).toEqual([true, false, false, false]);
+  });
+
+  it('marks the list pickable only when a picker is wired', () => {
+    expect(createTrailList([], following).el.classList.contains('pickable')).toBe(false);
+    expect(createTrailList([], { ...following, onPick: () => undefined }).el.classList.contains('pickable')).toBe(
+      true,
+    );
   });
 });
 

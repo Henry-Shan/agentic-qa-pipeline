@@ -6,8 +6,18 @@ import { useDisplayName } from '@/lib/display-names';
 import type { QaReport, QaRun } from '@/lib/types';
 import { StatusPill } from '@/components/status-pill';
 import { Pipeline } from '@/components/pipeline';
+import { firstLine } from '@/components/needs-human-text';
 
-export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
+export function ReportCard({
+  report,
+  run,
+  needsHuman,
+}: {
+  report: QaReport;
+  run?: QaRun;
+  /** Hand-off summary for a blocked report — its first line previews on the card. */
+  needsHuman?: string;
+}) {
   const fixing = report.status === 'running' || report.status === 'rework';
   const codeHint = report.source_file ?? report.component;
   const reporter = useDisplayName(report.reporter_email);
@@ -62,6 +72,12 @@ export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
       {fixing && run?.log_tail ? (
         <div className="mt-3 truncate rounded-lg border border-line bg-surface px-3 py-2 font-mono text-xs text-ink-2">
           ▸ {run.log_tail}
+        </div>
+      ) : null}
+
+      {report.status === 'blocked' && needsHuman ? (
+        <div className="mt-3 truncate rounded-lg border border-amber/25 bg-amber-soft px-3 py-2 text-xs text-amber">
+          {firstLine(needsHuman)}
         </div>
       ) : null}
     </Link>

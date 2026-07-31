@@ -3,7 +3,8 @@
 // replayEvents submit field's cap/omission behavior. rrweb itself is mocked —
 // these tests drive the emit callback with fake events and checkout flags.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { QA_STEP_TAG } from '../src/marks';
 import {
   maskInputValue,
   REPLAY_MAX_CHARS,
@@ -146,6 +147,60 @@ describe('startRecorder — checkout window pruning', () => {
     expect(recorder.events()).toEqual([]);
     recorder.dispose(); // idempotent
     expect(mock.stops()).toBe(1);
+  });
+});
+
+// Step markers (contract §Session replay): the ACTIVE recorder turns a trail
+// step into `addCustomEvent('qa-step', {i, kind, label})`.
+describe('Recorder.mark — qa-step custom events', () => {
+  const mark = { i: 3, kind: 'click', label: 'Save' } as const;
+
+  it('emits addCustomEvent("qa-step", {i, kind, label}) verbatim', () => {
+    const mock = mockRecord();
+    const add = vi.fn();
+    const recorder = startRecorder(mock.fn, add);
+    recorder.mark(mark);
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(add).toHaveBeenCalledWith(QA_STEP_TAG, mark);
+    expect(QA_STEP_TAG).toBe('qa-step');
+  });
+
+  it('lands in this recorder buffer as a type-5 custom event the players read back', () => {
+    const mock = mockRecord();
+    const recorder = startRecorder(mock.fn, (tag, payload) =>
+      mock.emit({ type: 5, data: { tag, payload }, timestamp: nextTs++ }),
+    );
+    for (const e of [meta(), snap()]) mock.emit(e);
+    recorder.mark(mark);
+    const last = recorder.events().at(-1) as unknown as AnyEvent;
+    expect(last.type).toBe(5);
+    expect(last.data).toEqual({ tag: 'qa-step', payload: mark });
+  });
+
+  it('no-ops when the recorder never armed', () => {
+    const add = vi.fn();
+    const recorder = startRecorder(() => {
+      throw new Error('rrweb refused');
+    }, add);
+    expect(() => recorder.mark(mark)).not.toThrow();
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('no-ops after dispose() — nothing is recording any more', () => {
+    const mock = mockRecord();
+    const add = vi.fn();
+    const recorder = startRecorder(mock.fn, add);
+    recorder.dispose();
+    recorder.mark(mark);
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('swallows rrweb throwing "please add custom event after start recording"', () => {
+    const mock = mockRecord();
+    const recorder = startRecorder(mock.fn, () => {
+      throw new Error('please add custom event after start recording');
+    });
+    expect(() => recorder.mark(mark)).not.toThrow();
   });
 });
 

@@ -198,7 +198,15 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
     heroTabs.push({
       id: 'before',
       label: 'Before (the report)',
-      content: <ReplayPlayer reportId={reportId} label="before · what the tester saw" />,
+      // `steps` is only a FALLBACK: recordings made before the qa-step markers
+      // existed get their marks derived from the report's own click_trail.
+      content: (
+        <ReplayPlayer
+          reportId={reportId}
+          label="before · what the tester saw"
+          steps={report.click_trail ?? []}
+        />
+      ),
     });
   }
   if (hasAfter) {

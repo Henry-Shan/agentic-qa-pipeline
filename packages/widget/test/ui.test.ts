@@ -104,6 +104,53 @@ describe('drawer — live trail (the drawer no longer freezes the trail)', () =>
   });
 });
 
+// Step markers (contract §Session replay): createUI wires the ambient sink so
+// every trail step also lands in the recording as a `qa-step` custom event.
+describe('ambient step markers', () => {
+  it('marks every step the tester takes into the active recording', async () => {
+    ui.host.remove();
+    buffers.dispose();
+    buffers = startBuffers();
+    const mark = vi.fn();
+    const recorder = { events: () => [], byteEstimate: () => 2, mark, dispose: () => undefined };
+    ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers, recorder);
+
+    clickPage('Alpha');
+    clickPage('Beta');
+    await settle();
+
+    const trail = buffers.clickTrail();
+    expect(mark).toHaveBeenCalledTimes(2);
+    expect(mark).toHaveBeenNthCalledWith(1, { i: trail.length - 1, kind: 'click', label: 'Alpha' });
+    expect(mark).toHaveBeenNthCalledWith(2, { i: trail.length, kind: 'click', label: 'Beta' });
+  });
+
+  it('never marks the widget own UI (clicks inside the shadow root are not steps)', async () => {
+    ui.host.remove();
+    buffers.dispose();
+    buffers = startBuffers();
+    const mark = vi.fn();
+    ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers, {
+      events: () => [],
+      byteEstimate: () => 2,
+      mark,
+      dispose: () => undefined,
+    });
+    await openDrawer();
+    mark.mockClear();
+    (shadow().querySelector('.drawer-collapse') as HTMLButtonElement).click();
+    await settle();
+    expect(mark).not.toHaveBeenCalled();
+  });
+});
+
+describe('drawer — the numbered list drives the player', () => {
+  it('is pickable: rows are wired to seek the player', async () => {
+    await openDrawer();
+    expect(shadow().querySelector('.replay-list')?.classList.contains('pickable')).toBe(true);
+  });
+});
+
 describe('drawer — collapse to a pill', () => {
   it('collapses to a pill with the live count and restores all form state', async () => {
     await openDrawer();

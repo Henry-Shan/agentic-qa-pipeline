@@ -676,6 +676,84 @@ describe('onTrail subscription', () => {
   });
 });
 
+// Step markers (contract §Session replay): buffers hands every PUSHED trail
+// step to whatever the active recorder installed — and stays rrweb-free.
+describe('setStepSink — step markers', () => {
+  const clickOn = (id: string): void => {
+    document.querySelector(`#${id}`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<button id="save">Save</button><button id="cancel">Cancel</button>';
+  });
+
+  it('emits {i, kind, label} for every pushed step, numbered like the drawer list', () => {
+    const marks: Array<{ i: number; kind: string; label: string }> = [];
+    buffers.setStepSink((mark) => marks.push(mark));
+    clickOn('save');
+    clickOn('cancel');
+    const trail = buffers.clickTrail();
+    expect(marks).toEqual([
+      { i: trail.length - 1, kind: 'click', label: 'Save' },
+      { i: trail.length, kind: 'click', label: 'Cancel' },
+    ]);
+  });
+
+  it('marks route changes as kind "route" with the path as the label', () => {
+    const marks: Array<{ i: number; kind: string; label: string }> = [];
+    buffers.setStepSink((mark) => marks.push(mark));
+    history.pushState({}, '', '/labs/step-marker');
+    expect(marks).toEqual([{ i: buffers.clickTrail().length, kind: 'route', label: '/labs/step-marker' }]);
+  });
+
+  it('does not backfill: only steps pushed while a sink is installed are marked', () => {
+    clickOn('save'); // before any sink
+    const marks: unknown[] = [];
+    buffers.setStepSink(() => marks.push(1));
+    expect(marks).toHaveLength(0);
+    clickOn('cancel');
+    expect(marks).toHaveLength(1);
+  });
+
+  it('returns the sink it replaced, so a caller can restore it', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    expect(buffers.setStepSink(first)).toBeNull();
+    const previous = buffers.setStepSink(second);
+    expect(previous).toBe(first);
+    clickOn('save');
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    buffers.setStepSink(previous);
+    clickOn('cancel');
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops marking once the sink is cleared, and after dispose()', () => {
+    const sink = vi.fn();
+    buffers.setStepSink(sink);
+    clickOn('save');
+    buffers.setStepSink(null);
+    clickOn('cancel');
+    expect(sink).toHaveBeenCalledTimes(1);
+
+    buffers.setStepSink(sink);
+    buffers.dispose();
+    clickOn('save');
+    expect(sink).toHaveBeenCalledTimes(1);
+    buffers = startBuffers(); // afterEach disposes this one
+  });
+
+  it('a throwing sink never breaks capture', () => {
+    buffers.setStepSink(() => {
+      throw new Error('recorder exploded');
+    });
+    const before = buffers.clickTrail().length;
+    expect(() => clickOn('save')).not.toThrow();
+    expect(buffers.clickTrail().length).toBe(before + 1);
+  });
+});
+
 describe('dispose', () => {
   it('restores fetch and console patches', () => {
     const patchedFetch = window.fetch;

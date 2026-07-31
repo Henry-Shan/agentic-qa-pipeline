@@ -9,7 +9,6 @@ import { inPersonalBand, latestByReport, upsertReport } from '@/lib/merge';
 import { TABS, tabOf, type TabKey } from '@/lib/status';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { ReportCard } from '@/components/board/report-card';
-import { AssignedToMe } from '@/components/board/assigned-to-me';
 
 /** Latest needs_human event per report id. */
 function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
@@ -127,25 +126,29 @@ export function Board({
   // the worker is still tearing down (it deletes the row when done).
   const live = reports.filter((r) => r.status !== 'cancelled');
 
-  // "Assigned to me" — reports assigned to their display name (any
-  // non-cancelled status) ∪ blocked reports they filed — pinned above the tabs.
+  // "Assigned to me" is a TAB, not a pinned section: reports assigned to their
+  // display name (any non-cancelled status) ∪ blocked reports they filed.
   // `live` already excludes cancelled; the filter dedupes by construction.
-  const bandItems = live.filter((r) => inPersonalBand(r, userEmail, myName));
+  const mine = live.filter((r) => inPersonalBand(r, userEmail, myName));
 
-  const counts: Record<TabKey, number> = { all: live.length, fixing: 0, preview: 0, queued: 0, shipped: 0 };
+  const counts: Record<TabKey, number> = {
+    all: live.length,
+    mine: mine.length,
+    fixing: 0,
+    preview: 0,
+    queued: 0,
+    shipped: 0,
+  };
   for (const report of live) {
     const key = tabOf(report.status);
     if (key) counts[key]++;
   }
 
-  const visible = tab === 'all' ? live : live.filter((r) => tabOf(r.status) === tab);
+  const visible =
+    tab === 'all' ? live : tab === 'mine' ? mine : live.filter((r) => tabOf(r.status) === tab);
 
   return (
     <div>
-      {/* Always rendered — an empty tester sees a quiet empty state, not a
-          disappearing section (contracts § "Assigned to me"). */}
-      <AssignedToMe items={bandItems} events={needsHuman} runs={runs} />
-
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div
           className="flex min-w-0 flex-wrap gap-0.5 rounded-lg border border-line bg-stage p-0.5"
@@ -176,10 +179,19 @@ export function Board({
 
       {visible.length === 0 ? (
         <div className="card py-10 text-center text-[13px] text-ink-3">
-          Nothing here yet — reports filed from the widget inside example.com land on this board.
+          {tab === 'mine'
+            ? 'Nothing assigned to you — reports that block on a human land here.'
+            : 'Nothing here yet — reports filed from the widget inside example.com land on this board.'}
         </div>
       ) : (
-        visible.map((report) => <ReportCard key={report.id} report={report} run={runs[report.id]} />)
+        visible.map((report) => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            run={runs[report.id]}
+            needsHuman={needsHuman[report.id]?.message ?? undefined}
+          />
+        ))
       )}
     </div>
   );

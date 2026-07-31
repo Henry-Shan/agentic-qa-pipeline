@@ -129,16 +129,39 @@ button { font-family: inherit; }
   transition: left .05s linear, top .05s linear; pointer-events: none;
 }
 .replayer-mouse-tail { position: absolute; pointer-events: none; }
-.rr-controls { display: flex; align-items: center; gap: 8px; }
+.rr-player:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; border-radius: 8px; }
+.rr-controls, .rr-foot { display: flex; align-items: center; gap: 6px; }
 .rr-btn {
   border: 1px solid var(--line); border-radius: 6px; background: var(--stage);
   color: var(--ink-2); cursor: pointer; font: inherit; font-size: 11px;
   line-height: 1; padding: 4px 8px; flex: none;
 }
-.rr-btn:hover { border-color: var(--qa-bright); color: var(--qa); }
+.rr-btn:hover:not(:disabled) { border-color: var(--qa-bright); color: var(--qa); }
 .rr-btn:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
+.rr-btn:disabled { opacity: .4; cursor: default; }
+.rr-btn[hidden] { display: none; }
+.rr-step { font-weight: 600; padding: 5px 10px; }
 .rr-speed { min-width: 32px; font-variant-numeric: tabular-nums; }
-.rr-bar { flex: 1; height: 3px; border-radius: 999px; background: var(--line); overflow: hidden; }
+/* caption: N / M · <label> */
+.rr-cap {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--ink-2);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rr-cap[hidden] { display: none; }
+/* rail of tick marks — one per step, current one filled, all clickable */
+.rr-rail { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.rr-rail[hidden] { display: none; }
+.rr-tick {
+  flex: 1 1 4px; min-width: 4px; height: 10px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 2px; background: var(--stage);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.rr-tick:hover { border-color: var(--qa-bright); }
+.rr-tick.on { background: var(--qa); border-color: var(--qa); }
+.rr-tick:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
+/* non-interactive progress hairline */
+.rr-bar { flex: 1; height: 2px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .rr-fill { height: 100%; width: 0%; background: var(--qa); }
 .rr-note {
   font-size: 11.5px; color: var(--ink-3); padding: 10px 12px;
@@ -162,8 +185,11 @@ button { font-family: inherit; }
 }
 .replay-step .rs-ico { flex: none; color: var(--qa); }
 .replay-step .rs-lbl { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.replay-step.pending { opacity: .32; }
-.replay-step.now { opacity: 1; background: var(--qa-soft); color: var(--qa); }
+/* the step the player is parked on — list and video are one control */
+.replay-step.active { background: var(--qa-soft); color: var(--qa); font-weight: 600; }
+.replay-step.active .rs-num { color: var(--qa); }
+.replay-list.pickable .replay-step { cursor: pointer; }
+.replay-list.pickable .replay-step:hover { background: var(--line-soft); }
 /* a step recorded while the drawer is open lands with a brief teal flash */
 .replay-step.fresh { animation: qa-step-in 900ms ease-out; }
 @keyframes qa-step-in {
@@ -174,6 +200,7 @@ button { font-family: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .replay-step { transition: none; }
   .replay-step.fresh { animation: none; }
+  .rr-tick { transition: none; }
 }
 
 /* ---- lightbox (thumbnail enlarge) ---- */

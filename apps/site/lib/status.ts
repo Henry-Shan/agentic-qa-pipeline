@@ -1,9 +1,12 @@
 import type { ReportStatus } from '@/lib/types';
 
-export type TabKey = 'all' | 'fixing' | 'preview' | 'queued' | 'shipped';
+// `mine` is membership-based (assignee / blocked-and-filed-by-me), not a status
+// bucket — `tabOf` never returns it; the board filters that tab separately.
+export type TabKey = 'all' | 'mine' | 'fixing' | 'preview' | 'queued' | 'shipped';
 
 export const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
   { key: 'all', label: 'All' },
+  { key: 'mine', label: 'Assigned to me' },
   { key: 'fixing', label: 'Fixing' },
   { key: 'preview', label: 'Preview' },
   { key: 'queued', label: 'Queued' },

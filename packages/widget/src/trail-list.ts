@@ -15,7 +15,7 @@
 //    rendered entry is found by reference. If it moved (the 200-entry ring
 //    evicted from the head) the list rebuilds so the numbering stays honest.
 
-import type { ClickTrailEntry } from './types';
+import type { ClickTrailEntry, StepKind } from './types';
 
 /** How close to the bottom still counts as "following the newest step". */
 const NEAR_BOTTOM_PX = 48;
@@ -28,6 +28,11 @@ export interface TrailListOptions {
   reducedMotion?: boolean;
   /** Test seam: how "already scrolled near the bottom" is measured. */
   nearBottom?: (el: HTMLElement) => boolean;
+  /**
+   * Two-way sync with the mini player (contract "Player UX"): a row click asks
+   * the player to seek to that step. `index` is 0-based (row 1 → 0).
+   */
+  onPick?: (index: number) => void;
 }
 
 export interface TrailSyncResult {
@@ -45,6 +50,14 @@ export interface TrailList {
   el: HTMLOListElement;
   count(): number;
   sync(entries: ClickTrailEntry[]): TrailSyncResult;
+  /**
+   * Highlight the row the player is parked on (0-based) and scroll it into
+   * view; `null`/out-of-range clears the highlight. Survives live appends and
+   * rebuilds — the same row stays lit.
+   */
+  setActive(index: number | null): void;
+  /** The highlighted row, or -1. */
+  active(): number;
   dispose(): void;
 }
 
@@ -60,21 +73,50 @@ function prefersReducedMotion(): boolean {
   }
 }
 
-/** Icon + label for one trail entry (contract replay-first icons). */
-export function stepView(entry: ClickTrailEntry): { icon: string; label: string } {
+/** True when the entry carries step metadata (i.e. it is not a bare route marker). */
+function isTargeted(entry: ClickTrailEntry): boolean {
+  return Boolean(entry.selector ?? entry.text ?? entry.testid ?? entry.component);
+}
+
+/**
+ * The ONE source of truth for a step's short human label — rendered in the
+ * drawer's numbered list AND carried in the `qa-step` marker payload
+ * (contract §Session replay "Step markers"), so list and player always agree.
+ */
+export function stepLabel(entry: ClickTrailEntry): string {
   if (entry.kind === 'input') {
     if (entry.value === 'checked' || entry.value === 'unchecked') {
       const name = entry.text ?? entry.testid ?? entry.component ?? 'field';
-      return { icon: '☑', label: `toggled ${truncate(name, 26)} · ${entry.value}` };
+      return `toggled ${truncate(name, 26)} · ${entry.value}`;
     }
     const where = entry.text ?? entry.testid ?? entry.component;
     const typed = `typed "${truncate(entry.value ?? '', 32)}"`;
-    return { icon: '⌨', label: where ? `${typed} · ${truncate(where, 22)}` : typed };
+    return where ? `${typed} · ${truncate(where, 22)}` : typed;
   }
-  if (entry.text === 'pressed Enter') return { icon: '⏎', label: 'pressed Enter' };
+  if (entry.text === 'pressed Enter') return 'pressed Enter';
   const label = entry.text ?? entry.testid ?? entry.component;
-  if (label) return { icon: '⊕', label: truncate(label, CLICK_TEXT_CHARS) };
-  return { icon: '→', label: entry.route };
+  return label ? truncate(label, CLICK_TEXT_CHARS) : entry.route;
+}
+
+/** Row icon for one trail entry (contract replay-first icons). */
+export function stepIcon(entry: ClickTrailEntry): string {
+  if (entry.kind === 'input') {
+    return entry.value === 'checked' || entry.value === 'unchecked' ? '☑' : '⌨';
+  }
+  if (entry.text === 'pressed Enter') return '⏎';
+  // Mirrors stepLabel: a step with no human name falls back to its route.
+  return entry.text ?? entry.testid ?? entry.component ? '⊕' : '→';
+}
+
+/** Marker `kind` for one trail entry — route markers carry no `kind` of their own. */
+export function stepKind(entry: ClickTrailEntry): StepKind {
+  if (entry.kind) return entry.kind;
+  return isTargeted(entry) ? 'click' : 'route';
+}
+
+/** Icon + label for one trail entry (contract replay-first icons). */
+export function stepView(entry: ClickTrailEntry): { icon: string; label: string } {
+  return { icon: stepIcon(entry), label: stepLabel(entry) };
 }
 
 /** Scroll geometry check — pure, so the "don't yank the view" rule is testable. */
@@ -96,6 +138,8 @@ export function createTrailList(
   const timers = new Set<number>();
   let rendered: ClickTrailEntry[] = [];
   let empty: HTMLLIElement | null = null;
+  /** Row the player is parked on — survives appends and rebuilds. */
+  let activeIndex = -1;
 
   function showEmpty(): void {
     if (empty) return;
@@ -156,12 +200,34 @@ export function createTrailList(
     timers.add(timer);
   }
 
+  /**
+   * Highlight one row and bring it into view. The scroll is a direct scrollTop
+   * write — instant, so prefers-reduced-motion needs no special case and the
+   * surrounding drawer is never yanked (scrollIntoView would scroll ancestors).
+   */
+  function paintActive(): void {
+    const list = rows();
+    list.forEach((li, i) => li.classList.toggle('active', i === activeIndex));
+    const li = activeIndex >= 0 ? list[activeIndex] : undefined;
+    if (!li) return;
+    try {
+      const top = li.offsetTop;
+      const bottom = top + li.offsetHeight;
+      if (top < el.scrollTop) el.scrollTop = top;
+      else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+    } catch {
+      /* detached / jsdom has no layout */
+    }
+  }
+
   function rebuild(entries: ClickTrailEntry[]): void {
     el.textContent = '';
     empty = null;
     entries.forEach((entry, i) => el.appendChild(row(entry, i)));
     rendered = entries.slice();
     if (rendered.length === 0) showEmpty();
+    if (activeIndex >= entries.length) activeIndex = -1;
+    paintActive();
   }
 
   function scrollToNewest(): void {
@@ -172,14 +238,37 @@ export function createTrailList(
     }
   }
 
+  // Clicking a row seeks the player to that step (list and video are one
+  // control). Delegated, so rows appended live are pickable with no rebinding.
+  const pick = opts.onPick;
+  const onRowClick = (e: Event): void => {
+    if (!pick) return;
+    const target = e.target;
+    const li = target instanceof Element ? target.closest('li.replay-step') : null;
+    if (!(li instanceof HTMLLIElement)) return;
+    const index = rows().indexOf(li);
+    if (index >= 0) pick(index);
+  };
+  if (pick) {
+    el.classList.add('pickable');
+    el.addEventListener('click', onRowClick);
+  }
+
   rebuild(initial);
 
   return {
     el,
     count: () => rendered.length,
+    active: () => activeIndex,
+    setActive: (index) => {
+      const next = index === null || index < 0 || index >= rendered.length ? -1 : Math.trunc(index);
+      activeIndex = next;
+      paintActive();
+    },
     dispose: () => {
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
+      if (pick) el.removeEventListener('click', onRowClick);
     },
     sync: (entries) => {
       const result: TrailSyncResult = { added: 0, updated: false, scrolled: false, total: entries.length };

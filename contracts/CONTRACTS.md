@@ -245,12 +245,12 @@ pathname. Reporter identity = the verified session email, as on web.
   display name when they have one, else to `QA_DEFAULT_ASSIGNEE` (worker env). It writes a
   `qa_events` `{type:'system'}` line "auto-assigned to <name> — needs a human" so the handoff is
   visible. Manual assignment always wins and is never overwritten.
-- **"Assigned to me"**: every signed-in tester's board opens with an *Assigned to me* section
-  (the former "Needs <name>" band): reports assigned to their display name in ANY non-cancelled
-  status, plus blocked reports they filed. Blocked rows lead with the needs_human summary and an
-  "<name> is on it" chip; the section is titled "Assigned to me" with a count, and renders an
-  empty-state line ("Nothing assigned to you") rather than disappearing, so it's a stable home
-  for each member.
+- **"Assigned to me"** is a board TAB (between All and Fixing), not a pinned band — no banner
+  above the tabs. Membership: reports assigned to the signed-in tester's display name in ANY
+  non-cancelled status, plus blocked reports they filed. It carries a count like the other tabs,
+  its cards are the ordinary report cards (a blocked card previews the first line of its
+  needs_human summary in amber), and its empty state reads "Nothing assigned to you — reports
+  that block on a human land here."
 - **Assignment**: `qa_reports.assignee` holds a tester display name. The task page's steer card
   shows a SINGLE button **Assign to <my display name>** beside Send — no picker, no dropdown.
   Assigning writes `assignee` + a system event "assigned to <name> by <assigner>". Once the
@@ -282,6 +282,20 @@ pathname. Reporter identity = the verified session email, as on web.
   client-capped at 8_000_000 chars (drop the field entirely when over). Server: validate size,
   upload VERBATIM to bucket `qa-screenshots` as `report-<id>/replay.json`, store the path in
   `qa_reports.replay_path` (db/0006). Events are display data — never parsed server-side.
+- **Step markers (replays are stepped, not scrubbed).** Every recorded trail step also emits an
+  rrweb custom event `addCustomEvent('qa-step', {i, kind, label})` — from the ambient recorder as
+  the tester acts, and from the dedicated recorder while a replay executes — so each recording
+  carries its own step index inside the event stream. Players read them back
+  (`{type:5, data:{tag:'qa-step', payload}}`) as marks at `ev.timestamp - events[0].timestamp`.
+- **Player UX (both the widget drawer and the task page): step-based.** Primary controls are
+  **◀ Prev / Next ▶** with a caption `N / M · <label>`; a rail of tick marks (one per step,
+  current one filled) that can be clicked to jump; ← / → arrow keys do the same when the player
+  has focus. Seeking a step = `pause(offset)` on the rrweb Replayer, so the frame is exactly the
+  moment of that interaction. Continuous playback stays available as a small ▶ (auto-advance
+  through the remaining steps) but is NOT the default posture — the player opens paused on
+  step 1. Clicking a row in the numbered trail list seeks the player to that step (list and
+  video are one control). Recordings without `qa-step` marks (pre-existing ones) fall back to
+  marks derived from the report's `click_trail` timestamps, and failing that to a plain timeline.
 - Site: `GET /api/replay/[id]` — auth+allowlist gated like /api/shot, 302 to a 10-min signed URL.
   The task page, when `replay_path` is set, shows a "Session replay" player card (rrweb-player
   or rrweb Replayer + minimal controls) in the hero area — above/tabbed with the live-preview

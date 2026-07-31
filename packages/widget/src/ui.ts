@@ -1,9 +1,10 @@
 // All widget UI, inside one ShadowRoot: fab → menu → picker → drawer → toast.
 
 import { Replayer } from 'rrweb';
-import type { Buffers } from './buffers';
+import type { Buffers, StepSink } from './buffers';
 import type { ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
+import { clampStep, captionFor, markForStep, playerMarks, type PlayerMark } from './marks';
 import { pickElement } from './picker';
 import { replayDoneMessage, replayEventsField, startRecorder, type Recorder } from './record';
 import { captureShot } from './shot';
@@ -14,11 +15,9 @@ import { createTrailList, type TrailList } from './trail-list';
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
-// Drawer auto-play cadence: one trail step lights up every ~350ms.
-const STEP_PLAY_MS = 350;
-// Session-replay mini player: progress poll cadence while playing.
+// Session-replay mini player: progress poll cadence while auto-advancing.
 const PLAYER_POLL_MS = 250;
-// A never-played mini player rebuilds itself once this many new steps landed.
+// An untouched mini player rebuilds itself once this many new steps landed.
 const PLAYER_STALE_STEPS = 5;
 
 export interface WidgetUI {
@@ -51,14 +50,6 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-function prefersReducedMotion(): boolean {
-  try {
-    return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  } catch {
-    return false;
-  }
-}
-
 export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder | null = null): WidgetUI {
   const host = document.createElement('div');
   host.setAttribute('data-qa-pipeline', '');
@@ -84,6 +75,18 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
   let replay: ReplayHandle | null = null;
   /** Per-open teardown: trail subscription, list timers, pill, key handler. */
   const drawerCleanup: Array<() => void> = [];
+
+  // ---- ambient step markers (contract §Session replay "Step markers") ------
+  // Every trail step buffers pushes also lands in the recording as
+  // `addCustomEvent('qa-step', {i, kind, label})`. While a replay executes the
+  // sink stands down: the dedicated recorder is the one rrweb is emitting into,
+  // and the replay engine marks those steps itself with the index it is running.
+  if (recorder) {
+    const ambientSink: StepSink = (mark) => {
+      if (!replay) recorder.mark(mark);
+    };
+    buffers.setStepSink(ambientSink);
+  }
 
   // ---- fab -----------------------------------------------------------------
   const fab = h('button', 'qa-fab', '🐛');
@@ -152,49 +155,29 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     lightbox = overlay;
   }
 
-  // ---- trail auto-play (once per drawer open) -----------------------------
-  let stopPlayback: (() => void) | null = null;
-
-  function playTrail(list: HTMLElement): void {
-    if (prefersReducedMotion()) return; // static list — every step fully visible
-    const items = Array.from(list.children).filter((el): el is HTMLElement => el instanceof HTMLElement);
-    if (items.length === 0) return;
-    for (const item of items) item.classList.add('pending');
-    let timer = 0;
-    let idx = 0;
-    const tick = (): void => {
-      items[idx - 1]?.classList.remove('now');
-      const item = items[idx];
-      if (!item) return;
-      item.classList.remove('pending');
-      item.classList.add('now');
-      try {
-        item.scrollIntoView({ block: 'nearest' }); // the list scroll follows the run-through
-      } catch {
-        /* jsdom / detached */
-      }
-      idx++;
-      timer = window.setTimeout(idx < items.length ? tick : () => item.classList.remove('now'), STEP_PLAY_MS);
-    };
-    tick();
-    stopPlayback = () => {
-      clearTimeout(timer);
-      for (const item of items) item.classList.remove('pending', 'now');
-      stopPlayback = null;
-    };
-  }
-
-  // ---- session-replay mini player (contract §Widget drawer replay-first) ---
+  // ---- session-replay mini player (contract "Player UX … step-based") -----
   // A real rrweb Replayer over the recorder's buffered events, inside the
   // shadow root, above the numbered trail list. rrweb sandboxes its replay
   // iframe itself (sandbox="allow-same-origin", interaction disabled); we scale
-  // the recorded viewport down into the drawer-width ~16:10 stage. Starts
-  // PAUSED on the first frame.
+  // the recorded viewport down into the drawer-width ~16:10 stage.
+  //
+  // The player is STEPPED, not scrubbed: the recording's own `qa-step` markers
+  // (or, for marker-less recordings, the trail's timestamps) become marks, and
+  // ◀ Prev / Next ▶ seek between them with `pause(offset)` — the frame is
+  // exactly the moment of that interaction. It opens PAUSED on step 1.
   let pausePlayer: (() => void) | null = null;
   let destroyPlayer: (() => void) | null = null;
+  /** Live-append hook: fold newly recorded steps into the marks + rail. */
+  let refreshMarks: (() => void) | null = null;
+  /** ← / → : step by ±1 (installed while a player is mounted). */
+  let stepPlayer: ((delta: number) => void) | null = null;
+  /** List → player: seek to a 1-based trail step (a row click). */
+  let seekToStep: ((step: number) => void) | null = null;
+  /** The drawer's live list — the player highlights the row it is parked on. */
+  let trailList: TrailList | null = null;
   // The recorder keeps filming while the drawer is open, so the mounted player
   // goes stale. `playerBuiltAtSteps` is the trail length it was built at; once
-  // the tester actually plays it we stop refreshing under them.
+  // the tester actually uses it we stop refreshing under them.
   let playerBuiltAtSteps = 0;
   let playerPlayed = false;
   let playerMounted = false;
@@ -273,50 +256,128 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     }
     fit(Number(replayer.iframe.getAttribute('width')), Number(replayer.iframe.getAttribute('height')));
 
+    // Row 1: the primary step pair + caption. Row 2: the tick rail.
+    // Row 3: auto-advance, speed, the progress hairline and ↻.
     const controls = h('div', 'rr-controls');
+    const prevBtn = h('button', 'rr-btn rr-step', '◀ Prev');
+    prevBtn.type = 'button';
+    prevBtn.setAttribute('aria-label', 'Previous step');
+    const nextBtn = h('button', 'rr-btn rr-step', 'Next ▶');
+    nextBtn.type = 'button';
+    nextBtn.setAttribute('aria-label', 'Next step');
+    const cap = h('span', 'rr-cap');
+    cap.setAttribute('aria-live', 'polite');
+    controls.append(prevBtn, nextBtn, cap);
+
+    const rail = h('div', 'rr-rail');
+    rail.setAttribute('role', 'group');
+    rail.setAttribute('aria-label', 'Recorded steps');
+
+    const foot = h('div', 'rr-foot');
     const playBtn = h('button', 'rr-btn', '▶');
     playBtn.type = 'button';
-    playBtn.setAttribute('aria-label', 'Play replay');
-    const bar = h('div', 'rr-bar');
-    const fill = h('div', 'rr-fill');
-    bar.appendChild(fill);
+    playBtn.setAttribute('aria-label', 'Auto-advance through the steps');
     const speedBtn = h('button', 'rr-btn rr-speed', '1×');
     speedBtn.type = 'button';
     speedBtn.setAttribute('aria-label', 'Toggle playback speed');
-    controls.append(playBtn, bar, speedBtn, freshButton(box));
-    box.appendChild(controls);
+    const bar = h('div', 'rr-bar');
+    const fill = h('div', 'rr-fill');
+    bar.appendChild(fill);
+    foot.append(playBtn, speedBtn, bar, freshButton(box));
+    box.append(controls, rail, foot);
+    box.tabIndex = 0; // ← / → work when the player itself holds focus
 
     let playing = false;
     let speed = 1;
     const total = Math.max(1, replayer.getMetaData().totalTime);
-    const paint = (): void => {
+    const baseline = events[0]?.timestamp ?? 0;
+    let marks: PlayerMark[] = playerMarks(events, buffers.clickTrail(), baseline, total);
+    let cur = marks.length > 0 ? 0 : -1;
+
+    const paintBar = (): void => {
       const t = Math.min(replayer.getCurrentTime(), total);
       fill.style.width = `${Math.max(0, (t / total) * 100)}%`;
     };
-    paint();
-    const timer = window.setInterval(() => {
-      if (playing) paint();
-    }, PLAYER_POLL_MS);
+
+    const paintCaption = (): void => {
+      const stepped = marks.length > 0;
+      cap.textContent = captionFor(marks, cur);
+      // No marks at all: the plain timeline (▶ + hairline) is all that is left.
+      prevBtn.hidden = !stepped;
+      nextBtn.hidden = !stepped;
+      cap.hidden = !stepped;
+      rail.hidden = !stepped;
+      prevBtn.disabled = !stepped || cur <= 0;
+      nextBtn.disabled = !stepped || cur >= marks.length - 1;
+    };
+
+    const paintRail = (): void => {
+      while (rail.children.length > marks.length) rail.lastElementChild?.remove();
+      for (let k = rail.children.length; k < marks.length; k++) {
+        const tick = h('button', 'rr-tick');
+        tick.type = 'button';
+        tick.addEventListener('click', () => {
+          playerPlayed = true;
+          seek(k);
+        });
+        rail.appendChild(tick);
+      }
+      Array.from(rail.children).forEach((node, k) => {
+        if (!(node instanceof HTMLElement)) return;
+        const mark = marks[k];
+        node.classList.toggle('on', k === cur);
+        node.setAttribute('aria-label', `Step ${k + 1}${mark ? `: ${mark.label}` : ''}`);
+        node.setAttribute('aria-current', k === cur ? 'true' : 'false');
+      });
+    };
 
     const setPlaying = (next: boolean): void => {
       playing = next;
       playBtn.textContent = next ? '⏸' : '▶';
-      playBtn.setAttribute('aria-label', next ? 'Pause replay' : 'Play replay');
+      playBtn.setAttribute('aria-label', next ? 'Pause' : 'Auto-advance through the steps');
     };
-    replayer.on('finish', () => {
+
+    /** Light the row this step came from, and scroll the list to it. */
+    const syncList = (): void => {
+      const mark = cur >= 0 ? marks[cur] : undefined;
+      if (mark) trailList?.setActive(mark.i - 1);
+    };
+
+    /** Seek = pause(offset): the frame is exactly the moment of that interaction. */
+    function seek(index: number, fromList = false): void {
+      if (marks.length === 0) return;
+      cur = clampStep(index, marks.length);
+      const mark = marks[cur];
+      if (mark) {
+        try {
+          replayer.pause(mark.offset);
+        } catch {
+          /* corrupt event stream — the stage keeps its last frame */
+        }
+      }
       setPlaying(false);
-      paint();
-    });
+      paintCaption();
+      paintRail();
+      paintBar();
+      if (!fromList) syncList();
+    }
+
+    const step = (delta: number): void => {
+      playerPlayed = true; // from here on the player only refreshes on demand (↻)
+      seek(cur + delta);
+    };
+    prevBtn.addEventListener('click', () => step(-1));
+    nextBtn.addEventListener('click', () => step(1));
 
     playBtn.addEventListener('click', () => {
-      playerPlayed = true; // from here on the player only refreshes on demand (↻)
+      playerPlayed = true;
       if (playing) {
         replayer.pause();
         setPlaying(false);
         return;
       }
-      const t = replayer.getCurrentTime();
-      replayer.play(t >= total ? 0 : t); // replay from the top once finished
+      const from = marks[cur]?.offset ?? replayer.getCurrentTime();
+      replayer.play(from >= total ? 0 : from); // auto-advance from the top once finished
       setPlaying(true);
     });
 
@@ -332,6 +393,52 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
         replayer.setConfig({ speed });
       }
     });
+
+    // While auto-advancing, the caption/rail/list follow the playhead.
+    const timer = window.setInterval(() => {
+      if (!playing) return;
+      paintBar();
+      const t = replayer.getCurrentTime();
+      let at = cur;
+      for (let k = 0; k < marks.length; k++) {
+        const mark = marks[k];
+        if (mark && mark.offset <= t) at = k;
+      }
+      if (at === cur) return;
+      cur = at;
+      paintCaption();
+      paintRail();
+      syncList();
+    }, PLAYER_POLL_MS);
+
+    replayer.on('finish', () => {
+      setPlaying(false);
+      paintBar();
+    });
+
+    // Live append: steps taken while the drawer is open extend the marks and
+    // the rail. The playhead does NOT move — a player parked on the last step
+    // stays there instead of chasing the newest one.
+    refreshMarks = () => {
+      const next = playerMarks(recorder?.events() ?? events, buffers.clickTrail(), baseline, total);
+      if (next.length === marks.length) return;
+      const wasEmpty = marks.length === 0;
+      marks = next;
+      cur = clampStep(cur, marks.length);
+      paintRail();
+      paintCaption();
+      if (wasEmpty && marks.length > 0) seek(0);
+    };
+    stepPlayer = step;
+    seekToStep = (trailStep) => {
+      const at = markForStep(marks, trailStep);
+      if (at >= 0) seek(at, true);
+    };
+
+    paintRail();
+    paintCaption();
+    paintBar();
+    if (marks.length > 0) seek(0); // opens PAUSED on step 1
 
     pausePlayer = () => {
       if (!playing) return;
@@ -352,6 +459,9 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       }
       pausePlayer = null;
       destroyPlayer = null;
+      refreshMarks = null;
+      stepPlayer = null;
+      seekToStep = null;
       playerMounted = false;
     };
   }
@@ -433,8 +543,20 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     const playerBox = h('div', 'rr-player');
     panel.appendChild(playerBox);
     playerBuiltAtSteps = buffers.clickTrail().length; // staleness counts from the open
-    const list: TrailList = createTrailList(buffers.clickTrail());
-    drawerCleanup.push(() => list.dispose());
+    // Two-way sync (contract "Player UX"): a row click seeks the player to that
+    // step and lights the row; stepping in the player lights + scrolls the row.
+    const list: TrailList = createTrailList(buffers.clickTrail(), {
+      onPick: (index) => {
+        playerPlayed = true;
+        list.setActive(index);
+        seekToStep?.(index + 1);
+      },
+    });
+    trailList = list;
+    drawerCleanup.push(() => {
+      list.dispose();
+      trailList = null;
+    });
     panel.appendChild(list.el);
     panel.appendChild(h('div', 'live-hint', 'Keep using the app — new steps keep recording.'));
 
@@ -445,26 +567,43 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       pillCount.textContent = String(n);
     }
     paintCount();
-    if (list.count() > 0) playTrail(list.el);
 
     // ONE subscription for the whole drawer, debounced inside buffers (~120ms):
     // it appends only the new rows (never re-renders the list), repaints the
-    // count, and refreshes a never-played mini player once it is 5+ steps stale.
+    // count, extends the player's marks, and rebuilds an untouched mini player
+    // once it is 5+ steps stale.
     drawerCleanup.push(
       buffers.onTrail(() => {
         const steps = buffers.clickTrail();
         const result = list.sync(steps);
-        if (result.added > 0) {
-          stopPlayback?.(); // the one-shot run-through gives way to live steps
-          paintCount();
-        } else if (result.updated) {
-          paintCount();
-        }
+        if (result.added > 0 || result.updated) paintCount();
         if (!playerPlayed && steps.length - playerBuiltAtSteps >= PLAYER_STALE_STEPS) {
           rebuildPlayer(playerBox);
+        } else if (result.added > 0) {
+          refreshMarks?.();
         }
       }),
     );
+
+    // ← / → step the player whenever focus is anywhere in the drawer — but
+    // never while the tester is typing (arrows move the caret in the textarea).
+    const onPlayerKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (!stepPlayer) return;
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      stepPlayer(e.key === 'ArrowLeft' ? -1 : 1);
+    };
+    panel.addEventListener('keydown', onPlayerKey);
+    drawerCleanup.push(() => panel.removeEventListener('keydown', onPlayerKey));
 
     // ---- collapse ↔ pill ---------------------------------------------------
     // Collapsed, the panel is only display:none — every bit of form state
@@ -628,7 +767,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
   }
 
   function closeDrawer(): void {
-    stopPlayback?.();
     destroyPlayer?.();
     closeLightbox();
     for (const undo of drawerCleanup.splice(0)) {
@@ -679,7 +817,13 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
         // recorder covers exactly this execution — started here, stopped when
         // the run settles. The ambient session recorder is never touched.
         const afterRecorder = startRecorder();
-        const handle = startReplay(req, { container: root, ignore: host });
+        // Step markers for the "after" recording come from the engine (it knows
+        // which step it is executing); the ambient sink stands down meanwhile.
+        const handle = startReplay(req, {
+          container: root,
+          ignore: host,
+          onStep: (mark) => afterRecorder.mark(mark),
+        });
         replay = handle;
         void handle.done.then((result) => {
           if (replay !== handle) {

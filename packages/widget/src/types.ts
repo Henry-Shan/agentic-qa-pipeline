@@ -23,6 +23,21 @@ export interface ClickTrailEntry {
   value?: string;
 }
 
+/** Trail step kinds carried by a step marker — route markers have no `kind` on the entry. */
+export type StepKind = 'route' | 'click' | 'input';
+
+/**
+ * Step marker payload (contract §Session replay "Step markers"): the payload of
+ * the rrweb custom event `addCustomEvent('qa-step', {i, kind, label})`.
+ * `i` is the step's 1-based index in the trail it belongs to; `label` is the
+ * exact string the drawer's numbered step list renders (trail-list stepLabel).
+ */
+export interface StepMark {
+  i: number;
+  kind: StepKind;
+  label: string;
+}
+
 export interface ConsoleEntry {
   ts: number;
   level: 'error' | 'warn';

@@ -6,7 +6,8 @@
 
 import { scrubString } from './scrub';
 import { annotationOf, buildSelector } from './selector';
-import type { ClickTrailEntry, ConsoleEntry, NetworkEntry } from './types';
+import { stepKind, stepLabel } from './trail-list';
+import type { ClickTrailEntry, ConsoleEntry, NetworkEntry, StepMark } from './types';
 
 const CONSOLE_MAX = 50;
 const CONSOLE_CHARS = 500;
@@ -47,7 +48,17 @@ class Ring<T> {
   list(): T[] {
     return this.items.slice();
   }
+  size(): number {
+    return this.items.length;
+  }
 }
+
+/**
+ * Step-marker sink (contract §Session replay "Step markers"). Buffers stays
+ * rrweb-free: it hands every pushed trail step to whatever the ACTIVE recorder
+ * installed, and the recorder turns that into `addCustomEvent('qa-step', mark)`.
+ */
+export type StepSink = (mark: StepMark) => void;
 
 export interface Buffers {
   consoleLog(): ConsoleEntry[];
@@ -62,6 +73,14 @@ export interface Buffers {
    * drops every subscriber and any pending notification.
    */
   onTrail(cb: () => void): () => void;
+  /**
+   * Install (or clear, with `null`) the step-marker sink. Called with a mark
+   * SYNCHRONOUSLY on every pushed trail step, so the recording's custom event
+   * lands at the moment of the interaction. Returns the sink it replaced, so a
+   * caller can restore it. Marks are never backfilled: only steps pushed while
+   * a sink is installed are marked.
+   */
+  setStepSink(sink: StepSink | null): StepSink | null;
   /** fetch as it was before patching — the widget's own requests bypass capture */
   rawFetch: typeof fetch;
   /** clicks inside this element (the widget's own UI) are not recorded */
@@ -194,9 +213,22 @@ export function startBuffers(): Buffers {
     if (trailSubs.size === 0 || trailTimer !== undefined) return;
     trailTimer = window.setTimeout(emitTrail, TRAIL_NOTIFY_MS);
   };
+  // --- step markers (contract §Session replay) -----------------------------
+  // The ACTIVE recorder installs a sink here; buffers itself knows nothing
+  // about rrweb. `i` is the step's 1-based index in the trail as it stands
+  // right after the push, matching the drawer's numbered list.
+  let stepSink: StepSink | null = null;
+
   /** Append + notify — every trail write goes through here (or trailChanged for in-place updates). */
   const pushStep = (entry: ClickTrailEntry): void => {
     trail.push(entry);
+    if (stepSink) {
+      try {
+        stepSink({ i: trail.size(), kind: stepKind(entry), label: stepLabel(entry) });
+      } catch {
+        /* a recorder must never break capture */
+      }
+    }
     trailChanged();
   };
 
@@ -582,12 +614,18 @@ export function startBuffers(): Buffers {
         }
       };
     },
+    setStepSink: (sink) => {
+      const previous = stepSink;
+      stepSink = sink;
+      return previous;
+    },
     rawFetch: nativeFetch,
     setIgnoreRoot: (el) => {
       ignoreRoot = el;
     },
     dispose: () => {
       for (const undo of disposers.splice(0)) undo();
+      stepSink = null;
       trailSubs.clear();
       if (trailTimer !== undefined) {
         clearTimeout(trailTimer);
