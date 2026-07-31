@@ -141,7 +141,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   function openDrawer(draft: Draft): void {
     const panel = h('aside', 'qa-drawer');
     panel.setAttribute('role', 'dialog');
-    const title = draft.kind === 'bug' ? 'Report an issue' : 'Request a feature';
+    const title = 'Report an issue';
     panel.setAttribute('aria-label', title);
 
     const head = h('div', 'drawer-head');
