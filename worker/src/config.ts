@@ -11,6 +11,10 @@ export interface WorkerConfig {
   runnerRepo: string;
   worktreeBase: string;
   claudeBin: string;
+  /** QA_CLAUDE_MODEL — `--model` for every real claude spawn (alias or full id). */
+  claudeModel: string;
+  /** QA_CLAUDE_EFFORT — `--effort` for every real claude spawn (low…max). */
+  claudeEffort: string;
   shimPort: number;
   maxRuns: number;
   maxPreviews: number;
@@ -19,6 +23,8 @@ export interface WorkerConfig {
   previewDomain: string;
   cfTunnelName: string;
   siteUrl: string;
+  /** QA_DEFAULT_ASSIGNEE — fallback tester display name for auto-assign-on-block. */
+  defaultAssignee: string;
   /** State dir (~/.qa-pipeline): worker.lock, runs/, PAUSED, cloudflared.yml. */
   qaHome: string;
   /** QA_MOCK_DISPATCH=1 — spawn mock/mock-run.mjs instead of claude (selftest). */
@@ -83,6 +89,8 @@ export function loadConfig(): WorkerConfig {
     runnerRepo: process.env.RUNNER_REPO ?? '/Users/YOU/qa-pipeline-runner/the host app',
     worktreeBase: process.env.WORKTREE_BASE ?? '/Users/YOU/qa-pipeline-worktrees',
     claudeBin: process.env.CLAUDE_BIN ?? '/opt/homebrew/bin/claude',
+    claudeModel: process.env.QA_CLAUDE_MODEL?.trim() || 'opus',
+    claudeEffort: process.env.QA_CLAUDE_EFFORT?.trim() || 'xhigh',
     shimPort: intEnv('SHIM_PORT', 4519),
     maxRuns: intEnv('MAX_RUNS', 2),
     maxPreviews: intEnv('MAX_PREVIEWS', 3),
@@ -91,6 +99,7 @@ export function loadConfig(): WorkerConfig {
     previewDomain: process.env.PREVIEW_DOMAIN ?? 'qa-preview.example.com',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
+    defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',
     qaHome,
     mockDispatch: process.env.QA_MOCK_DISPATCH === '1',
     previewCmd: process.env.PREVIEW_CMD ?? null,

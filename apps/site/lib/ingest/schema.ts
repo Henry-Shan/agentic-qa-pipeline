@@ -65,6 +65,11 @@ export const ingestSchema = z.object({
   // Additional captures (≤3), EACH under the same pre-decode length cap as the
   // primary; stored as report-<id>/marked-2.png … in order after the primary.
   screenshotsDataUrls: z.array(z.string().max(MAX_SCREENSHOT_DATA_URL_CHARS)).max(3).optional(),
+  // rrweb session recording (contracts § Session replay): an OPAQUE JSON string,
+  // stored VERBATIM in the bucket as report-<id>/replay.json — never parsed or
+  // scrubbed server-side (display data only), and excluded from clampIngest.
+  // The widget caps it at 8M chars client-side and drops the field when over.
+  replayEvents: z.string().max(8_000_000).optional(),
 });
 
 export type IngestBody = z.infer<typeof ingestSchema>;

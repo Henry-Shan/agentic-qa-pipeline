@@ -6,6 +6,12 @@
 // ignored here); after activation we send the replay message once with the
 // report's route/trail/target, show "replaying…", and render the replay-done
 // note. ⟳ Replay re-sends. Allowed frame origin = the preview_url origin.
+//
+// replay-done may carry `events` — the rrweb recording of that execution
+// (contracts § After-the-fix recording). We POST it to /api/after-replay/[id]
+// for the run it was replayed against; on success `onAfterReplay` tells the
+// hero to reveal/refresh its "After the fix" tab. Entirely non-fatal: a failed
+// upload just means no after-tab.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrameHost } from '@/lib/use-frame-host';
@@ -15,7 +21,16 @@ import type { QaReport } from '@/lib/types';
 // widget a beat to attach its listener before the one automatic replay send.
 const REPLAY_DELAY_MS = 750;
 
-export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; report: QaReport }) {
+interface Props {
+  previewUrl: string;
+  report: QaReport;
+  /** The run whose preview this is — the after-the-fix recording is stored against it. */
+  runId: number | null;
+  /** Called after an after-the-fix recording is stored successfully. */
+  onAfterReplay?: () => void;
+}
+
+export function PreviewEmbed({ previewUrl, report, runId, onAfterReplay }: Props) {
   const allowedOrigin = useMemo(() => {
     try {
       return new URL(previewUrl).origin;
@@ -29,10 +44,15 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
   const timerRef = useRef<number | null>(null);
   const reportRef = useRef(report);
   reportRef.current = report;
+  const runIdRef = useRef(runId);
+  runIdRef.current = runId;
+  const onAfterReplayRef = useRef(onAfterReplay);
+  onAfterReplayRef.current = onAfterReplay;
 
   const [ready, setReady] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'replaying' | 'done'>('idle');
   const [doneNote, setDoneNote] = useState<string | null>(null);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -57,6 +77,27 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
     );
     setPhase('replaying');
     setDoneNote(null);
+    setSavedNote(null);
+  };
+
+  // Store the after-the-fix recording. Best-effort by design — every failure
+  // path (no run, HTTP error, network error) leaves the preview working and
+  // simply doesn't reveal the "After the fix" tab.
+  const saveAfterReplay = async (events: string) => {
+    const id = runIdRef.current;
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/after-replay/${reportRef.current.id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ runId: id, events }),
+      });
+      if (!res.ok) return;
+      setSavedNote('recording saved');
+      onAfterReplayRef.current?.();
+    } catch {
+      // non-fatal — no after-the-fix tab this time
+    }
   };
 
   useFrameHost(allowedOrigin, {
@@ -73,6 +114,10 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
         const skipped = typeof data.skipped === 'number' ? data.skipped : 0;
         setPhase('done');
         setDoneNote(`replayed ${shown} step${shown === 1 ? '' : 's'} · ${skipped} skipped`);
+        // The widget omits `events` when the recording is unavailable or over cap.
+        if (typeof data.events === 'string' && data.events.length > 0) {
+          void saveAfterReplay(data.events);
+        }
       }
     },
   });
@@ -141,7 +186,10 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
               replaying…
             </>
           ) : (
-            doneNote
+            <>
+              {doneNote}
+              {savedNote ? <span className="text-qa">· {savedNote}</span> : null}
+            </>
           )}
         </div>
       ) : null}

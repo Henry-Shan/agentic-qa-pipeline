@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execa } from 'execa';
+import { autoAssignOnBlock } from './assign';
 import { pidAlive } from './config';
 import type { Ctx } from './state';
 import { log, nowIso } from './util';
@@ -38,6 +39,8 @@ export async function reconcile(ctx: Ctx): Promise<void> {
         finished_at: nowIso(),
       });
       await ctx.db.updateReport(run.report_id, { status: 'blocked' });
+      // A crash-orphaned run still needs an owner, same as any other block.
+      await autoAssignOnBlock(ctx, run.report_id);
       await ctx.db.insertEvent({
         report_id: run.report_id,
         run_id: run.id,
@@ -106,6 +109,7 @@ async function sweep(ctx: Ctx): Promise<void> {
         finished_at: nowIso(),
       });
       await ctx.db.updateReport(report.id, { status: 'blocked' });
+      await autoAssignOnBlock(ctx, report.id);
       await ctx.db.insertEvent({
         report_id: report.id,
         run_id: run.id,

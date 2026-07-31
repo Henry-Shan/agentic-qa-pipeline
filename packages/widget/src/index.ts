@@ -1,6 +1,7 @@
 // Entry point: read host-page config, arm buffers, mount UI, expose debug handle.
 
 import { startBuffers } from './buffers';
+import { startRecorder } from './record';
 import { createUI } from './ui';
 import type { WidgetConfig } from './types';
 
@@ -36,8 +37,11 @@ function readConfig(): WidgetConfig | null {
   }
 
   const buffers = startBuffers();
+  // Session replay records from the same moment, under the same activation
+  // gates, as the other buffers (contract §Session replay).
+  const recorder = startRecorder();
   const mount = (): void => {
-    const ui = createUI(cfg, buffers);
+    const ui = createUI(cfg, buffers, recorder);
     window.__qaPipeline = { open: ui.open, version: VERSION };
   };
   if (document.body) mount();

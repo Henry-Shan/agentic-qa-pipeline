@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import readline from 'node:readline';
+import { autoAssignOnBlock } from './assign';
 import { pidAlive, workerDir, type WorkerConfig } from './config';
 import type { QaReport, QaRun } from './db';
 import type { Ctx, RunHandle } from './state';
@@ -120,6 +121,18 @@ function spawnGated(ctx: Ctx, spec: SpawnSpec): Promise<ChildProcess> {
   });
 }
 
+/**
+ * Model + reasoning-effort flags carried by EVERY real `claude` spawn — the
+ * ship-task dispatch, every `--resume` (steer / rework / verdict-broken), and
+ * the needs-human handoff summarizer. Single source of truth so the three
+ * never drift; configurable via QA_CLAUDE_MODEL / QA_CLAUDE_EFFORT (defaults
+ * opus / xhigh). Not applied to the QA_MOCK_DISPATCH runner — it is a node
+ * script, not claude.
+ */
+function claudeFlags(cfg: WorkerConfig): string[] {
+  return ['--model', cfg.claudeModel, '--effort', cfg.claudeEffort];
+}
+
 function spawnClaude(ctx: Ctx, spec: SpawnSpec): ChildProcess {
   const { cfg } = ctx;
   const env = {
@@ -140,8 +153,8 @@ function spawnClaude(ctx: Ctx, spec: SpawnSpec): ChildProcess {
   }
   const args =
     spec.kind === 'resume'
-      ? ['--resume', spec.sessionId, '-p', spec.prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-      : ['-p', spec.prompt, '--session-id', spec.sessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+      ? ['--resume', spec.sessionId, '-p', spec.prompt, ...claudeFlags(cfg), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+      : ['-p', spec.prompt, '--session-id', spec.sessionId, ...claudeFlags(cfg), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
   return spawn(cfg.claudeBin, args, {
     cwd: cfg.runnerRepo,
     env,
@@ -315,7 +328,16 @@ function needsHumanSummary(ctx: Ctx, sessionId: string): Promise<string | null> 
   return new Promise((resolve) => {
     const child = spawn(
       ctx.cfg.claudeBin,
-      ['--resume', sessionId, '-p', HANDOFF_PROMPT, '--output-format', 'json', '--dangerously-skip-permissions'],
+      [
+        '--resume',
+        sessionId,
+        '-p',
+        HANDOFF_PROMPT,
+        ...claudeFlags(ctx.cfg),
+        '--output-format',
+        'json',
+        '--dangerously-skip-permissions',
+      ],
       { cwd: ctx.cfg.runnerRepo, env: { ...process.env }, detached: true, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     let out = '';
@@ -394,6 +416,7 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
       const reason = tailChars(flags.resultText, 400) || 'ship-task stopped at one of its gates';
       await ctx.db.updateRun(run.id, { status: 'stopped', stopped_reason: reason, finished_at: finished });
       await ctx.db.updateReport(report.id, { status: 'blocked' });
+      await autoAssignOnBlock(ctx, report.id);
       await ctx.db.insertEvent({ report_id: report.id, run_id: run.id, type: 'error', message: `run stopped: ${reason}` });
       await emitNeedsHuman(ctx, run, reason);
     } else if (flags.limited && !(flags.ok && handedOff)) {
@@ -421,6 +444,7 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
         stopped_reason: 'finished without reporting a PR',
       });
       await ctx.db.updateReport(report.id, { status: 'blocked' });
+      await autoAssignOnBlock(ctx, report.id);
       await ctx.db.insertEvent({
         report_id: report.id,
         run_id: run.id,

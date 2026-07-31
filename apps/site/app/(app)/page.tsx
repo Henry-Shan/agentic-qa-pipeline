@@ -29,7 +29,7 @@ export default async function BoardPage() {
     // Same display-name fallback as useDisplayName (email local-part), so the
     // server band membership matches what the client renders.
     const myName = (meRes.data?.display_name as string | null) || nameOf(userEmail);
-    // Hand-off summaries for the "Needs {name}" band — the signed-in user's
+    // Hand-off summaries for "Assigned to me" — the signed-in user's
     // blocked reports plus reports assigned to their display name.
     const bandIds = reports.filter((r) => inPersonalBand(r, userEmail, myName)).map((r) => r.id);
     if (bandIds.length > 0) {

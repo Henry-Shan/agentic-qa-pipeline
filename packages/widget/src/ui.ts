@@ -1,18 +1,25 @@
 // All widget UI, inside one ShadowRoot: fab → menu → picker → drawer → toast.
 
+import { Replayer } from 'rrweb';
 import type { Buffers } from './buffers';
-import type { ClickTrailEntry, ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
+import type { ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
 import { pickElement } from './picker';
+import { replayDoneMessage, replayEventsField, startRecorder, type Recorder } from './record';
 import { captureShot } from './shot';
 import { startReplay, type ReplayHandle, type ReplayRequest } from './replay';
 import { widgetCss } from './styles';
+import { createTrailList, type TrailList } from './trail-list';
 
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
 // Drawer auto-play cadence: one trail step lights up every ~350ms.
 const STEP_PLAY_MS = 350;
+// Session-replay mini player: progress poll cadence while playing.
+const PLAYER_POLL_MS = 250;
+// A never-played mini player rebuilds itself once this many new steps landed.
+const PLAYER_STALE_STEPS = 5;
 
 export interface WidgetUI {
   host: HTMLElement;
@@ -44,23 +51,6 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-/** Icon + label for one trail entry in the drawer's replay list (contract replay-first icons). */
-function stepView(entry: ClickTrailEntry): { icon: string; label: string } {
-  if (entry.kind === 'input') {
-    if (entry.value === 'checked' || entry.value === 'unchecked') {
-      const name = entry.text ?? entry.testid ?? entry.component ?? 'field';
-      return { icon: '☑', label: `toggled ${truncate(name, 26)} · ${entry.value}` };
-    }
-    const where = entry.text ?? entry.testid ?? entry.component;
-    const typed = `typed "${truncate(entry.value ?? '', 32)}"`;
-    return { icon: '⌨', label: where ? `${typed} · ${truncate(where, 22)}` : typed };
-  }
-  if (entry.text === 'pressed Enter') return { icon: '⏎', label: 'pressed Enter' };
-  const label = entry.text ?? entry.testid ?? entry.component;
-  if (label) return { icon: '⊕', label: truncate(label, 44) };
-  return { icon: '→', label: entry.route };
-}
-
 function prefersReducedMotion(): boolean {
   try {
     return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -69,7 +59,7 @@ function prefersReducedMotion(): boolean {
   }
 }
 
-export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
+export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder | null = null): WidgetUI {
   const host = document.createElement('div');
   host.setAttribute('data-qa-pipeline', '');
   host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483000;';
@@ -92,6 +82,8 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   let toastEl: HTMLElement | null = null;
   let picking = false;
   let replay: ReplayHandle | null = null;
+  /** Per-open teardown: trail subscription, list timers, pill, key handler. */
+  const drawerCleanup: Array<() => void> = [];
 
   // ---- fab -----------------------------------------------------------------
   const fab = h('button', 'qa-fab', '🐛');
@@ -192,6 +184,178 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     };
   }
 
+  // ---- session-replay mini player (contract §Widget drawer replay-first) ---
+  // A real rrweb Replayer over the recorder's buffered events, inside the
+  // shadow root, above the numbered trail list. rrweb sandboxes its replay
+  // iframe itself (sandbox="allow-same-origin", interaction disabled); we scale
+  // the recorded viewport down into the drawer-width ~16:10 stage. Starts
+  // PAUSED on the first frame.
+  let pausePlayer: (() => void) | null = null;
+  let destroyPlayer: (() => void) | null = null;
+  // The recorder keeps filming while the drawer is open, so the mounted player
+  // goes stale. `playerBuiltAtSteps` is the trail length it was built at; once
+  // the tester actually plays it we stop refreshing under them.
+  let playerBuiltAtSteps = 0;
+  let playerPlayed = false;
+  let playerMounted = false;
+
+  /** Tear the Replayer down and mount a fresh one over the newest events (paused, first frame). */
+  function rebuildPlayer(box: HTMLElement): void {
+    destroyPlayer?.();
+    box.textContent = '';
+    initPlayer(box);
+  }
+
+  /** ↻ — the ambient recorder never stopped, so the player can always catch up. */
+  function freshButton(box: HTMLElement): HTMLButtonElement {
+    const btn = h('button', 'rr-btn', '↻');
+    btn.type = 'button';
+    btn.title = 'Update the replay with what you just did';
+    btn.setAttribute('aria-label', 'Update replay with the newest steps');
+    btn.addEventListener('click', () => rebuildPlayer(box));
+    return btn;
+  }
+
+  function initPlayer(box: HTMLElement): void {
+    const events = recorder?.events() ?? [];
+    playerBuiltAtSteps = buffers.clickTrail().length;
+    playerMounted = true;
+    const note = (): void => {
+      box.appendChild(h('div', 'rr-note', 'recording just started — replay will cover from page load next time'));
+      const row = h('div', 'rr-controls');
+      row.appendChild(freshButton(box)); // it can catch up once frames exist
+      box.appendChild(row);
+    };
+    // A playable recording needs at least the Meta + FullSnapshot pair.
+    if (events.length < 2) {
+      note();
+      return;
+    }
+
+    const stage = h('div', 'rr-stage');
+    box.appendChild(stage);
+
+    let replayer: Replayer;
+    try {
+      replayer = new Replayer(events, {
+        root: stage,
+        mouseTail: false,
+        speed: 1,
+        showWarning: false,
+        triggerFocus: false, // replayed focus must never steal the live page's focus
+      });
+    } catch {
+      stage.remove();
+      note();
+      return;
+    }
+
+    // Scale the replay (recorded at the tester's viewport size) into the stage.
+    const fit = (w: number, ht: number): void => {
+      const cw = stage.clientWidth;
+      const ch = stage.clientHeight;
+      if (!cw || !ch || !w || !ht) return;
+      const scale = Math.min(cw / w, ch / ht);
+      const el = replayer.wrapper;
+      el.style.transformOrigin = 'top left';
+      el.style.transform = `scale(${scale})`;
+      el.style.left = `${Math.max(0, (cw - w * scale) / 2)}px`;
+      el.style.top = `${Math.max(0, (ch - ht * scale) / 2)}px`;
+    };
+    replayer.on('resize', (dim) => {
+      const d = dim as { width: number; height: number };
+      fit(d.width, d.height);
+    });
+    try {
+      replayer.pause(0); // first frame, paused — applies Meta and fires 'resize'
+    } catch {
+      /* corrupt event stream — the stage stays on whatever rendered */
+    }
+    fit(Number(replayer.iframe.getAttribute('width')), Number(replayer.iframe.getAttribute('height')));
+
+    const controls = h('div', 'rr-controls');
+    const playBtn = h('button', 'rr-btn', '▶');
+    playBtn.type = 'button';
+    playBtn.setAttribute('aria-label', 'Play replay');
+    const bar = h('div', 'rr-bar');
+    const fill = h('div', 'rr-fill');
+    bar.appendChild(fill);
+    const speedBtn = h('button', 'rr-btn rr-speed', '1×');
+    speedBtn.type = 'button';
+    speedBtn.setAttribute('aria-label', 'Toggle playback speed');
+    controls.append(playBtn, bar, speedBtn, freshButton(box));
+    box.appendChild(controls);
+
+    let playing = false;
+    let speed = 1;
+    const total = Math.max(1, replayer.getMetaData().totalTime);
+    const paint = (): void => {
+      const t = Math.min(replayer.getCurrentTime(), total);
+      fill.style.width = `${Math.max(0, (t / total) * 100)}%`;
+    };
+    paint();
+    const timer = window.setInterval(() => {
+      if (playing) paint();
+    }, PLAYER_POLL_MS);
+
+    const setPlaying = (next: boolean): void => {
+      playing = next;
+      playBtn.textContent = next ? '⏸' : '▶';
+      playBtn.setAttribute('aria-label', next ? 'Pause replay' : 'Play replay');
+    };
+    replayer.on('finish', () => {
+      setPlaying(false);
+      paint();
+    });
+
+    playBtn.addEventListener('click', () => {
+      playerPlayed = true; // from here on the player only refreshes on demand (↻)
+      if (playing) {
+        replayer.pause();
+        setPlaying(false);
+        return;
+      }
+      const t = replayer.getCurrentTime();
+      replayer.play(t >= total ? 0 : t); // replay from the top once finished
+      setPlaying(true);
+    });
+
+    speedBtn.addEventListener('click', () => {
+      speed = speed === 1 ? 2 : 1;
+      speedBtn.textContent = `${speed}×`;
+      if (playing) {
+        const t = replayer.getCurrentTime();
+        replayer.pause();
+        replayer.setConfig({ speed });
+        replayer.play(t);
+      } else {
+        replayer.setConfig({ speed });
+      }
+    });
+
+    pausePlayer = () => {
+      if (!playing) return;
+      replayer.pause();
+      setPlaying(false);
+    };
+    destroyPlayer = () => {
+      clearInterval(timer);
+      try {
+        replayer.pause();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        replayer.destroy();
+      } catch {
+        /* already torn down */
+      }
+      pausePlayer = null;
+      destroyPlayer = null;
+      playerMounted = false;
+    };
+  }
+
   function lastConsoleError(): ConsoleEntry | undefined {
     const log = buffers.consoleLog();
     for (let i = log.length - 1; i >= 0; i--) {
@@ -239,6 +403,15 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     headText.appendChild(h('h3', undefined, title));
     headText.appendChild(h('div', 'sub', 'Everything below was captured automatically'));
     head.appendChild(headText);
+    // Collapse (chevron) → compact pill at the right edge, so the drawer never
+    // covers the UI being reproduced. The panel stays in the DOM: description
+    // text, screenshots and the live subscription all survive untouched.
+    const collapseBtn = h('button', 'drawer-collapse', '›');
+    collapseBtn.type = 'button';
+    collapseBtn.title = 'Collapse — keep reproducing without losing anything';
+    collapseBtn.setAttribute('aria-label', 'Collapse report panel');
+    collapseBtn.addEventListener('click', () => setCollapsed(true));
+    head.appendChild(collapseBtn);
     const close = h('button', 'drawer-close', '×');
     close.type = 'button';
     close.setAttribute('aria-label', 'Discard report');
@@ -246,25 +419,96 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     head.appendChild(close);
     panel.appendChild(head);
 
-    // Primary context section (contract §Widget drawer replay-first): the FULL
-    // numbered trail — what Claude will replay — auto-playing once on open.
-    panel.appendChild(h('div', 'cap-label', 'Replay · what Claude will see'));
-    const steps = buffers.clickTrail();
-    if (steps.length === 0) {
-      panel.appendChild(h('div', 'chip', 'No steps recorded yet'));
-    } else {
-      const list = h('ol', 'replay-list');
-      steps.forEach((entry, i) => {
-        const li = h('li', 'replay-step');
-        const view = stepView(entry);
-        li.appendChild(h('span', 'rs-num', String(i + 1)));
-        li.appendChild(h('span', 'rs-ico', view.icon));
-        li.appendChild(h('span', 'rs-lbl', view.label));
-        list.appendChild(li);
-      });
-      panel.appendChild(list);
-      playTrail(list);
+    // Primary context section (contract §Widget drawer replay-first): the
+    // session-replay mini player on top (initialized once the panel is in the
+    // DOM — the stage needs layout), then the FULL numbered trail — what
+    // Claude will replay — LIVE: steps the tester performs while the drawer is
+    // open append as they happen (buffers.onTrail), the header count tracks
+    // them, and the mini player can be refreshed with ↻.
+    const capRow = h('div', 'cap-label cap-row');
+    capRow.appendChild(h('span', undefined, 'Replay · what Claude will see'));
+    const countEl = h('span', 'cap-count');
+    capRow.appendChild(countEl);
+    panel.appendChild(capRow);
+    const playerBox = h('div', 'rr-player');
+    panel.appendChild(playerBox);
+    playerBuiltAtSteps = buffers.clickTrail().length; // staleness counts from the open
+    const list: TrailList = createTrailList(buffers.clickTrail());
+    drawerCleanup.push(() => list.dispose());
+    panel.appendChild(list.el);
+    panel.appendChild(h('div', 'live-hint', 'Keep using the app — new steps keep recording.'));
+
+    const pillCount = h('span', 'pill-count');
+    function paintCount(): void {
+      const n = list.count();
+      countEl.textContent = `${n} step${n === 1 ? '' : 's'}`;
+      pillCount.textContent = String(n);
     }
+    paintCount();
+    if (list.count() > 0) playTrail(list.el);
+
+    // ONE subscription for the whole drawer, debounced inside buffers (~120ms):
+    // it appends only the new rows (never re-renders the list), repaints the
+    // count, and refreshes a never-played mini player once it is 5+ steps stale.
+    drawerCleanup.push(
+      buffers.onTrail(() => {
+        const steps = buffers.clickTrail();
+        const result = list.sync(steps);
+        if (result.added > 0) {
+          stopPlayback?.(); // the one-shot run-through gives way to live steps
+          paintCount();
+        } else if (result.updated) {
+          paintCount();
+        }
+        if (!playerPlayed && steps.length - playerBuiltAtSteps >= PLAYER_STALE_STEPS) {
+          rebuildPlayer(playerBox);
+        }
+      }),
+    );
+
+    // ---- collapse ↔ pill ---------------------------------------------------
+    // Collapsed, the panel is only display:none — every bit of form state
+    // (description text, screenshots) and the live subscription stay alive, so
+    // expanding returns the tester to exactly what they had, with the steps
+    // taken meanwhile already in the list.
+    let collapsed = false;
+    const pill = h('button', 'qa-pill');
+    pill.type = 'button';
+    pill.title = 'Back to your report';
+    pill.setAttribute('aria-label', 'Expand report panel');
+    pill.appendChild(h('span', undefined, '🐛'));
+    pill.appendChild(pillCount);
+    pill.addEventListener('click', () => setCollapsed(false));
+    drawerCleanup.push(() => pill.remove());
+
+    function setCollapsed(next: boolean): void {
+      if (next === collapsed) return;
+      collapsed = next;
+      collapseBtn.setAttribute('aria-expanded', next ? 'false' : 'true');
+      if (next) {
+        pausePlayer?.(); // nothing replays while the panel is out of sight
+        panel.style.display = 'none';
+        root.appendChild(pill);
+      } else {
+        pill.remove();
+        panel.style.display = '';
+        desc.focus();
+      }
+    }
+    collapseBtn.setAttribute('aria-expanded', 'true');
+
+    // Escape NEVER discards the report (contract: avoid data loss) — × stays
+    // the one explicit discard. It collapses instead, which loses nothing.
+    const onDrawerKey = (e: KeyboardEvent): void => {
+      // The lightbox owns its own Escape; collapsed, the drawer is out of the
+      // way already and the host page keeps its own Escape handling.
+      if (e.key !== 'Escape' || picking || lightbox || collapsed) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCollapsed(true);
+    };
+    window.addEventListener('keydown', onDrawerKey, true);
+    drawerCleanup.push(() => window.removeEventListener('keydown', onDrawerKey, true));
 
     // Screenshots: compact thumbnail row below the trail (capture unchanged;
     // each thumb enlarges via the lightbox).
@@ -322,6 +566,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     async function addShot(): Promise<void> {
       if (picking || draft.extraShots.length >= MAX_EXTRA_SHOTS) return;
       picking = true;
+      pausePlayer?.(); // don't keep replaying while the drawer is hidden
       panel.style.display = 'none';
       try {
         const element = await pickElement(root, { ignore: host });
@@ -376,12 +621,26 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     root.appendChild(panel);
     drawer = panel;
     fab.hidden = true;
-    requestAnimationFrame(() => desc.focus());
+    requestAnimationFrame(() => {
+      if (!playerMounted) initPlayer(playerBox); // a live-append refresh may have beaten us here
+      desc.focus();
+    });
   }
 
   function closeDrawer(): void {
     stopPlayback?.();
+    destroyPlayer?.();
     closeLightbox();
+    for (const undo of drawerCleanup.splice(0)) {
+      try {
+        undo();
+      } catch {
+        /* teardown is best-effort — the drawer still closes */
+      }
+    }
+    playerPlayed = false;
+    playerMounted = false;
+    playerBuiltAtSteps = 0;
     drawer?.remove();
     drawer = null;
     if (!replay) fab.hidden = false;
@@ -416,18 +675,25 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
         if (typeof d.selector === 'string' && d.selector) req.selector = d.selector;
         if (typeof d.elementText === 'string' && d.elementText) req.elementText = d.elementText;
         fab.hidden = true;
+        // After-the-fix recording (contract §Session replay): a DEDICATED rrweb
+        // recorder covers exactly this execution — started here, stopped when
+        // the run settles. The ambient session recorder is never touched.
+        const afterRecorder = startRecorder();
         const handle = startReplay(req, { container: root, ignore: host });
         replay = handle;
         void handle.done.then((result) => {
-          if (replay !== handle) return; // superseded by a restart
+          if (replay !== handle) {
+            afterRecorder.dispose(); // superseded by a restart — drop this take
+            return;
+          }
           replay = null;
           if (!drawer && !picking) fab.hidden = false;
           if (result) {
-            window.parent.postMessage(
-              { type: 'qa-pipeline:replay-done', shown: result.shown, skipped: result.skipped },
-              origin,
-            );
+            // Read the events BEFORE dispose() releases the buffers; the field
+            // is omitted when the recording is empty or over the 8M-char cap.
+            window.parent.postMessage(replayDoneMessage(result, afterRecorder), origin);
           }
+          afterRecorder.dispose();
         });
       });
     }
@@ -550,6 +816,10 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     const [firstShot, ...restShots] = shots;
     if (firstShot) body.screenshotDataUrl = firstShot;
     if (restShots.length > 0) body.screenshotsDataUrls = restShots.slice(0, MAX_EXTRA_SHOTS);
+    // Session replay (contract §Session replay): stringified rrweb events,
+    // omitted when empty or over the 8M-char cap (measured after stringify).
+    const replayJson = replayEventsField(recorder);
+    if (replayJson !== undefined) body.replayEvents = replayJson;
 
     try {
       const res = await buffers.rawFetch(`${cfg.endpoint}/api/ingest`, {

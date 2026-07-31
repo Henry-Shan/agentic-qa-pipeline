@@ -4,12 +4,16 @@
 // destroy leg (message kind `destroy` → preview dead, worktree gone, report
 // row hard-deleted with runs/messages cascade-gone; gh mocked away), then a
 // blocked leg (QA_MOCK_MODE=blocked → run exits with the blocked sentinel,
-// report `blocked`, needs_human handoff event, no PR; summarizer mocked),
-// then cleans up every row and tmp dir it created. Run: npm run selftest
+// report `blocked`, needs_human handoff event, no PR; summarizer mocked) run
+// TWICE to pin auto-assign-on-block precedence: once for a reporter who has a
+// qa_allowed_emails.display_name (assignee = that name) and once for one who
+// does not (assignee = QA_DEFAULT_ASSIGNEE) — each asserting the report ends
+// `blocked`, `assignee` is set, and the auto-assign system event exists.
+// Then cleans up every row and tmp dir it created. Run: npm run selftest
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, pidAlive, workerDir } from './config';
+import { loadConfig, pidAlive, workerDir, type WorkerConfig } from './config';
 import { Db, type QaReport } from './db';
 import { startWorker, type WorkerHandle } from './index';
 import { stopAllPreviews } from './preview';
@@ -60,11 +64,97 @@ async function check(name: string, pred: () => Promise<boolean>, timeoutMs: numb
   if (!ok) throw new Error(`step failed: ${name}`);
 }
 
+// ---- blocked-leg fixtures (auto-assign-on-block precedence) ----------------
+// Two throwaway reporter identities. The "named" one gets a temporary
+// qa_allowed_emails row with a display_name (deleted in cleanup); the "noname"
+// one is never allow-listed, so it must fall through to QA_DEFAULT_ASSIGNEE.
+const NAMED_EMAIL = 'selftest-named@example.com';
+const NAMED_DISPLAY = 'selftest-tester';
+const NONAME_EMAIL = 'selftest-noname@example.com';
+
+async function seedBlockedReport(db: Db, reporterEmail: string, label: string): Promise<QaReport> {
+  const row = await db.insertReport({
+    title: `[selftest] fake blocked report (${label}) — safe to delete`,
+    description: 'inserted by worker selftest (blocked leg); will be deleted at the end of the run',
+    kind: 'bug',
+    status: 'queued',
+    reporter_email: reporterEmail,
+    route: '/selftest',
+    page_title: `Selftest (blocked · ${label})`,
+    click_trail: [],
+    console_log: [],
+    network_log: [],
+    screenshots: [],
+  });
+  record(`blocked/${label}: fake qa_report inserted`, true, `id ${row.id}, reporter ${reporterEmail}`);
+  return row;
+}
+
+/**
+ * Drive one blocked leg to settlement and assert the whole needs-a-human
+ * contract for it: status `blocked`, the three-section needs_human handoff, no
+ * PR, `assignee` = the expected name, and the auto-assign system event.
+ */
+async function assertBlockedLeg(
+  db: Db,
+  cfg: WorkerConfig,
+  reportId: number,
+  expectedAssignee: string,
+  label: string,
+): Promise<void> {
+  cfg.onlyReportId = reportId;
+  await check(
+    `blocked/${label}: queued -> running`,
+    async () => (await db.getReport(reportId))?.status === 'running',
+    30_000,
+  );
+  await check(
+    `blocked/${label}: run settles -> report blocked`,
+    async () => (await db.getReport(reportId))?.status === 'blocked',
+    60_000,
+  );
+  await check(
+    `blocked/${label}: needs_human event with the three handoff sections`,
+    async () => {
+      const run = await db.latestRunForReport(reportId);
+      if (!run) return false;
+      const msg = (await db.eventsForRun(run.id, 'needs_human'))[0]?.message ?? '';
+      return (
+        msg.includes('**What went wrong**') &&
+        msg.includes('**What I analyzed**') &&
+        msg.includes('**What to do**')
+      );
+    },
+    30_000,
+  );
+  // Auto-assign lands with the status write, but both are async — wait for it.
+  await check(
+    `blocked/${label}: auto-assigned to ${expectedAssignee}`,
+    async () => (await db.getReport(reportId))?.assignee === expectedAssignee,
+    30_000,
+  );
+  const events = await db.eventsForReport(reportId, 'system');
+  const wanted = `auto-assigned to ${expectedAssignee} — needs a human`;
+  const matches = events.filter((e) => e.message === wanted);
+  record(
+    `blocked/${label}: auto-assign system event (exactly one)`,
+    matches.length === 1,
+    matches.length === 1 ? wanted : `found ${matches.length} matching of ${events.length} system events`,
+  );
+  const run = await db.latestRunForReport(reportId);
+  record(
+    `blocked/${label}: no pr_url on the run`,
+    run !== null && run.pr_url === null,
+    run ? (run.pr_url ?? 'pr_url null') : 'no run row',
+  );
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const db = new Db(cfg);
   let report: QaReport | null = null;
-  let blockedReport: QaReport | null = null;
+  const blockedReports: QaReport[] = [];
+  let allowedSeeded = false;
   let handle: WorkerHandle | null = null;
   let worktree: string | null = null;
 
@@ -154,60 +244,30 @@ async function main(): Promise<void> {
       !fs.existsSync(path.join(scratchHome, 'runs', String(id))),
     );
 
-    // ---- blocked leg: run exits with the blocked sentinel, no PR ----
+    // ---- blocked legs: run exits with the blocked sentinel, no PR ----
     // QA_MOCK_MODE is inherited by mock-run.mjs from the worker's env at spawn
     // time; the needs-human summarizer is mocked in-process by QA_MOCK_DISPATCH
-    // (no `claude --resume` spawn).
+    // (no `claude --resume` spawn). Run twice to pin auto-assign precedence.
     process.env.QA_MOCK_MODE = 'blocked';
-    blockedReport = await db.insertReport({
-      title: '[selftest] fake blocked report — safe to delete',
-      description: 'inserted by worker selftest (blocked leg); will be deleted at the end of the run',
-      kind: 'bug',
-      status: 'queued',
-      reporter_email: 'selftest@example.com',
-      route: '/selftest',
-      page_title: 'Selftest (blocked)',
-      click_trail: [],
-      console_log: [],
-      network_log: [],
-      screenshots: [],
-    });
-    record('blocked: fake qa_report inserted', true, `id ${blockedReport.id}`);
-    const bid = blockedReport.id;
-    cfg.onlyReportId = bid;
 
-    await check(
-      'blocked: queued -> running',
-      async () => (await db.getReport(bid))?.status === 'running',
-      30_000,
+    // Leg 1 — the reporter HAS a display_name: it must beat QA_DEFAULT_ASSIGNEE.
+    await db.upsertAllowedEmail(NAMED_EMAIL, NAMED_DISPLAY);
+    allowedSeeded = true;
+    record('blocked: seeded reporter display name', true, `${NAMED_EMAIL} -> ${NAMED_DISPLAY}`);
+    const named = await seedBlockedReport(db, NAMED_EMAIL, 'display-name');
+    blockedReports.push(named);
+    await assertBlockedLeg(db, cfg, named.id, NAMED_DISPLAY, 'display-name');
+
+    // Leg 2 — the reporter has none, so the default takes over. Assert the
+    // premise too: a stray display_name here would silently void the test.
+    record(
+      'blocked: default-leg reporter really has no display name',
+      (await db.displayNameForEmail(NONAME_EMAIL)) === null,
+      NONAME_EMAIL,
     );
-    await check(
-      'blocked: run settles -> report blocked',
-      async () => (await db.getReport(bid))?.status === 'blocked',
-      60_000,
-    );
-    await check(
-      'blocked: needs_human event with the three handoff sections',
-      async () => {
-        const run = await db.latestRunForReport(bid);
-        if (!run) return false;
-        const msg = (await db.eventsForRun(run.id, 'needs_human'))[0]?.message ?? '';
-        return (
-          msg.includes('**What went wrong**') &&
-          msg.includes('**What I analyzed**') &&
-          msg.includes('**What to do**')
-        );
-      },
-      30_000,
-    );
-    {
-      const run = await db.latestRunForReport(bid);
-      record(
-        'blocked: no pr_url on the run',
-        run !== null && run.pr_url === null,
-        run ? (run.pr_url ?? 'pr_url null') : 'no run row',
-      );
-    }
+    const noname = await seedBlockedReport(db, NONAME_EMAIL, 'default');
+    blockedReports.push(noname);
+    await assertBlockedLeg(db, cfg, noname.id, cfg.defaultAssignee, 'default');
   } catch (e) {
     if (results.every((r) => r.ok)) record('selftest', false, (e as Error).message);
   } finally {
@@ -237,10 +297,19 @@ async function main(): Promise<void> {
     } catch (e) {
       record('cleanup: delete seeded report', false, (e as Error).message);
     }
-    try {
-      if (blockedReport) await db.deleteReport(blockedReport.id); // cascades runs/events/messages
-    } catch (e) {
-      record('cleanup: delete seeded blocked report', false, (e as Error).message);
+    for (const row of blockedReports) {
+      try {
+        await db.deleteReport(row.id); // cascades runs/events/messages
+      } catch (e) {
+        record(`cleanup: delete seeded blocked report ${row.id}`, false, (e as Error).message);
+      }
+    }
+    if (allowedSeeded) {
+      try {
+        await db.deleteAllowedEmail(NAMED_EMAIL);
+      } catch (e) {
+        record('cleanup: delete seeded tester display name', false, (e as Error).message);
+      }
     }
     delete process.env.QA_MOCK_MODE;
     fs.rmSync(scratchHome, { recursive: true, force: true });

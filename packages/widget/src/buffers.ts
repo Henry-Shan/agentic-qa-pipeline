@@ -20,6 +20,8 @@ const FIELD_LABEL_CHARS = 40;
 // 'change' is the primary input-step trigger; the debounced 'input' fallback
 // covers fields whose frameworks clear/re-render the value on change.
 const INPUT_DEBOUNCE_MS = 700;
+// onTrail fan-out cadence: a burst of appends/coalesces wakes subscribers ONCE.
+const TRAIL_NOTIFY_MS = 120;
 
 // HARD PRIVACY RULE — fields whose autocomplete matches this are never recorded.
 const SENSITIVE_AUTOCOMPLETE_RE = /password|cc-|card|otp/i;
@@ -51,6 +53,15 @@ export interface Buffers {
   consoleLog(): ConsoleEntry[];
   networkLog(): NetworkEntry[];
   clickTrail(): ClickTrailEntry[];
+  /**
+   * Subscribe to trail CHANGES — a new step appended OR the newest step
+   * coalesced/updated in place (typing refreshes one entry). The callback is
+   * debounced ~120ms and carries no payload: read `clickTrail()` when it fires.
+   * A burst of events wakes subscribers exactly once, and with no subscribers
+   * nothing is scheduled at all. Returns an unsubscribe function; `dispose()`
+   * drops every subscriber and any pending notification.
+   */
+  onTrail(cb: () => void): () => void;
   /** fetch as it was before patching — the widget's own requests bypass capture */
   rawFetch: typeof fetch;
   /** clicks inside this element (the widget's own UI) are not recorded */
@@ -162,6 +173,32 @@ export function startBuffers(): Buffers {
   const trail = new Ring<ClickTrailEntry>(TRAIL_MAX);
   let ignoreRoot: Element | null = null;
   const disposers: Array<() => void> = [];
+
+  // --- trail subscription (contract: the drawer's live step list) ----------
+  // One shared trailing-debounce timer for ALL subscribers: a burst of steps
+  // (typing coalesces on every keystroke pause) allocates one timer, not one
+  // per event, and the drawer re-renders at most every TRAIL_NOTIFY_MS.
+  const trailSubs = new Set<() => void>();
+  let trailTimer: number | undefined;
+  const emitTrail = (): void => {
+    trailTimer = undefined;
+    for (const cb of trailSubs) {
+      try {
+        cb();
+      } catch {
+        /* a subscriber must never break capture */
+      }
+    }
+  };
+  const trailChanged = (): void => {
+    if (trailSubs.size === 0 || trailTimer !== undefined) return;
+    trailTimer = window.setTimeout(emitTrail, TRAIL_NOTIFY_MS);
+  };
+  /** Append + notify — every trail write goes through here (or trailChanged for in-place updates). */
+  const pushStep = (entry: ClickTrailEntry): void => {
+    trail.push(entry);
+    trailChanged();
+  };
 
   const pushConsole = (level: 'error' | 'warn', parts: unknown[]): void => {
     const text = scrubString(parts.map(formatArg).join(' ')).slice(0, CONSOLE_CHARS);
@@ -362,7 +399,7 @@ export function startBuffers(): Buffers {
     stepMetaInto(entry, target);
     activeInput = null;
     suppressChangeFor = null;
-    trail.push(entry);
+    pushStep(entry);
   };
   window.addEventListener('click', onClick, true);
   disposers.push(() => window.removeEventListener('click', onClick, true));
@@ -383,10 +420,11 @@ export function startBuffers(): Buffers {
     if (label) entry.text = label;
     if (activeInput && activeInput.el === el) {
       Object.assign(activeInput.entry, entry); // still the latest step — refresh in place
+      trailChanged(); // an update is a change: the live list re-reads the same entry
       return;
     }
     activeInput = { el, entry };
-    trail.push(entry);
+    pushStep(entry);
   };
 
   /** Discrete toggle step — checkbox/radio state changes never coalesce. */
@@ -401,7 +439,7 @@ export function startBuffers(): Buffers {
     const label = fieldLabel(el);
     if (label) entry.text = label;
     activeInput = null;
-    trail.push(entry);
+    pushStep(entry);
   };
 
   const clearInputTimer = (el: Element): void => {
@@ -497,20 +535,20 @@ export function startBuffers(): Buffers {
     stepMetaInto(entry, el);
     activeInput = null;
     suppressChangeFor = el; // the commit-on-Enter change would duplicate the flush
-    trail.push(entry);
+    pushStep(entry);
   };
   window.addEventListener('keydown', onKeydown, true);
   disposers.push(() => window.removeEventListener('keydown', onKeydown, true));
 
   // --- route changes -------------------------------------------------------
   let lastRoute = location.pathname;
-  trail.push({ ts: Date.now(), route: lastRoute });
+  pushStep({ ts: Date.now(), route: lastRoute });
   const recordRoute = (): void => {
     if (location.pathname === lastRoute) return;
     lastRoute = location.pathname;
     activeInput = null; // a route change seals any in-progress input step
     suppressChangeFor = null;
-    trail.push({ ts: Date.now(), route: lastRoute });
+    pushStep({ ts: Date.now(), route: lastRoute });
   };
   const pushStateOrig = history.pushState;
   const replaceStateOrig = history.replaceState;
@@ -534,12 +572,27 @@ export function startBuffers(): Buffers {
     consoleLog: () => consoles.list(),
     networkLog: () => network.list(),
     clickTrail: () => trail.list(),
+    onTrail: (cb) => {
+      trailSubs.add(cb);
+      return () => {
+        trailSubs.delete(cb);
+        if (trailSubs.size === 0 && trailTimer !== undefined) {
+          clearTimeout(trailTimer); // nobody left to wake
+          trailTimer = undefined;
+        }
+      };
+    },
     rawFetch: nativeFetch,
     setIgnoreRoot: (el) => {
       ignoreRoot = el;
     },
     dispose: () => {
       for (const undo of disposers.splice(0)) undo();
+      trailSubs.clear();
+      if (trailTimer !== undefined) {
+        clearTimeout(trailTimer);
+        trailTimer = undefined;
+      }
     },
   };
 }

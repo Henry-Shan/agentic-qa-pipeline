@@ -102,6 +102,8 @@ export interface QaReport {
   console_log: ConsoleEntry[];
   network_log: NetworkEntry[];
   screenshots: string[];
+  /** Storage path of the rrweb recording JSON, e.g. report-7/replay.json (db/0006_replay_path.sql). */
+  replay_path: string | null;
   viewport: Viewport | null;
   app_context: Record<string, string> | null;
   envelope: unknown;
@@ -127,6 +129,12 @@ export interface QaRun {
   preview_url: string | null;
   preview_port: number | null;
   preview_status: PreviewStatus;
+  /**
+   * Storage path of the "after the fix" rrweb recording — the replay executed
+   * against this run's preview build, e.g. report-7/after-replay-12.json
+   * (db/0007_after_replay_path.sql).
+   */
+  after_replay_path: string | null;
   grounding: GroundingChip[] | null;
   files_changed: FileChange[] | null;
   log_tail: string | null;

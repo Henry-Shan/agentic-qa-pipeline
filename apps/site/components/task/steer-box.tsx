@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { getBrowserClient } from '@/lib/supabase/client';
+import { guardReport } from '@/lib/report-gone';
 import { AssignControl } from '@/components/task/assign-control';
 import type { MessageKind, ReportStatus } from '@/lib/types';
 
@@ -11,15 +12,19 @@ interface Props {
   /** Current qa_reports.assignee (display name) or null. */
   assignee: string | null;
   userEmail: string;
+  /** The report row is gone — the page swaps to its deleted state. */
+  onReportGone: () => void;
 }
 
-export function SteerBox({ reportId, status, assignee, userEmail }: Props) {
+export function SteerBox({ reportId, status, assignee, userEmail, onReportGone }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
-  // blocked = run is alive polling /api/answer for a question; it holds a
-  // dispatch slot until answered, so it must be stoppable too.
+  // Stop is offered only while a run is actually moving (contracts § Task
+  // action row).
+  // `blocked` is stoppable too: such a run still holds a dispatch slot and polls
+  // for an answer, so the human needs a way to end it from here.
   const canStop = status === 'running' || status === 'rework' || status === 'blocked';
   const canVerdict = status === 'pr_ready' || status === 'preview';
   const hasText = text.trim().length > 0;
@@ -29,11 +34,17 @@ export function SteerBox({ reportId, status, assignee, userEmail }: Props) {
     setBusy(true);
     setNote(null);
     const supabase = getBrowserClient();
-    const { error } = await supabase
-      .from('qa_messages')
-      .insert({ report_id: reportId, author_email: userEmail, body, kind });
+    // qa_messages FKs into qa_reports: a report deleted while this tab was
+    // open fails the insert rather than queueing an orphan message.
+    const sent = await guardReport(() =>
+      supabase.from('qa_messages').insert({ report_id: reportId, author_email: userEmail, body, kind }),
+    );
+    if (sent.status === 'gone') {
+      onReportGone();
+      return;
+    }
     setBusy(false);
-    if (error) {
+    if (sent.status === 'error') {
       setNote('Could not send — try again.');
       return;
     }
@@ -77,24 +88,36 @@ export function SteerBox({ reportId, status, assignee, userEmail }: Props) {
         }
         className="h-20 w-full resize-none rounded-[10px] border border-line bg-surface px-3 py-2.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none"
       />
-      <div className="mt-2 flex flex-wrap gap-2">
-        {canStop ? (
-          <button
-            onClick={() => void send('stop', '', 'Stop signal sent.')}
-            disabled={busy}
-            className="rounded-lg border border-red/40 bg-stage px-3.5 py-2 text-[12.5px] font-semibold text-red disabled:opacity-50"
-          >
-            ■ Stop run
-          </button>
-        ) : null}
+      {/* One organized action row (contracts § Task action row): primary Send ·
+          secondary Assign to me · quiet destructive Stop, right-aligned behind
+          a hairline. All 36px tall, 8px radius, 8px gaps; wraps at narrow widths
+          (the Stop group keeps its own line rather than crowding Assign). */}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           onClick={() => void send('steer', text.trim(), 'Sent — Claude will pick it up shortly.')}
           disabled={busy || !hasText}
-          className="min-w-32 flex-1 rounded-lg bg-qa px-3.5 py-2 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
+          className="h-9 min-w-32 flex-1 rounded-lg bg-qa px-3.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
         >
           Send to Claude
         </button>
-        <AssignControl reportId={reportId} assignee={assignee} userEmail={userEmail} />
+        <AssignControl
+          reportId={reportId}
+          assignee={assignee}
+          userEmail={userEmail}
+          onReportGone={onReportGone}
+        />
+        {canStop ? (
+          <div className="ml-auto flex items-center gap-2 border-l border-line-soft pl-2">
+            <button
+              onClick={() => void send('stop', '', 'Stop signal sent.')}
+              disabled={busy}
+              title="Stop the run in progress"
+              className="h-9 rounded-lg px-3 text-[12.5px] font-semibold text-red transition-colors hover:bg-red-soft disabled:opacity-50"
+            >
+              ■ Stop run
+            </button>
+          </div>
+        ) : null}
       </div>
       {note ? <div className="mt-2 text-[11.5px] text-ink-3">{note}</div> : null}
     </div>

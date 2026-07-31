@@ -42,6 +42,8 @@ export interface QaReport {
   app_context: unknown;
   envelope: unknown;
   dedup_note: string | null;
+  /** Tester display name this report is assigned to (db/0005_assignee.sql). */
+  assignee: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -155,6 +157,24 @@ export class Db {
       .select('id')
       .maybeSingle();
     if (r.error) throw new Error(`updateReportIfStatus ${id}: ${r.error.message}`);
+    return r.data !== null;
+  }
+
+  /**
+   * Claim an UNASSIGNED report for `name` (contracts § Auto-assign on block).
+   * The `is('assignee', null)` guard is what makes auto-assign idempotent and
+   * makes manual assignment win: a second call — or a race with the tester's
+   * own picker — updates no row and returns false, so no duplicate event.
+   */
+  async assignIfUnassigned(id: number, name: string): Promise<boolean> {
+    const r = await this.c
+      .from('qa_reports')
+      .update({ assignee: name })
+      .eq('id', id)
+      .is('assignee', null)
+      .select('id')
+      .maybeSingle();
+    if (r.error) throw new Error(`assignIfUnassigned ${id}: ${r.error.message}`);
     return r.data !== null;
   }
 
@@ -314,6 +334,18 @@ export class Db {
     if (r.error) log('db', `insertEvent failed (report ${fields.report_id}): ${r.error.message}`);
   }
 
+  /** Events of one type for a report (auto-assign idempotency + selftest asserts). */
+  async eventsForReport(reportId: number, type: string): Promise<QaEvent[]> {
+    const r = await this.c
+      .from('qa_events')
+      .select('*')
+      .eq('report_id', reportId)
+      .eq('type', type)
+      .order('id', { ascending: true });
+    if (r.error) throw new Error(`eventsForReport ${reportId}: ${r.error.message}`);
+    return (r.data as QaEvent[] | null) ?? [];
+  }
+
   /** Events of one type for a run (needs_human idempotency + selftest asserts). */
   async eventsForRun(runId: number, type: string): Promise<QaEvent[]> {
     const r = await this.c
@@ -324,6 +356,42 @@ export class Db {
       .order('id', { ascending: true });
     if (r.error) throw new Error(`eventsForRun ${runId}: ${r.error.message}`);
     return (r.data as QaEvent[] | null) ?? [];
+  }
+
+  // ---- qa_allowed_emails ---------------------------------------------------
+
+  /**
+   * Chosen display name for a tester email (contracts § Display names), or
+   * null when the email is unknown / has none. A lookup failure is logged and
+   * degrades to null (the caller falls back to QA_DEFAULT_ASSIGNEE) rather
+   * than aborting whatever transition asked for it.
+   */
+  async displayNameForEmail(email: string): Promise<string | null> {
+    const r = await this.c
+      .from('qa_allowed_emails')
+      .select('display_name')
+      .eq('email', email)
+      .maybeSingle();
+    if (r.error) {
+      log('db', `displayNameForEmail ${email} failed: ${r.error.message}`);
+      return null;
+    }
+    const name = (r.data as { display_name: string | null } | null)?.display_name ?? null;
+    return name && name.trim() ? name.trim() : null;
+  }
+
+  /** Selftest fixture: seed a tester row so display-name precedence is provable. */
+  async upsertAllowedEmail(email: string, displayName: string | null): Promise<void> {
+    const r = await this.c
+      .from('qa_allowed_emails')
+      .upsert({ email, display_name: displayName }, { onConflict: 'email' });
+    if (r.error) throw new Error(`upsertAllowedEmail ${email}: ${r.error.message}`);
+  }
+
+  /** Selftest fixture cleanup. */
+  async deleteAllowedEmail(email: string): Promise<void> {
+    const r = await this.c.from('qa_allowed_emails').delete().eq('email', email);
+    if (r.error) throw new Error(`deleteAllowedEmail ${email}: ${r.error.message}`);
   }
 
   // ---- qa_messages ---------------------------------------------------------

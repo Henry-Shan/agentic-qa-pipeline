@@ -57,6 +57,13 @@ export interface IngestBody {
   screenshotDataUrl?: string;
   /** Additional captures (≤3), same limits each — server stores marked-2.png … */
   screenshotsDataUrls?: string[];
+  /**
+   * JSON.stringify of the buffered rrweb events (contract §Session replay) —
+   * client-capped at 8_000_000 chars measured AFTER stringify; the field is
+   * omitted entirely when over (never truncated). Server stores it VERBATIM as
+   * report-<id>/replay.json.
+   */
+  replayEvents?: string;
 }
 
 export interface WidgetConfig {

@@ -563,6 +563,119 @@ describe('total-recall recording (window-level capture)', () => {
   });
 });
 
+// The drawer's live step list subscribes to this (contract §Widget drawer
+// replay-first): it must fire on appends AND on in-place coalesces, coalesce
+// bursts into one wake-up, and release cleanly.
+describe('onTrail subscription', () => {
+  const DEBOUNCE = 120;
+
+  function click(): void {
+    document.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '<button>Save</button>';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires after a new step is appended', () => {
+    const cb = vi.fn();
+    buffers.onTrail(cb);
+    click();
+    expect(cb).not.toHaveBeenCalled(); // debounced, not synchronous
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(buffers.clickTrail().at(-1)?.text).toBe('Save');
+  });
+
+  it('coalesces a burst of appends into a single notification', () => {
+    const cb = vi.fn();
+    buffers.onTrail(cb);
+    click();
+    click();
+    click();
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(buffers.clickTrail().filter((e) => e.text === 'Save').length).toBe(3);
+    click(); // a later burst wakes subscribers again
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(cb).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires when the newest step is coalesced/updated in place (typing)', () => {
+    document.body.innerHTML = '<input aria-label="Notes" />';
+    const input = document.querySelector('input') as HTMLInputElement;
+    const cb = vi.fn();
+    buffers.onTrail(cb);
+
+    input.value = 'ab';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(cb).toHaveBeenCalledTimes(1);
+    const afterAppend = buffers.clickTrail().length;
+
+    input.value = 'abcd'; // same field, still the newest step → updated in place
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(buffers.clickTrail().length).toBe(afterAppend); // no new row, just an update
+    expect(buffers.clickTrail().at(-1)?.value).toBe('abcd');
+  });
+
+  it('notifies every subscriber and stops on unsubscribe', () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const offA = buffers.onTrail(a);
+    buffers.onTrail(b);
+    click();
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+
+    offA();
+    click();
+    vi.advanceTimersByTime(DEBOUNCE);
+    expect(a).toHaveBeenCalledTimes(1); // gone
+    expect(b).toHaveBeenCalledTimes(2);
+    offA(); // idempotent
+    expect(() => offA()).not.toThrow();
+  });
+
+  it('drops a pending notification when the last subscriber unsubscribes', () => {
+    const cb = vi.fn();
+    const off = buffers.onTrail(cb);
+    click();
+    off();
+    vi.advanceTimersByTime(DEBOUNCE * 4);
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it('a throwing subscriber never breaks capture or the others', () => {
+    const good = vi.fn();
+    buffers.onTrail(() => {
+      throw new Error('subscriber blew up');
+    });
+    buffers.onTrail(good);
+    click();
+    expect(() => vi.advanceTimersByTime(DEBOUNCE)).not.toThrow();
+    expect(good).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispose() clears subscribers and any pending notification', () => {
+    const cb = vi.fn();
+    buffers.onTrail(cb);
+    click();
+    buffers.dispose();
+    vi.advanceTimersByTime(DEBOUNCE * 4);
+    expect(cb).not.toHaveBeenCalled();
+    buffers = startBuffers(); // afterEach disposes this one
+  });
+});
+
 describe('dispose', () => {
   it('restores fetch and console patches', () => {
     const patchedFetch = window.fetch;

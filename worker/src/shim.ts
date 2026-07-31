@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
+import { autoAssignOnBlock } from './assign';
 import type { FileChanged, GroundingChip, QaRun } from './db';
 import { SHIM_TOKEN } from './dispatch';
 import { startPreview } from './preview';
@@ -214,6 +215,8 @@ async function handleAsk(ctx: Ctx, req: http.IncomingMessage, res: http.ServerRe
     },
   });
   await ctx.db.updateReport(run.report_id, { status: 'blocked' });
+  // a parked question is a needs-a-human handoff too — give it an owner
+  await autoAssignOnBlock(ctx, run.report_id);
   // the run is now polling GET /api/answer — steer must deliver there, not SIGINT
   ctx.state.setAskPending(run.report_id, true);
   log('shim', `question from run ${run.id}: ${question.slice(0, 120)}`);

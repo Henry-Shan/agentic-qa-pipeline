@@ -240,23 +240,76 @@ v1 (RN TextInput patching is invasive) — noted limitation. Submit → POST
 token>` (native requests carry no Origin header; the ingest CORS gate only applies when Origin
 is present), body per IngestBody with `appContext.platform='mobile'` and `route` = expo-router
 pathname. Reporter identity = the verified session email, as on web.
+- **Auto-assign on block**: the moment a report becomes `blocked` (a STOP outcome or a posted
+  `/api/ask` question), the worker assigns it — if `assignee` is null — to the reporter's
+  display name when they have one, else to `QA_DEFAULT_ASSIGNEE` (worker env). It writes a
+  `qa_events` `{type:'system'}` line "auto-assigned to <name> — needs a human" so the handoff is
+  visible. Manual assignment always wins and is never overwritten.
+- **"Assigned to me"**: every signed-in tester's board opens with an *Assigned to me* section
+  (the former "Needs <name>" band): reports assigned to their display name in ANY non-cancelled
+  status, plus blocked reports they filed. Blocked rows lead with the needs_human summary and an
+  "<name> is on it" chip; the section is titled "Assigned to me" with a count, and renders an
+  empty-state line ("Nothing assigned to you") rather than disappearing, so it's a stable home
+  for each member.
 - **Assignment**: `qa_reports.assignee` holds a tester display name. The task page's steer card
-  gains **Assign to <name>** beside Send — a small picker over `qa_tester_names` (defaults to the
-  signed-in user's own name); assigning writes `assignee` + a system event "assigned to <name>
-  by <assigner>"; an "Unassign" option clears it. The board's personal band becomes the user's
-  TASK LIST: titled "Needs <displayName>", it lists (a) reports ASSIGNED to that name — any
-  status, with an "assigned" chip — and (b) blocked reports they filed; each row links to the
-  task and shows the needs_human summary when present.
+  shows a SINGLE button **Assign to <my display name>** beside Send — no picker, no dropdown.
+  Assigning writes `assignee` + a system event "assigned to <name> by <assigner>". Once the
+  report is theirs the button becomes a quiet "Assigned to <me>" chip with a × to unassign; a
+  report assigned to someone else still shows the button (one-click takeover). The board's
+  section is defined by the "Assigned to me" bullet above.
+- **Stale-report safety**: every task-page mutation writes through `lib/report-gone.ts` —
+  updates must confirm they hit a row (`.select('id').maybeSingle()`) before any dependent
+  `qa_events`/`qa_messages` insert, and a `23503` / `*_report_id_fkey` error means the report was
+  destroyed while the tab was open. Never report success before the write is confirmed; on a
+  gone report the page swaps to "This report no longer exists — it was deleted." and returns to
+  the board. The task page also treats a `qa_reports` DELETE (realtime) or an empty refetch the
+  same way.
 - **Widget drawer, replay-first**: the drawer's primary context section is no longer the marked
-  screenshot — it is "Replay · what Claude will see": the FULL numbered trail (every recorded
-  step: routes, clicks, typing ⌨, selects, toggles, Enter), auto-highlighting step-by-step once
-  on open (a compact animated run-through, ~350ms/step, reduced-motion = static). Screenshots
-  move to a compact thumbnail row below it (capture still automatic; ＋ Add another unchanged).
+  screenshot — it is "Replay · what Claude will see": a real SESSION-REPLAY VIDEO (rrweb) at the
+  top — the recorded page visually replaying the tester's session in a mini player (play/pause,
+  progress bar, 1×/2× speed, starts paused on the first frame) — with the FULL numbered trail
+  list beneath it. Screenshots move to a compact thumbnail row below (＋ Add another unchanged).
+
+### Session replay (rrweb)
+
+- The widget records the session with rrweb from page load, alongside the other buffers:
+  `record({...})` with checkoutEveryNms = 60_000 keeping the last TWO checkout windows (≈ the
+  final 1-2 minutes, memory-bounded), `blockSelector: '[data-qa-pipeline]'` (never records its
+  own UI), `maskAllInputs: true` with an unmask override ONLY for obviously-safe fields — i.e.
+  keep every input masked unless type is search; password/cc/otp stay masked unconditionally.
+  Recording only when the widget is active (same env/handshake gates as everything else).
+- Submit: `IngestBody.replayEvents?: string` — JSON.stringify of the buffered rrweb events,
+  client-capped at 8_000_000 chars (drop the field entirely when over). Server: validate size,
+  upload VERBATIM to bucket `qa-screenshots` as `report-<id>/replay.json`, store the path in
+  `qa_reports.replay_path` (db/0006). Events are display data — never parsed server-side.
+- Site: `GET /api/replay/[id]` — auth+allowlist gated like /api/shot, 302 to a 10-min signed URL.
+  The task page, when `replay_path` is set, shows a "Session replay" player card (rrweb-player
+  or rrweb Replayer + minimal controls) in the hero area — above/tabbed with the live-preview
+  embed for web reports; hidden for reports without a recording.
+- Bundle budget: widget ≤160KB gzipped (raised from 80 for the rrweb recorder+player).
 - Task page "Talk to Claude" card includes **⧉ Copy Claude session** — copies
   `cd $NEXT_PUBLIC_RUNNER_REPO && claude --resume <latest run session_id>` to the clipboard so a
   developer can open the very session that produced the fix.
-- Task page layout: the embedded preview window is the HERO — large, top-center, full content
-  width (~16:9), above the trace/log and result columns.
+- Task page layout: the HERO is large, top-center, full content width (~16:9), above the
+  trace/log and result columns. Its content is a **segmented switch**, in this order:
+  **Before (the report)** — the tester's rrweb session replay, DEFAULT whenever `replay_path`
+  is set · **After the fix** — the rrweb recording of the replay executed against the preview
+  build (`qa_runs.after_replay_path`), shown only once it exists · **Live preview** — the
+  interactive preview iframe, only while `preview_status='live'`.
+  There is NO "preview offline" placeholder — when nothing is available (no recording, no live
+  preview) the hero is simply omitted.
+- **After-the-fix recording**: when the task page runs the auto-replay inside the live preview,
+  the widget records that execution with rrweb and returns it — message 9 gains
+  `events?: string` (JSON, same 8 MB cap; omitted when over). The task page POSTs it to
+  `POST /api/after-replay/[id]` (tester-auth'd) which stores it at
+  `report-<id>/after-replay-<runId>.json` and sets `qa_runs.after_replay_path` (db/0007).
+  Re-running the replay overwrites it.
+- **Task action row** (single organized row under the steer textarea, left→right):
+  primary **Send to Claude** · secondary **Assign to <name>** (with its ▾ picker) ·
+  destructive-ghost **■ Stop run** (while running/rework/blocked — a blocked run still holds a
+  dispatch slot and polls for an answer, so it must be stoppable), right-aligned and visually
+  separated. Equal heights (36px), 8px radius, 8px gaps, wrapping gracefully on narrow widths.
+  "Delete everything" stays where it is — bottom, outside this row.
 - `/task/[id]` — three zones (matches approved prototype):
   1. Grounding trace chips (`qa_runs.grounding: [{label, file?}]`) + log (from `qa_events`,
      type `log|phase|error|question`, autoscroll).

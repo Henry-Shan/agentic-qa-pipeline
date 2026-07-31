@@ -9,7 +9,7 @@ import { inPersonalBand, latestByReport, upsertReport } from '@/lib/merge';
 import { TABS, tabOf, type TabKey } from '@/lib/status';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { ReportCard } from '@/components/board/report-card';
-import { NeedsHumanBand } from '@/components/board/needs-human-band';
+import { AssignedToMe } from '@/components/board/assigned-to-me';
 
 /** Latest needs_human event per report id. */
 function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
@@ -38,7 +38,7 @@ export function Board({
     latestNeedsHuman(initialNeedsHuman),
   );
   const [tab, setTab] = useState<TabKey>('all');
-  // Display name decides "assigned to me" band membership (contracts § Assignment).
+  // Display name decides "Assigned to me" membership (contracts § "Assigned to me").
   const myName = useDisplayName(userEmail);
 
   const refetch = useCallback(async () => {
@@ -62,7 +62,7 @@ export function Board({
       .order('id', { ascending: false });
     if (runRows) setRuns(latestByReport(runRows as QaRun[]));
 
-    // Hand-off summaries for the "Needs {name}" band — the signed-in user's
+    // Hand-off summaries for "Assigned to me" — the signed-in user's
     // blocked reports plus reports assigned to their display name.
     const bandIds = fresh.filter((r) => inPersonalBand(r, userEmail, myName)).map((r) => r.id);
     if (bandIds.length === 0) return;
@@ -127,12 +127,10 @@ export function Board({
   // the worker is still tearing down (it deletes the row when done).
   const live = reports.filter((r) => r.status !== 'cancelled');
 
-  // The tester's personal task list — reports assigned to their display name
-  // (any non-cancelled status) ∪ blocked reports they filed — pinned above the
-  // tabs. `live` already excludes cancelled; the filter dedupes by construction.
-  const bandItems = live
-    .filter((r) => inPersonalBand(r, userEmail, myName))
-    .map((r) => ({ report: r, assigned: r.assignee === myName }));
+  // "Assigned to me" — reports assigned to their display name (any
+  // non-cancelled status) ∪ blocked reports they filed — pinned above the tabs.
+  // `live` already excludes cancelled; the filter dedupes by construction.
+  const bandItems = live.filter((r) => inPersonalBand(r, userEmail, myName));
 
   const counts: Record<TabKey, number> = { all: live.length, fixing: 0, preview: 0, queued: 0, shipped: 0 };
   for (const report of live) {
@@ -144,9 +142,9 @@ export function Board({
 
   return (
     <div>
-      {bandItems.length > 0 ? (
-        <NeedsHumanBand items={bandItems} events={needsHuman} runs={runs} userEmail={userEmail} />
-      ) : null}
+      {/* Always rendered — an empty tester sees a quiet empty state, not a
+          disappearing section (contracts § "Assigned to me"). */}
+      <AssignedToMe items={bandItems} events={needsHuman} runs={runs} />
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div

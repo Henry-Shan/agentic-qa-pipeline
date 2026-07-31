@@ -65,15 +65,34 @@ button { font-family: inherit; }
 }
 .drawer-head h3 { font-size: 15px; font-weight: 700; }
 .drawer-head .sub { font-size: 11.5px; color: var(--ink-3); }
-.drawer-close {
-  margin-left: auto; border: none; background: none; color: var(--ink-3);
+.drawer-collapse, .drawer-close {
+  border: none; background: none; color: var(--ink-3);
   font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 8px; border-radius: 6px;
 }
-.drawer-close:hover { background: var(--line-soft); color: var(--ink); }
+.drawer-collapse { margin-left: auto; font-size: 20px; }
+.drawer-collapse:hover, .drawer-close:hover { background: var(--line-soft); color: var(--ink); }
+.drawer-collapse:focus-visible, .drawer-close:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
+/* collapsed state: a compact pill hugging the right edge (🐛 + live step count) */
+.qa-pill {
+  position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 31;
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+  border: 1px solid var(--line); border-right: none; border-radius: 999px 0 0 999px;
+  background: var(--stage); color: var(--ink); font: inherit; font-size: 14px;
+  padding: 9px 13px 9px 15px; box-shadow: var(--shadow-big);
+}
+.qa-pill:hover { border-color: var(--qa-bright); }
+.qa-pill:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
+.pill-count {
+  background: var(--qa-soft); color: var(--qa); border-radius: 999px; padding: 1px 7px;
+  font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
 .cap-label {
   font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--ink-3); margin: 14px 0 6px;
 }
+.cap-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.cap-count { color: var(--qa); font-weight: 700; letter-spacing: .04em; flex: none; }
+.live-hint { font-size: 11px; color: var(--ink-3); margin-top: 5px; }
 .shots { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .shot-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .thumb {
@@ -96,6 +115,36 @@ button { font-family: inherit; }
 }
 .add-shot:hover { border-color: var(--qa-bright); color: var(--qa); }
 .add-shot:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
+/* ---- session-replay mini player (drawer, above the trail list) ---- */
+.rr-player { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.rr-stage {
+  position: relative; overflow: hidden; width: 100%; aspect-ratio: 16 / 10;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
+}
+.rr-stage iframe { border: none; background: var(--stage); }
+.replayer-wrapper { position: absolute; left: 0; top: 0; }
+.replayer-mouse {
+  position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--qa-bright); box-shadow: 0 0 0 3px var(--qa-ring);
+  transition: left .05s linear, top .05s linear; pointer-events: none;
+}
+.replayer-mouse-tail { position: absolute; pointer-events: none; }
+.rr-controls { display: flex; align-items: center; gap: 8px; }
+.rr-btn {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--stage);
+  color: var(--ink-2); cursor: pointer; font: inherit; font-size: 11px;
+  line-height: 1; padding: 4px 8px; flex: none;
+}
+.rr-btn:hover { border-color: var(--qa-bright); color: var(--qa); }
+.rr-btn:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
+.rr-speed { min-width: 32px; font-variant-numeric: tabular-nums; }
+.rr-bar { flex: 1; height: 3px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.rr-fill { height: 100%; width: 0%; background: var(--qa); }
+.rr-note {
+  font-size: 11.5px; color: var(--ink-3); padding: 10px 12px;
+  border: 1px dashed var(--line); border-radius: 8px; background: var(--paper);
+}
+
 /* ---- replay-first trail list (primary drawer section) ---- */
 .replay-list {
   list-style: none; max-height: 180px; overflow-y: auto;
@@ -115,7 +164,17 @@ button { font-family: inherit; }
 .replay-step .rs-lbl { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .replay-step.pending { opacity: .32; }
 .replay-step.now { opacity: 1; background: var(--qa-soft); color: var(--qa); }
-@media (prefers-reduced-motion: reduce) { .replay-step { transition: none; } }
+/* a step recorded while the drawer is open lands with a brief teal flash */
+.replay-step.fresh { animation: qa-step-in 900ms ease-out; }
+@keyframes qa-step-in {
+  0% { background: var(--qa-soft); color: var(--qa); }
+  100% { background: transparent; color: var(--ink-2); }
+}
+.replay-empty { padding: 7px 10px; font-size: 11.5px; color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) {
+  .replay-step { transition: none; }
+  .replay-step.fresh { animation: none; }
+}
 
 /* ---- lightbox (thumbnail enlarge) ---- */
 .qa-lightbox {

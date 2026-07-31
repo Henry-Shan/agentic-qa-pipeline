@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
 import { useDisplayName } from '@/lib/display-names';
+import { guardReport, REPORT_GONE_MESSAGE, REPORT_GONE_REDIRECT_MS } from '@/lib/report-gone';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { StatusPill } from '@/components/status-pill';
 import { Pipeline } from '@/components/pipeline';
@@ -14,7 +15,9 @@ import { ReportContext } from '@/components/task/report-context';
 import { GroundingChips } from '@/components/task/grounding-chips';
 import { NeedsHumanCard } from '@/components/task/needs-human-card';
 import { EventLog } from '@/components/task/event-log';
+import { HeroTabs, type HeroTab } from '@/components/task/hero-tabs';
 import { PreviewEmbed } from '@/components/task/preview-embed';
+import { ReplayPlayer } from '@/components/task/replay-player';
 import { ScreenshotGallery } from '@/components/task/screenshot-gallery';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
@@ -35,18 +38,33 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
   const [destroyBusy, setDestroyBusy] = useState(false);
   const [destroyError, setDestroyError] = useState<string | null>(null);
+  // The report row was hard-deleted (by this tab or another) — every write on
+  // this page would now fail its FK, so the page retires itself and goes home.
+  const [gone, setGone] = useState(false);
+  // Optimistic reveal of the "After the fix" tab: the upload finishes before
+  // realtime delivers the qa_runs row, and re-running the replay overwrites the
+  // same path (so the version bump is what forces the player to re-fetch).
+  const [afterSavedRunId, setAfterSavedRunId] = useState<number | null>(null);
+  const [afterVersion, setAfterVersion] = useState(0);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
-  // Mobile-filed report → the hero is the screenshot gallery; replay and the
-  // preview embed don't apply (contracts § Mobile reports on the task page).
+  // Mobile-filed report → the screenshot gallery leads the hero (contracts
+  // § Mobile reports on the task page); recordings still get their own tabs.
   const isMobile = report.app_context?.platform === 'mobile';
-  // Live preview → hero replay window; otherwise the slim offline strip.
+  // The interactive preview embed exists only while the preview server is up —
+  // there is NO offline placeholder (contracts § Task page layout).
   const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
+  // rrweb recording filed with the report = "Before (the report)".
+  const hasBefore = Boolean(report.replay_path);
+  // The latest run's after-the-fix recording, saved or just uploaded here.
+  const hasAfter = Boolean(run?.after_replay_path) || (run !== null && afterSavedRunId === run.id);
 
-  // Blocked + a needs_human hand-off → prominent amber summary above the log
-  // (contracts § Needs-a-human). Latest such event wins (events are id-sorted).
+  // Blocked → prominent amber card above the log carrying the assignment and,
+  // when the worker has written one, the needs_human hand-off (contracts
+  // § Needs-a-human). Latest such event wins (events are id-sorted).
+  const blocked = report.status === 'blocked';
   let needsHuman: QaEvent | null = null;
-  if (report.status === 'blocked') {
+  if (blocked) {
     for (let i = events.length - 1; i >= 0; i--) {
       const event = events[i];
       if (event && event.type === 'needs_human') {
@@ -59,24 +77,43 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   // "Delete everything": queue a `destroy` message (the worker tears down the
   // run, PR, worktree, and row) and cancel the report. Supabase returns errors
   // as values, not throws — BOTH writes must be checked or failures vanish
-  // silently. On success we navigate home immediately (the worker cleanup
-  // continues in the background); on failure the button re-enables and the
-  // actual error shows underneath it.
+  // silently, and a report already deleted underneath us reads as "gone"
+  // rather than an error (the outcome the user wanted anyway). On success we
+  // navigate home immediately (the worker cleanup continues in the
+  // background); on failure the button re-enables and the error shows below.
   async function destroyEverything() {
     if (destroyBusy) return;
     setDestroyBusy(true);
     setDestroyError(null);
     setConfirmingDestroy(false);
     const supabase = getBrowserClient();
-    let { error } = await supabase
-      .from('qa_messages')
-      .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' });
-    if (!error) {
-      ({ error } = await supabase.from('qa_reports').update({ status: 'cancelled' }).eq('id', reportId));
+    const queued = await guardReport(() =>
+      supabase
+        .from('qa_messages')
+        .insert({ report_id: reportId, kind: 'destroy', author_email: userEmail, body: '' }),
+    );
+    if (queued.status === 'gone') {
+      router.replace('/');
+      return;
     }
-    if (error) {
+    if (queued.status === 'error') {
       setDestroyBusy(false);
-      setDestroyError(`Delete failed — ${error.message}`);
+      setDestroyError(`Delete failed — ${queued.message}`);
+      return;
+    }
+    const cancelled = await guardReport(
+      () =>
+        supabase
+          .from('qa_reports')
+          .update({ status: 'cancelled' })
+          .eq('id', reportId)
+          .select('id')
+          .maybeSingle(),
+      { requireRow: true },
+    );
+    if (cancelled.status === 'error') {
+      setDestroyBusy(false);
+      setDestroyError(`Delete failed — ${cancelled.message}`);
       return;
     }
     // Keep the button in its "Deleting…" state while the router swaps pages.
@@ -95,7 +132,9 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
         .order('id', { ascending: false })
         .limit(500),
     ]);
+    // maybeSingle(): no row AND no error means the report was deleted.
     if (reportRes.data) setReport(reportRes.data as QaReport);
+    else if (!reportRes.error) setGone(true);
     const latestRun = (runRes.data ?? [])[0] as QaRun | undefined;
     if (latestRun) setRun(latestRun);
     if (eventsRes.data) setEvents((eventsRes.data as QaEvent[]).slice().reverse());
@@ -122,7 +161,88 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
       }
     },
     () => void refetch(),
+    // The worker hard-deletes the report at the end of a destroy — retire the
+    // page instead of leaving one whose every button fails its FK.
+    (table, oldRow) => {
+      if (table === 'qa_reports' && Number(oldRow.id) === reportId) setGone(true);
+    },
   );
+
+  // Deleted report: say so quietly, then hand the user back to the board.
+  useEffect(() => {
+    if (!gone) return;
+    const timer = setTimeout(() => router.replace('/'), REPORT_GONE_REDIRECT_MS);
+    return () => clearTimeout(timer);
+  }, [gone, router]);
+
+  if (gone) {
+    return (
+      <div className="card py-10 text-center">
+        <p className="text-[13px] font-semibold">{REPORT_GONE_MESSAGE}</p>
+        <p className="mt-1 text-[12.5px] text-ink-3">Taking you back to the board…</p>
+        <Link href="/" className="mt-3 inline-block text-[12.5px] font-semibold text-qa hover:underline">
+          ← All reports
+        </Link>
+      </div>
+    );
+  }
+
+  // Hero tabs, in contract order. Only tabs with real content are built, so the
+  // default is simply "Before, else After, else Live preview" — falling through
+  // to whatever is left (mobile Screens) when none of the three exist.
+  const heroTabs: HeroTab[] = [];
+  if (isMobile) {
+    heroTabs.push({ id: 'shots', label: 'Screens', content: <ScreenshotGallery report={report} /> });
+  }
+  if (hasBefore) {
+    heroTabs.push({
+      id: 'before',
+      label: 'Before (the report)',
+      content: <ReplayPlayer reportId={reportId} label="before · what the tester saw" />,
+    });
+  }
+  if (hasAfter) {
+    heroTabs.push({
+      id: 'after',
+      label: 'After the fix',
+      content: (
+        // Keyed by run + upload version so a fresh capture re-fetches instead
+        // of showing the previous recording.
+        <ReplayPlayer
+          key={`after-${run?.id ?? 0}-${afterVersion}`}
+          reportId={reportId}
+          src="after"
+          label="after the fix · replayed on the preview build"
+        />
+      ),
+    });
+  }
+  if (previewUrl) {
+    heroTabs.push({
+      id: 'live',
+      label: 'Live preview',
+      eager: true,
+      content: (
+        <PreviewEmbed
+          key={previewUrl}
+          previewUrl={previewUrl}
+          report={report}
+          runId={run?.id ?? null}
+          onAfterReplay={() => {
+            setAfterSavedRunId(run?.id ?? null);
+            setAfterVersion((v) => v + 1);
+          }}
+        />
+      ),
+    });
+  }
+  const heroDefault = hasBefore
+    ? 'before'
+    : hasAfter
+      ? 'after'
+      : previewUrl
+        ? 'live'
+        : (heroTabs[0]?.id ?? '');
 
   return (
     <div>
@@ -158,38 +278,21 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
 
       <ReportContext report={report} />
 
-      {/* Hero preview — the embedded replay window sits top-center at full
-          content width (contracts § Site pages); the columns continue below.
-          Mobile reports get the screenshot gallery here instead. */}
-      <div className="mt-5">
-        {isMobile ? (
-          <ScreenshotGallery report={report} />
-        ) : previewUrl ? (
-          <PreviewEmbed key={previewUrl} previewUrl={previewUrl} report={report} />
-        ) : (
-          <div className="flex flex-wrap items-center gap-1.5 rounded-[10px] border border-dashed border-line bg-surface px-3.5 py-2.5 text-[12px] text-ink-3">
-            <span className="font-semibold text-ink-2">preview offline</span>
-            <span aria-hidden>—</span>
-            {run?.preview_url ? (
-              <a
-                href={run.preview_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-semibold text-qa hover:underline"
-              >
-                Open task ↗
-              </a>
-            ) : (
-              <span>Open task ↗</span>
-            )}
-            <span>still works</span>
-          </div>
-        )}
-      </div>
+      {/* Hero — full content width, top-center, a segmented switch over
+          [Screens (mobile) | Before (the report) | After the fix | Live preview]
+          (contracts § Task page layout). Each tab appears only when its content
+          exists; with nothing to show there is NO hero and no offline
+          placeholder. Live preview is mounted eagerly so its auto-replay — and
+          therefore the after-the-fix capture — runs even when "Before" leads. */}
+      {heroTabs.length > 0 ? (
+        <div className="mt-5">
+          <HeroTabs tabs={heroTabs} defaultTab={heroDefault} />
+        </div>
+      ) : null}
 
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
-          {needsHuman ? <NeedsHumanCard report={report} event={needsHuman} /> : null}
+          {blocked ? <NeedsHumanCard report={report} event={needsHuman} /> : null}
           {run?.grounding?.length ? (
             <>
               <div className="cap-label">How Claude located it — full-stack trace</div>
@@ -212,6 +315,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
             status={report.status}
             assignee={report.assignee}
             userEmail={userEmail}
+            onReportGone={() => setGone(true)}
           />
 
           <div className="relative mt-5">

@@ -10,10 +10,10 @@ const STATIC_ORIGINS = new Set(['https://example.com', 'https://www.example.com'
 const LOCALHOST_RE = /^http:\/\/localhost(:\d+)?$/;
 
 // Hard request cap: primary screenshot + up to 3 additional (each ≤4 MB PNG,
-// ~5.6 MB as base64) + clamped logs. Checked against content-length BEFORE the
-// body is buffered so an oversized payload never allocates (`next start` has
-// no platform body cap).
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
+// ~5.6 MB as base64) + the rrweb recording (≤8M chars) + clamped logs. Checked
+// against content-length BEFORE the body is buffered so an oversized payload
+// never allocates (`next start` has no platform body cap).
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 function originAllowed(origin: string): boolean {
   return STATIC_ORIGINS.has(origin) || LOCALHOST_RE.test(origin);
@@ -110,7 +110,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'invalid body', issues }, { status: 400, headers });
   }
 
-  const { screenshotDataUrl, screenshotsDataUrls, ...rest } = clampIngest(parsed.data);
+  // The rrweb recording is pulled off FIRST: it is opaque display data (contracts
+  // § Session replay) — never clamped, and excluded from the scrubSecrets walk
+  // (an 8M-char string would dominate the regex pass for no benefit).
+  const { replayEvents, ...clampable } = parsed.data;
+  const { screenshotDataUrl, screenshotsDataUrls, ...rest } = clampIngest(clampable);
   // Scrub everything except the screenshots (their base64 can coincidentally match the JWT pattern).
   const body = scrubSecrets(rest);
   // JWT path: the reporter is whoever the token verified as — never the body's claim.
@@ -190,6 +194,23 @@ export async function POST(request: NextRequest) {
   }
   if (storedPaths.length > 0) {
     await admin.from('qa_reports').update({ screenshots: storedPaths }).eq('id', id);
+  }
+
+  // rrweb recording → report-<id>/replay.json + qa_reports.replay_path (db/0006).
+  // Uploaded VERBATIM (opaque display data — never parsed server-side). Non-fatal:
+  // the report already filed; a failure just means no replay player on the task.
+  if (replayEvents) {
+    try {
+      const replayPath = `report-${id}/replay.json`;
+      const { error: replayError } = await admin.storage
+        .from('qa-screenshots')
+        .upload(replayPath, replayEvents, { contentType: 'application/json', upsert: true });
+      if (!replayError) {
+        await admin.from('qa_reports').update({ replay_path: replayPath }).eq('id', id);
+      }
+    } catch {
+      // best-effort — the report still files without a replay
+    }
   }
 
   await admin.from('qa_events').insert({
