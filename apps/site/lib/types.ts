@@ -1,5 +1,4 @@
-// DB row shapes — hand-derived from db/0001_qa_schema.sql + later migrations
-// (0002 canvas blocks, 0004 arrows/sections). No codegen.
+// DB row shapes — hand-derived from db/0001_qa_schema.sql. No codegen.
 
 export type ReportKind = 'bug' | 'feature';
 
@@ -42,9 +41,15 @@ export type EventType = 'log' | 'phase' | 'error' | 'question' | 'system';
 export interface ClickTrailEntry {
   ts: number;
   route: string;
+  /** Defaults to 'click'. 'input' entries record typing (see CONTRACTS.md §Widget→Site). */
+  kind?: 'click' | 'input';
   text?: string;
   testid?: string;
   component?: string;
+  /** Stable selector for replay targeting. */
+  selector?: string;
+  /** Final field value for 'input' steps (≤120 chars, scrubbed; never passwords). */
+  value?: string;
 }
 
 export interface ConsoleEntry {
@@ -149,41 +154,6 @@ export interface QaMessage {
   kind: MessageKind;
   status: MessageStatus;
   created_at: string;
-}
-
-export type CanvasBlockKind = 'pos' | 'text' | 'arrow';
-
-/** One end of a canvas arrow — a report block pair or a free text label. */
-export interface ArrowEndpoint {
-  t: 'report' | 'text';
-  /** report endpoints use qa_reports.id; text endpoints use the qa_canvas_blocks row id. */
-  id: number;
-}
-
-/** qa_canvas_blocks.meta for kind='arrow'. */
-export interface ArrowMeta {
-  from: ArrowEndpoint;
-  to: ArrowEndpoint;
-}
-
-/**
- * qa_canvas_blocks (db/0002 + db/0004) — kind 'pos' pins a report's block pair
- * on /canvas (with an optional `section` override for which section it belongs
- * to); kind 'text' is a free label; kind 'arrow' connects two blocks via meta.
- */
-export interface QaCanvasBlock {
-  id: number;
-  kind: CanvasBlockKind;
-  report_id: number | null;
-  text: string | null;
-  x: number;
-  y: number;
-  /** Arrow endpoints (kind='arrow'); null for other kinds. Runtime-guarded before use. */
-  meta: ArrowMeta | null;
-  /** Section key override (kind='pos') — wins over the route-derived section mapping. */
-  section: string | null;
-  updated_by: string | null;
-  updated_at: string;
 }
 
 export interface QaAreaNote {

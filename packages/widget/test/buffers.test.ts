@@ -268,6 +268,156 @@ describe('click trail + routes', () => {
     for (let i = 0; i < 60; i++) btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(buffers.clickTrail().length).toBe(50);
   });
+
+  it('click entries carry kind and a stable selector', () => {
+    document.body.innerHTML = `<button data-testid="save">Save</button>`;
+    document.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const entry = buffers.clickTrail().at(-1);
+    expect(entry?.kind).toBe('click');
+    expect(entry?.selector).toBe('[data-testid="save"]');
+  });
+});
+
+describe('input trail recording', () => {
+  function field(html: string): HTMLInputElement {
+    document.body.innerHTML = html;
+    const el = document.querySelector('input, textarea, select');
+    if (!(el instanceof HTMLInputElement)) throw new Error('fixture must contain an <input>');
+    return el;
+  }
+
+  function fire(el: Element, type: 'input' | 'change'): void {
+    el.dispatchEvent(new Event(type, { bubbles: true }));
+  }
+
+  it('records a change event with kind, value, selector, label, testid, component and route', () => {
+    document.body.innerHTML = `
+      <section data-sentry-component="ProfileForm">
+        <label for="dn">Display name</label>
+        <input id="dn" data-testid="display-name" />
+      </section>`;
+    const input = document.querySelector('input') as HTMLInputElement;
+    input.value = 'Henry';
+    fire(input, 'change');
+    const entry = buffers.clickTrail().at(-1);
+    expect(entry?.kind).toBe('input');
+    expect(entry?.value).toBe('Henry');
+    expect(entry?.selector).toBe('[data-testid="display-name"]');
+    expect(entry?.testid).toBe('display-name');
+    expect(entry?.component).toBe('ProfileForm');
+    expect(entry?.text).toBe('Display name');
+    expect(entry?.route).toBe(location.pathname);
+  });
+
+  it('falls back to the placeholder for the field label', () => {
+    const input = field(`<input placeholder="Search labs" />`);
+    input.value = 'centrifuge';
+    fire(input, 'change');
+    expect(buffers.clickTrail().at(-1)?.text).toBe('Search labs');
+  });
+
+  it('records via the debounced input fallback when no change ever fires', () => {
+    vi.useFakeTimers();
+    try {
+      const input = field(`<input aria-label="Quick filter" />`);
+      input.value = 'buffer';
+      fire(input, 'input');
+      vi.advanceTimersByTime(800);
+      const entry = buffers.clickTrail().at(-1);
+      expect(entry?.kind).toBe('input');
+      expect(entry?.value).toBe('buffer');
+      expect(entry?.text).toBe('Quick filter');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the last typed value when the framework clears the field before change', () => {
+    const input = field(`<input aria-label="Amount" />`);
+    input.value = '42';
+    fire(input, 'input');
+    input.value = ''; // React-style clear-on-change
+    fire(input, 'change');
+    expect(buffers.clickTrail().at(-1)?.value).toBe('42');
+  });
+
+  it('coalesces repeated input/change on the same field into one trail entry', () => {
+    vi.useFakeTimers();
+    try {
+      const input = field(`<input />`);
+      const before = buffers.clickTrail().length;
+      input.value = 'a';
+      fire(input, 'input');
+      vi.advanceTimersByTime(800); // debounce fires → entry recorded
+      input.value = 'ab';
+      fire(input, 'input');
+      vi.advanceTimersByTime(800); // refreshes the SAME entry
+      fire(input, 'change'); // still the same entry
+      const trail = buffers.clickTrail();
+      expect(trail.length).toBe(before + 1);
+      expect(trail.at(-1)?.value).toBe('ab');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('interleaves input and click steps in event order', () => {
+    document.body.innerHTML = `<input aria-label="Name" /><button>Save</button>`;
+    const input = document.querySelector('input') as HTMLInputElement;
+    const button = document.querySelector('button') as HTMLButtonElement;
+    input.value = 'first';
+    fire(input, 'change');
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    input.value = 'second';
+    fire(input, 'change');
+    const tail = buffers.clickTrail().slice(-3);
+    expect(tail.map((e) => e.kind)).toEqual(['input', 'click', 'input']);
+    expect(tail[0]?.value).toBe('first');
+    expect(tail[2]?.value).toBe('second'); // the click sealed the first entry — no coalescing across it
+  });
+
+  it('NEVER records password fields', () => {
+    const input = field(`<input type="password" aria-label="Password" />`);
+    const before = buffers.clickTrail().length;
+    input.value = 'hunter2';
+    fire(input, 'input');
+    fire(input, 'change');
+    expect(buffers.clickTrail().length).toBe(before);
+    expect(JSON.stringify(buffers.clickTrail())).not.toContain('hunter2');
+  });
+
+  it('NEVER records sensitive autocomplete fields (password / cc- / card / otp)', () => {
+    for (const autocomplete of ['current-password', 'cc-number', 'cardnumber', 'otp']) {
+      const input = field(`<input autocomplete="${autocomplete}" />`);
+      const before = buffers.clickTrail().length;
+      input.value = 'sensitive-value';
+      fire(input, 'input');
+      fire(input, 'change');
+      expect(buffers.clickTrail().length).toBe(before);
+    }
+    expect(JSON.stringify(buffers.clickTrail())).not.toContain('sensitive-value');
+  });
+
+  it('scrubs secrets out of recorded values and clamps to 120 chars', () => {
+    const input = field(`<input aria-label="Notes" />`);
+    input.value = `bearer ${'a'.repeat(40)} and then ${'x'.repeat(200)}`;
+    fire(input, 'change');
+    const value = buffers.clickTrail().at(-1)?.value;
+    expect(value).toContain('[redacted]');
+    expect(value).not.toContain('a'.repeat(40));
+    expect(value?.length).toBeLessThanOrEqual(120);
+  });
+
+  it('ignores fields inside the widget root', () => {
+    document.body.innerHTML = `<div id="widget"><input /></div>`;
+    buffers.setIgnoreRoot(document.getElementById('widget'));
+    const input = document.querySelector('input') as HTMLInputElement;
+    const before = buffers.clickTrail().length;
+    input.value = 'internal';
+    fire(input, 'input');
+    fire(input, 'change');
+    expect(buffers.clickTrail().length).toBe(before);
+  });
 });
 
 describe('dispose', () => {

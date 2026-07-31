@@ -47,14 +47,26 @@ export function ReportContext({ report }: { report: QaReport }) {
           ) : null}
         </div>
         {hasScreenshot ? (
-          <a href={`/api/shot/${report.id}`} target="_blank" rel="noopener noreferrer">
-            {/* Signed-URL redirect; plain img on purpose (next/image can't follow it). */}
-            <img
-              src={`/api/shot/${report.id}`}
-              alt="Screenshot with the reported element marked"
-              className="max-h-64 w-full rounded-[10px] border border-line bg-canvas object-contain"
-            />
-          </a>
+          // ALL screenshots as a thumbnail row; each opens the signed URL in a
+          // new tab via the shot endpoint (?i=N → the Nth stored path).
+          <div className="flex flex-wrap content-start gap-2">
+            {report.screenshots.map((path, i) => (
+              <a
+                key={path}
+                href={`/api/shot/${report.id}?i=${i}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block"
+              >
+                {/* Signed-URL redirect; plain img on purpose (next/image can't follow it). */}
+                <img
+                  src={`/api/shot/${report.id}?i=${i}`}
+                  alt={i === 0 ? 'Screenshot with the reported element marked' : `Additional screenshot ${i + 1}`}
+                  className="h-28 w-auto max-w-full rounded-[10px] border border-line bg-surface object-contain transition-colors hover:border-qa-bright"
+                />
+              </a>
+            ))}
+          </div>
         ) : null}
       </div>
     </details>

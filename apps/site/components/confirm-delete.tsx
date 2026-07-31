@@ -1,8 +1,8 @@
 'use client';
 
-// "Delete everything" confirm popover — a small white card, shared by the
-// canvas block trash button and the task page danger button. The confirmed
-// action (queue a `destroy` message + cancel the report) lives in the caller.
+// "Delete everything" confirm popover — a small white card used by the task
+// page danger button. The confirmed action (queue a `destroy` message +
+// cancel the report) lives in the caller.
 
 export function TrashIcon({ size = 13 }: { size?: number }) {
   return (
@@ -54,7 +54,7 @@ export function ConfirmDestroy({
         <button
           onClick={onCancel}
           disabled={busy}
-          className="rounded-lg border border-line bg-stage px-3 py-1.5 text-[11.5px] font-semibold text-ink-2 transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50"
+          className="rounded-lg border border-line bg-stage px-3 py-1.5 text-[11.5px] font-semibold text-ink-2 transition-colors hover:bg-surface hover:text-ink disabled:opacity-50"
         >
           Cancel
         </button>

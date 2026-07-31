@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { resolveByText, resolveStep } from '../src/replay';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveByText, resolveStep, startReplay, type ReplayHandle } from '../src/replay';
+import type { ClickTrailEntry } from '../src/types';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -10,6 +11,40 @@ function get(selector: string): Element {
   if (!el) throw new Error(`missing fixture ${selector}`);
   return el;
 }
+
+describe('resolveStep — selector first', () => {
+  it('resolves by selector before testid, component and text', () => {
+    document.body.innerHTML = `
+      <button id="sel">Save</button>
+      <button data-testid="save" data-sentry-component="Panel">Save</button>`;
+    const el = resolveStep({ selector: '#sel', testid: 'save', component: 'Panel', text: 'Save' });
+    expect(el).toBe(get('#sel'));
+  });
+
+  it('falls back to testid when the selector matches nothing', () => {
+    document.body.innerHTML = `<button data-testid="save">Save</button>`;
+    expect(resolveStep({ selector: '#gone', testid: 'save' })).toBe(get('[data-testid="save"]'));
+  });
+
+  it('tolerates an invalid selector and falls back', () => {
+    document.body.innerHTML = `<button data-testid="save">Save</button>`;
+    expect(resolveStep({ selector: ':::nope', testid: 'save' })).toBe(get('[data-testid="save"]'));
+  });
+
+  it('skips hidden selector matches in favor of the fallback chain', () => {
+    document.body.innerHTML = `
+      <button id="sel" hidden>Save</button>
+      <button data-testid="save">Save</button>`;
+    expect(resolveStep({ selector: '#sel', testid: 'save' })).toBe(get('[data-testid="save"]'));
+  });
+
+  it('never resolves a selector inside the ignored (widget host) subtree', () => {
+    document.body.innerHTML = `
+      <div id="widget"><button class="go">Save</button></div>
+      <button class="go" id="page">Save</button>`;
+    expect(resolveStep({ selector: 'button.go' }, document, get('#widget'))).toBe(get('#page'));
+  });
+});
 
 describe('resolveStep — fallback order', () => {
   it('resolves by data-testid first, even when component and text would also match', () => {
@@ -136,5 +171,157 @@ describe('resolveByText', () => {
     document.body.appendChild(script);
     expect(resolveByText('Manage Lab Access')).toBeNull();
     expect(resolveByText('')).toBeNull();
+  });
+});
+
+describe('startReplay — executes the real procedure', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Set the page fixture, then mount the overlay container AFTER it (innerHTML wipes body). */
+  function mount(fixtureHtml: string): HTMLElement {
+    document.body.innerHTML = fixtureHtml;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    return container;
+  }
+
+  function replay(container: HTMLElement, trail: ClickTrailEntry[], reducedMotion: boolean): ReplayHandle {
+    return startReplay({ route: location.pathname, trail }, { container, reducedMotion });
+  }
+
+  async function finish(handle: ReplayHandle): Promise<{ shown: number; skipped: number } | null> {
+    await vi.advanceTimersByTimeAsync(60_000);
+    return handle.done;
+  }
+
+  it('performs a REAL click on the resolved element', async () => {
+    const container = mount(`<button data-testid="go">Go</button>`);
+    let clicks = 0;
+    get('[data-testid="go"]').addEventListener('click', () => clicks++);
+    const handle = replay(container, [{ ts: 1, route: location.pathname, kind: 'click', testid: 'go', text: 'Go' }], true);
+    const result = await finish(handle);
+    expect(clicks).toBe(1);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+  });
+
+  it('treats kind-less entries as clicks (back-compat) and still clicks them', async () => {
+    const container = mount(`<button data-testid="legacy">Old</button>`);
+    let clicks = 0;
+    get('[data-testid="legacy"]').addEventListener('click', () => clicks++);
+    const handle = replay(container, [{ ts: 1, route: location.pathname, testid: 'legacy' }], true);
+    const result = await finish(handle);
+    expect(clicks).toBe(1);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+  });
+
+  it('tolerates a click that navigates and resolves later steps against the new DOM', async () => {
+    const container = mount(`<button data-testid="nav">Open</button>`);
+    let afterClicks = 0;
+    get('[data-testid="nav"]').addEventListener('click', () => {
+      history.pushState({}, '', '/replay-nav-target');
+      const btn = document.createElement('button');
+      btn.setAttribute('data-testid', 'after');
+      btn.textContent = 'After';
+      btn.addEventListener('click', () => afterClicks++);
+      document.body.appendChild(btn);
+    });
+    const handle = replay(
+      container,
+      [
+        { ts: 1, route: '/start', kind: 'click', testid: 'nav', text: 'Open' },
+        { ts: 2, route: '/replay-nav-target', kind: 'click', testid: 'after', text: 'After' },
+      ],
+      true,
+    );
+    const result = await finish(handle);
+    expect(afterClicks).toBe(1);
+    expect(result).toEqual({ shown: 2, skipped: 0 });
+  });
+
+  it('types into a controlled-like input via the native value setter, with input/change observed', async () => {
+    const container = mount(`<label for="name">Name</label><input id="name" />`);
+    const input = get('#name') as HTMLInputElement;
+    const nativeGet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.get;
+    if (!nativeGet) throw new Error('missing native value getter');
+    const seen: string[] = [];
+    let changes = 0;
+    input.addEventListener('input', () => seen.push(String(nativeGet.call(input))));
+    input.addEventListener('change', () => changes++);
+    // React-style instance value tracker: a naive `input.value = x` write lands
+    // HERE and would never reach the real DOM value.
+    const naiveWrites: string[] = [];
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get: () => 'tracked',
+      set: (v: unknown) => {
+        naiveWrites.push(String(v));
+      },
+    });
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'input', selector: '#name', value: 'abc' }],
+      false, // animated path — character-by-character
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+    expect(seen).toEqual(['a', 'ab', 'abc']); // each keystroke dispatched 'input' with the real value set
+    expect(changes).toBe(1);
+    expect(nativeGet.call(input)).toBe('abc');
+    expect(naiveWrites).toEqual([]); // the instance (tracker) setter was bypassed
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('caps character-by-character typing at 40 chars, then lands the full value at once', async () => {
+    const long = 'z'.repeat(50);
+    const container = mount(`<input id="big" />`);
+    const input = get('#big') as HTMLInputElement;
+    const seen: string[] = [];
+    input.addEventListener('input', () => seen.push(input.value));
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'input', selector: '#big', value: long }],
+      false,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+    expect(seen.length).toBe(41); // 40 typed chars + one final full-value set
+    expect(seen[39]).toBe('z'.repeat(40));
+    expect(seen[40]).toBe(long);
+    expect(input.value).toBe(long);
+  });
+
+  it('sets the full value in one shot under reduced motion', async () => {
+    const container = mount(`<input id="fast" />`);
+    const input = get('#fast') as HTMLInputElement;
+    const seen: string[] = [];
+    let changes = 0;
+    input.addEventListener('input', () => seen.push(input.value));
+    input.addEventListener('change', () => changes++);
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'input', selector: '#fast', value: 'hello world' }],
+      true,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+    expect(seen).toEqual(['hello world']);
+    expect(changes).toBe(1);
+  });
+
+  it('counts an input step whose target is not a field as skipped', async () => {
+    const container = mount(`<div id="box">just text</div>`);
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'input', selector: '#box', value: 'hi' }],
+      true,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 0, skipped: 1 });
   });
 });

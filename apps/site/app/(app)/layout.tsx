@@ -15,7 +15,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   for (const row of (allowedRows ?? []) as Array<{ email: string; display_name: string | null }>) {
     if (row.display_name) names[row.email] = row.display_name;
   }
-  // Width is per-page: list/task use a reading column, /canvas goes wide.
+  // Width is per-page: each page supplies its own reading column.
   return (
     <DisplayNamesProvider names={names}>
       <div className="min-h-dvh">

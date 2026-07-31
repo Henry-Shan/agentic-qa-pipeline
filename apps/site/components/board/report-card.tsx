@@ -43,7 +43,7 @@ export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
       <Pipeline status={report.status} />
 
       {fixing && run?.log_tail ? (
-        <div className="mt-3 truncate rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-xs text-ink-2">
+        <div className="mt-3 truncate rounded-lg border border-line bg-surface px-3 py-2 font-mono text-xs text-ink-2">
           ▸ {run.log_tail}
         </div>
       ) : null}

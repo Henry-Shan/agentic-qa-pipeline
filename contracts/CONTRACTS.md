@@ -98,12 +98,19 @@ interface IngestBody {
   selector?: string;                // computed CSS selector
   testid?: string;
   elementText?: string;             // ≤120 chars
-  clickTrail: Array<{ ts: number; route: string; text?: string; testid?: string; component?: string }>; // ≤50
+  clickTrail: Array<{ ts: number; route: string; kind?: 'click'|'input'; text?: string; testid?: string; component?: string; selector?: string; value?: string }>; // ≤50
+                                    // kind defaults to 'click'. 'input' entries record typing:
+                                    // value = final field value (≤120 chars, scrubbed; NEVER
+                                    // recorded for type=password / autocomplete password|cc-*),
+                                    // selector = stable selector for replay targeting.
   consoleLog: Array<{ ts: number; level: 'error'|'warn'; text: string }>;                              // ≤50, each ≤500 chars
   networkLog: Array<{ ts: number; method: string; url: string; status: number; ms: number; bodySnippet?: string }>; // ≤40, snippet ≤2000 chars, non-2xx always kept
   viewport: { w: number; h: number; dpr: number };
   appContext?: Record<string, string>;
   screenshotDataUrl?: string;       // PNG data URL ≤4MB, element pre-marked
+  screenshotsDataUrls?: string[];   // additional captures (≤3), same limits each; the widget's
+                                    // drawer lets the tester re-enter the picker to add more.
+                                    // Server stores marked.png + marked-2.png … under report-<id>/.
 }
 // 200 → { id: number; url: string }  (url = task page)
 ```
@@ -158,10 +165,13 @@ The task page embeds the run's `preview_url` in an iframe and answers the loader
 the SAME activate flow as /capture (shared logic). Additional messages:
 8. **replay** — task page → widget, once after activation:
    `{type:'qa-pipeline:replay', route, trail: ClickTrailEntry[], selector?, elementText?}`.
-   The widget enters replay mode: navigates to `route`, then animates a synthetic cursor
-   through the trail (resolve each step by testid → `[data-component]` → visible text; skip
-   unresolvable steps), pulsing each target with a step caption chip ("2 · clicked Manage Lab
-   Access"), finishing with a sustained highlight on `selector`/`elementText` when present.
+   The widget enters replay mode: navigates to `route`, then EXECUTES the recorded procedure
+   in order — for `click` steps: cursor glide + REAL `.click()` on the resolved target (so
+   navigation/dialogs actually happen); for `input` steps: focus the field and type the
+   recorded `value` character-by-character (~30ms/char, native value setter + `input` event so
+   React-controlled fields update), caption "N · typed …". Resolution: selector → testid →
+   `[data-component]` → visible text; unresolvable steps are skipped and counted. Finish with a
+   sustained highlight on `selector`/`elementText`. Password steps never exist (never recorded).
    The fab stays hidden during replay.
 9. **replay-done** — widget → task page: `{type:'qa-pipeline:replay-done', shown, skipped}`.
    The task page shows a small "replayed N steps" note and a ⟳ Replay button re-sends message 8.
@@ -196,6 +206,12 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   activate (signed-in tester's email), navigates to the task page on filed. If no hello within
   8s, shows a dismissible "the widget hasn't loaded inside this copy of the host app" note and
   keeps listening. Board header links here via "＋ Report an issue".
+- **Canvas view: REMOVED** (route, components, tools; `qa_canvas_blocks` table retained but unused).
+- Task page "Talk to Claude" card includes **⧉ Copy Claude session** — copies
+  `cd $NEXT_PUBLIC_RUNNER_REPO && claude --resume <latest run session_id>` to the clipboard so a
+  developer can open the very session that produced the fix.
+- Task page layout: the embedded preview window is the HERO — large, top-center, full content
+  width (~16:9), above the trace/log and result columns.
 - `/task/[id]` — three zones (matches approved prototype):
   1. Grounding trace chips (`qa_runs.grounding: [{label, file?}]`) + log (from `qa_events`,
      type `log|phase|error|question`, autoscroll).

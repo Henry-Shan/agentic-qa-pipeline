@@ -80,7 +80,7 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
   return (
     <div className="overflow-hidden rounded-[10px] border border-line bg-stage">
       {/* Browser-window chrome bar */}
-      <div className="flex items-center gap-2 border-b border-line bg-canvas px-2.5 py-1.5">
+      <div className="flex items-center gap-2 border-b border-line bg-surface px-2.5 py-1.5">
         <span className="flex flex-none items-center gap-1" aria-hidden>
           <span className="size-2 rounded-full bg-red/40" />
           <span className="size-2 rounded-full bg-amber/40" />
@@ -122,10 +122,12 @@ export function PreviewEmbed({ previewUrl, report }: { previewUrl: string; repor
         </button>
       </div>
 
+      {/* Hero sizing: ~16:9 at full content width, never shorter than ~460px
+          on desktop (contracts § Site pages — the preview is the hero). */}
       <iframe
         src={previewUrl}
         title="Fixed app preview"
-        className="block aspect-[16/10] w-full border-0 bg-paper"
+        className="block aspect-video w-full border-0 bg-paper md:min-h-[460px]"
       />
 
       {phase !== 'idle' ? (

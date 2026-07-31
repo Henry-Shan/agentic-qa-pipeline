@@ -5,10 +5,17 @@ export const runtime = 'nodejs';
 
 const SIGNED_URL_TTL_SECONDS = 10 * 60;
 
-export async function GET(_request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const reportId = Number(id);
   if (!Number.isInteger(reportId) || reportId <= 0) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+
+  // ?i=N → the Nth stored screenshot path (default 0 = the primary capture).
+  const rawIndex = request.nextUrl.searchParams.get('i');
+  const index = rawIndex === null ? 0 : Number(rawIndex);
+  if (!Number.isInteger(index) || index < 0) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
@@ -20,7 +27,7 @@ export async function GET(_request: NextRequest, ctx: { params: Promise<{ id: st
 
   const admin = createServiceClient();
   const { data: report } = await admin.from('qa_reports').select('screenshots').eq('id', reportId).maybeSingle();
-  const path = (report?.screenshots as string[] | null)?.[0];
+  const path = (report?.screenshots as string[] | null)?.[index];
   if (!path) return NextResponse.json({ error: 'no screenshot' }, { status: 404 });
 
   const { data: signed } = await admin.storage.from('qa-screenshots').createSignedUrl(path, SIGNED_URL_TTL_SECONDS);

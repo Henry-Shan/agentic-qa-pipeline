@@ -3,9 +3,19 @@
 export interface ClickTrailEntry {
   ts: number;
   route: string;
+  /** Defaults to 'click' when absent (back-compat). Route markers carry neither kind nor metadata. */
+  kind?: 'click' | 'input';
+  /** Click: element text. Input: field label/placeholder (≤40 chars). */
   text?: string;
   testid?: string;
   component?: string;
+  /** Stable CSS selector for replay targeting. */
+  selector?: string;
+  /**
+   * Input steps only: final field value — scrubbed, ≤120 chars. NEVER recorded
+   * for type=password or autocomplete matching password|cc-*|card|otp.
+   */
+  value?: string;
 }
 
 export interface ConsoleEntry {
@@ -40,6 +50,8 @@ export interface IngestBody {
   viewport: { w: number; h: number; dpr: number };
   appContext?: Record<string, string>;
   screenshotDataUrl?: string;
+  /** Additional captures (≤3), same limits each — server stores marked-2.png … */
+  screenshotsDataUrls?: string[];
 }
 
 export interface WidgetConfig {

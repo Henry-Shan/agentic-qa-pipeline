@@ -10,7 +10,7 @@ type Mode = 'checking' | 'form' | 'name' | 'denied';
 const NAME_MAX = 24;
 
 const inputCls =
-  'w-full rounded-[10px] border border-line bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none';
+  'w-full rounded-[10px] border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -156,7 +156,7 @@ export default function LoginPage() {
               </p>
               <button
                 onClick={() => void onSignOut()}
-                className="mt-4 rounded-lg border border-line bg-stage px-4 py-2 text-[13px] font-semibold text-ink-2 hover:bg-canvas hover:text-ink"
+                className="mt-4 rounded-lg border border-line bg-stage px-4 py-2 text-[13px] font-semibold text-ink-2 hover:bg-surface hover:text-ink"
               >
                 Sign out
               </button>
@@ -201,7 +201,7 @@ export default function LoginPage() {
                         }
                       }}
                       placeholder="Your name"
-                      className="w-32 rounded-full border border-line bg-canvas px-3 py-1.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none"
+                      className="w-32 rounded-full border border-line bg-surface px-3 py-1.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none"
                     />
                     <button
                       onClick={addName}

@@ -1,9 +1,13 @@
 // Replay engine — contracts §Replay (embedded preview on the task page).
 // On a `qa-pipeline:replay` message the widget navigates to the report's route,
-// glides a synthetic cursor through the click trail (pulsing each resolved
-// target with a numbered caption chip), then holds a sustained highlight on the
-// report's selector/elementText. Everything visual lives inside the widget's
-// shadow-DOM overlay (pointer-events: none) — no DOM writes to the host page.
+// then EXECUTES the recorded procedure in order: click steps glide a synthetic
+// cursor, pulse the target, then fire a REAL element.click() (so navigation and
+// dialogs actually happen, with a MutationObserver settle wait after); input
+// steps focus the field and type the recorded value character-by-character via
+// the native value setter + dispatched input/change events, so React-controlled
+// fields update. It finishes with a sustained highlight on the report's
+// selector/elementText. All visuals live inside the widget's shadow-DOM overlay
+// (pointer-events: none); the only host-page writes are the executed steps.
 
 import type { ClickTrailEntry } from './types';
 
@@ -15,8 +19,8 @@ export interface ReplayRequest {
 }
 
 export interface ReplayResult {
-  /** steps animated */ shown: number;
-  /** steps with click metadata that could not be resolved (or were cut by the time cap) */ skipped: number;
+  /** steps executed */ shown: number;
+  /** steps with metadata that could not be resolved/executed (or were cut by the time cap) */ skipped: number;
 }
 
 export interface ReplayHandle {
@@ -40,9 +44,15 @@ const GLIDE_MS = 450; // cursor glide (matches the .qa-cursor CSS transition)
 const SCROLL_SETTLE_MS = 250; // let scrollIntoView land before measuring
 const CAPTION_MS = 900; // pulse + caption chip lifetime
 const FINAL_MS = 4_000; // sustained highlight on the report's element
-const TOTAL_CAP_MS = 20_000; // whole-replay budget
+const TOTAL_CAP_MS = 45_000; // whole-replay budget (real clicks + typing take time)
 const NAV_TIMEOUT_MS = 1_500; // SPA must react to pushState within this window
 const NAV_SETTLE_MS = 400; // post-route render settle
+const CLICK_BEAT_MS = 150; // pulse lands, THEN the real click fires
+const SETTLE_MAX_MS = 600; // post-click DOM settle budget
+const SETTLE_QUIET_MS = 220; // mutations quiet for this long = settled early
+const SETTLE_POLL_MS = 60;
+const TYPE_CHAR_MS = 30; // typing cadence
+const TYPE_DISPLAY_CAP = 40; // chars typed one-by-one; the rest lands in one set
 
 // ---------------------------------------------------------------------------
 // Step resolver (pure DOM reads; unit-tested in test/replay.test.ts)
@@ -115,12 +125,20 @@ export function resolveByText(text: string, root: ParentNode = document, ignore?
   return exactAny ?? containsInteractive ?? containsAny;
 }
 
-/** Resolve a trail step: data-testid → data-sentry-component/data-component → visible text. */
+/** Resolve a trail step: selector → data-testid → data-sentry-component/data-component → visible text. */
 export function resolveStep(
-  entry: Pick<ClickTrailEntry, 'testid' | 'component' | 'text'>,
+  entry: Pick<ClickTrailEntry, 'selector' | 'testid' | 'component' | 'text'>,
   root: ParentNode = document,
   ignore?: Element,
 ): Element | null {
+  if (entry.selector) {
+    try {
+      const el = firstVisible(root.querySelectorAll(entry.selector), ignore);
+      if (el) return el;
+    } catch {
+      /* invalid/stale selector — fall through */
+    }
+  }
   if (entry.testid) {
     const el = firstVisible(root.querySelectorAll(`[data-testid="${esc(entry.testid)}"]`), ignore);
     if (el) return el;
@@ -135,9 +153,60 @@ export function resolveStep(
   return null;
 }
 
-/** Trail entries with no click metadata are route markers, not replayable steps. */
+/** Trail entries with no step metadata are route markers, not replayable steps. */
 function isStep(entry: ClickTrailEntry): boolean {
-  return Boolean(entry.text ?? entry.testid ?? entry.component);
+  return Boolean(entry.selector ?? entry.text ?? entry.testid ?? entry.component);
+}
+
+// ---------------------------------------------------------------------------
+// Input-step plumbing (React-safe value writes)
+// ---------------------------------------------------------------------------
+
+type FieldEl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+
+/** The resolved element itself when it is a field, else the first field inside it. */
+function fieldOf(el: Element): FieldEl | null {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+    return el;
+  }
+  const inner = el.querySelector('input, textarea, select');
+  if (
+    inner instanceof HTMLInputElement ||
+    inner instanceof HTMLTextAreaElement ||
+    inner instanceof HTMLSelectElement
+  ) {
+    return inner;
+  }
+  return null;
+}
+
+/**
+ * Write via the PROTOTYPE value setter so instance-level trackers (React's
+ * controlled-input plumbing) are bypassed — the dispatched 'input' event then
+ * makes React pick the new value up as user input.
+ */
+function setNativeValue(field: FieldEl, value: string): void {
+  const proto =
+    field instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : field instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : HTMLInputElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc?.set) desc.set.call(field, value);
+  else field.value = value;
+}
+
+function fire(field: Element, type: 'input' | 'change'): void {
+  let event: Event;
+  try {
+    event = type === 'input' && typeof InputEvent === 'function'
+      ? new InputEvent('input', { bubbles: true })
+      : new Event(type, { bubbles: true });
+  } catch {
+    event = new Event(type, { bubbles: true });
+  }
+  field.dispatchEvent(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +288,10 @@ function stepLabel(entry: ClickTrailEntry): string {
   return entry.text ?? entry.testid ?? entry.component ?? 'element';
 }
 
+function clip(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
 export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHandle {
   const c = new Cancellation();
   const instant = opts.reducedMotion ?? prefersReducedMotion();
@@ -245,7 +318,7 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     chip.style.top = `${Math.round(top)}px`;
   }
 
-  function pulse(rect: DOMRect, index: number, entry: ClickTrailEntry): void {
+  function pulse(rect: DOMRect, caption: string, lifetime: number): void {
     const box = document.createElement('div');
     box.className = 'qa-pulse';
     box.style.top = `${Math.round(rect.top - 3)}px`;
@@ -255,12 +328,12 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     overlay.appendChild(box);
     const chip = document.createElement('div');
     chip.className = 'qa-step-chip';
-    chip.textContent = `${index} · clicked ${stepLabel(entry)}`;
+    chip.textContent = caption;
     placeChip(chip, rect);
     window.setTimeout(() => {
       box.remove();
       chip.remove();
-    }, CAPTION_MS);
+    }, lifetime);
   }
 
   function targetRect(el: Element): DOMRect {
@@ -272,19 +345,93 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     return el.getBoundingClientRect();
   }
 
-  async function animateStep(el: Element, index: number, entry: ClickTrailEntry): Promise<void> {
+  /** Scroll to + glide the cursor onto the element; returns the settled rect. */
+  async function glideTo(el: Element): Promise<DOMRect> {
     let rect = targetRect(el);
     if (!instant) {
       await c.sleep(SCROLL_SETTLE_MS);
-      if (c.cancelled) return;
+      if (c.cancelled) return rect;
       rect = el.getBoundingClientRect(); // re-measure after the smooth scroll
       moveCursor(rect.left + rect.width / 2, rect.top + rect.height / 2);
       await c.sleep(GLIDE_MS);
-      if (c.cancelled) return;
+      if (c.cancelled) return rect;
       rect = el.getBoundingClientRect();
     }
-    pulse(rect, index, entry);
-    const spent = instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS;
+    return rect;
+  }
+
+  /** Post-click settle: wait for MutationObserver quiet (≤600ms) so the DOM the next step resolves against is real. */
+  async function settleAfterClick(): Promise<void> {
+    const target = document.body ?? document.documentElement;
+    let lastMutation = 0;
+    let sawMutation = false;
+    const observer = new MutationObserver(() => {
+      sawMutation = true;
+      lastMutation = Date.now();
+    });
+    try {
+      observer.observe(target, { childList: true, subtree: true, characterData: true, attributes: true });
+    } catch {
+      await c.sleep(SETTLE_MAX_MS);
+      return;
+    }
+    const deadline = Date.now() + SETTLE_MAX_MS;
+    while (!c.cancelled && Date.now() < deadline) {
+      if (sawMutation && Date.now() - lastMutation >= SETTLE_QUIET_MS) break;
+      await c.sleep(SETTLE_POLL_MS);
+    }
+    observer.disconnect();
+  }
+
+  /** Click step: glide → pulse → beat → REAL click → DOM settle. Navigation is tolerated. */
+  async function runClickStep(el: Element, index: number, entry: ClickTrailEntry): Promise<void> {
+    const rect = await glideTo(el);
+    if (c.cancelled) return;
+    pulse(rect, `${index} · clicked ${stepLabel(entry)}`, CAPTION_MS);
+    await c.sleep(CLICK_BEAT_MS);
+    if (c.cancelled) return;
+    try {
+      if (el instanceof HTMLElement) el.click();
+      else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    } catch {
+      /* handler threw — the replay carries on */
+    }
+    await settleAfterClick();
+    const spent = (instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS) + CLICK_BEAT_MS;
+    await c.sleep(STEP_MS - spent);
+  }
+
+  /** Input step: glide → focus → type char-by-char (display-capped) → full value + change. */
+  async function runInputStep(field: FieldEl, index: number, entry: ClickTrailEntry): Promise<void> {
+    const rect = await glideTo(field);
+    if (c.cancelled) return;
+    const value = entry.value ?? '';
+    const shown = value.slice(0, TYPE_DISPLAY_CAP);
+    const typeMs = instant || field instanceof HTMLSelectElement ? 0 : shown.length * TYPE_CHAR_MS;
+    pulse(rect, `${index} · typed "${clip(value, TYPE_DISPLAY_CAP)}"`, typeMs + CAPTION_MS);
+    try {
+      field.focus();
+    } catch {
+      /* non-focusable — typing still works */
+    }
+    if (typeMs === 0) {
+      setNativeValue(field, value);
+      fire(field, 'input');
+    } else {
+      for (let i = 1; i <= shown.length; i++) {
+        if (c.cancelled) return;
+        setNativeValue(field, shown.slice(0, i));
+        fire(field, 'input');
+        await c.sleep(TYPE_CHAR_MS);
+      }
+      if (c.cancelled) return;
+      if (value.length > shown.length) {
+        setNativeValue(field, value); // display cap reached — land the full value at once
+        fire(field, 'input');
+      }
+    }
+    fire(field, 'change');
+    const spent = (instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS) + typeMs;
     await c.sleep(STEP_MS - spent);
   }
 
@@ -304,16 +451,8 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
   async function highlightFinal(): Promise<void> {
     const el = finalTarget();
     if (!el) return;
-    let rect = targetRect(el);
-    if (!instant) {
-      await c.sleep(SCROLL_SETTLE_MS);
-      if (c.cancelled) return;
-      rect = el.getBoundingClientRect();
-      moveCursor(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      await c.sleep(GLIDE_MS);
-      if (c.cancelled) return;
-      rect = el.getBoundingClientRect();
-    }
+    const rect = await glideTo(el);
+    if (c.cancelled) return;
     const box = document.createElement('div');
     box.className = 'qa-final';
     box.style.top = `${Math.round(rect.top - 4)}px`;
@@ -341,12 +480,24 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
       }
       const entry = steps[i];
       if (!entry) continue;
+      // Steps may have navigated the SPA (a real click's pushState) — each
+      // resolve runs against the CURRENT document, wherever we are now.
       const el = resolveStep(entry, document, opts.ignore);
       if (!el || !el.isConnected) {
         skipped++;
         continue;
       }
-      await animateStep(el, i + 1, entry);
+      if (entry.kind === 'input') {
+        const field = fieldOf(el);
+        if (!field) {
+          skipped++;
+          continue;
+        }
+        await runInputStep(field, i + 1, entry);
+      } else {
+        await runClickStep(el, i + 1, entry);
+      }
+      if (c.cancelled) return null;
       shown++;
     }
     if (c.cancelled) return null;

@@ -9,7 +9,6 @@ import { TABS, tabOf, type TabKey } from '@/lib/status';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { ReportCard } from '@/components/board/report-card';
 import { NeedsHumanBand } from '@/components/board/needs-human-band';
-import { ViewSwitch } from '@/components/view-switch';
 
 /** Latest needs_human event per report id. */
 function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
@@ -124,27 +123,24 @@ export function Board({
       ) : null}
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-          <ViewSwitch active="list" />
-          <div
-            className="flex flex-wrap gap-0.5 rounded-lg border border-line bg-stage p-0.5"
-            role="tablist"
-            aria-label="Filter reports"
-          >
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                role="tab"
-                aria-selected={tab === t.key}
-                onClick={() => setTab(t.key)}
-                className={`rounded-[7px] px-3 py-1 text-[12.5px] font-semibold transition-colors ${
-                  tab === t.key ? 'bg-qa-soft text-qa' : 'text-ink-3 hover:text-ink'
-                }`}
-              >
-                {t.label} <b className="ml-0.5 tabular-nums">{counts[t.key]}</b>
-              </button>
-            ))}
-          </div>
+        <div
+          className="flex min-w-0 flex-wrap gap-0.5 rounded-lg border border-line bg-stage p-0.5"
+          role="tablist"
+          aria-label="Filter reports"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={tab === t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-[7px] px-3 py-1 text-[12.5px] font-semibold transition-colors ${
+                tab === t.key ? 'bg-qa-soft text-qa' : 'text-ink-3 hover:text-ink'
+              }`}
+            >
+              {t.label} <b className="ml-0.5 tabular-nums">{counts[t.key]}</b>
+            </button>
+          ))}
         </div>
         <Link
           href="/capture"

@@ -12,7 +12,7 @@ export function GroundingChips({ chips }: { chips: GroundingChip[] }) {
             className={`rounded-md border px-2 py-1 font-mono text-[11px] ${
               i === chips.length - 1
                 ? 'border-transparent bg-qa-soft font-semibold text-qa'
-                : 'border-line-soft bg-canvas text-ink-2'
+                : 'border-line-soft bg-surface text-ink-2'
             }`}
           >
             {chip.label}

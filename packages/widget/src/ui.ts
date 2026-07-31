@@ -11,6 +11,7 @@ import { widgetCss } from './styles';
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const TRAIL_PREVIEW = 6;
 const GET_TOKEN_TIMEOUT_MS = 3_000;
+const MAX_EXTRA_SHOTS = 3;
 
 export interface WidgetUI {
   host: HTMLElement;
@@ -21,7 +22,10 @@ interface Draft {
   kind: 'bug' | 'feature';
   meta: ElementMeta;
   selector?: string;
+  /** First capture — submits as screenshotDataUrl. */
   shot: string | null;
+  /** "＋ Add another screenshot" captures (≤3) — submit as screenshotsDataUrls. */
+  extraShots: string[];
 }
 
 function h<K extends keyof HTMLElementTagNameMap>(
@@ -82,7 +86,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       const element = await pickElement(root, { ignore: host });
       const kind: 'bug' | 'feature' = element ? 'bug' : 'feature';
       const shot = await captureShot(element, host);
-      const draft: Draft = { kind, meta: element ? elementMeta(element) : {}, shot };
+      const draft: Draft = { kind, meta: element ? elementMeta(element) : {}, shot, extraShots: [] };
       if (element) draft.selector = buildSelector(element);
       openDrawer(draft);
     } finally {
@@ -99,6 +103,10 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   }
 
   function trailChip(entry: ClickTrailEntry): HTMLElement {
+    if (entry.kind === 'input') {
+      const label = entry.text ?? entry.testid ?? entry.component ?? 'input';
+      return h('span', 't click', `⌨ ${truncate(label, 26)}`);
+    }
     const clickLabel = entry.text ?? entry.testid ?? entry.component;
     return clickLabel
       ? h('span', 't click', `⊕ ${truncate(clickLabel, 26)}`)
@@ -159,18 +167,73 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     head.appendChild(close);
     panel.appendChild(head);
 
-    panel.appendChild(h('div', 'cap-label', draft.kind === 'bug' ? 'Screenshot · element marked' : 'Screenshot'));
-    if (draft.shot) {
-      const shot = h('div', 'shot');
+    panel.appendChild(h('div', 'cap-label', draft.kind === 'bug' ? 'Screenshots · element marked' : 'Screenshots'));
+    const shotsWrap = h('div', 'shots');
+    panel.appendChild(shotsWrap);
+
+    function thumb(src: string, alt: string, onRemove?: () => void): HTMLElement {
+      const cell = h('div', 'thumb');
       const img = h('img');
-      img.src = draft.shot;
-      img.alt = 'Captured screenshot';
-      shot.appendChild(img);
-      shot.appendChild(h('div', 'shot-cap', `${location.pathname} · ${window.innerWidth}×${window.innerHeight}`));
-      panel.appendChild(shot);
-    } else {
-      panel.appendChild(h('div', 'chip', 'Screenshot unavailable on this page'));
+      img.src = src;
+      img.alt = alt;
+      cell.appendChild(img);
+      if (onRemove) {
+        const x = h('button', 'thumb-x', '×');
+        x.type = 'button';
+        x.setAttribute('aria-label', `Remove ${alt}`);
+        x.addEventListener('click', onRemove);
+        cell.appendChild(x);
+      }
+      return cell;
     }
+
+    function renderShots(): void {
+      shotsWrap.textContent = '';
+      if (!draft.shot && draft.extraShots.length === 0) {
+        shotsWrap.appendChild(h('div', 'chip', 'Screenshot unavailable on this page'));
+      } else {
+        const row = h('div', 'shot-row');
+        // The first capture is the report's anchor — no ×; added shots are removable.
+        if (draft.shot) row.appendChild(thumb(draft.shot, 'screenshot 1'));
+        draft.extraShots.forEach((src, i) => {
+          row.appendChild(
+            thumb(src, `screenshot ${(draft.shot ? 1 : 0) + i + 1}`, () => {
+              draft.extraShots.splice(i, 1);
+              renderShots();
+            }),
+          );
+        });
+        shotsWrap.appendChild(row);
+        shotsWrap.appendChild(h('div', 'shots-cap', `${location.pathname} · ${window.innerWidth}×${window.innerHeight}`));
+      }
+      if (draft.extraShots.length < MAX_EXTRA_SHOTS) {
+        const add = h('button', 'add-shot', '＋ Add another screenshot');
+        add.type = 'button';
+        add.addEventListener('click', () => void addShot());
+        shotsWrap.appendChild(add);
+      }
+    }
+
+    // Hide the drawer, re-enter the element picker (Esc = plain viewport shot),
+    // capture, and come back with the new thumb. Buffers keep recording — only
+    // widget-internal events are ever ignored.
+    async function addShot(): Promise<void> {
+      if (picking || draft.extraShots.length >= MAX_EXTRA_SHOTS) return;
+      picking = true;
+      panel.style.display = 'none';
+      try {
+        const element = await pickElement(root, { ignore: host });
+        const shot = await captureShot(element, host);
+        if (shot) draft.extraShots.push(shot);
+        else toast('err', "Couldn't capture that screenshot — try again.");
+      } finally {
+        panel.style.display = '';
+        picking = false;
+        renderShots();
+      }
+    }
+
+    renderShots();
 
     const trail = buffers.clickTrail().slice(-TRAIL_PREVIEW);
     if (trail.length > 0) {
@@ -388,7 +451,12 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     if (draft.meta.testid) body.testid = draft.meta.testid;
     if (draft.meta.text) body.elementText = draft.meta.text;
     if (cfg.appContext) body.appContext = cfg.appContext;
-    if (draft.shot) body.screenshotDataUrl = draft.shot;
+    // First capture → screenshotDataUrl, the rest → screenshotsDataUrls (≤3).
+    // When the first capture failed, the earliest added shot is promoted.
+    const shots = [draft.shot, ...draft.extraShots].filter((s): s is string => Boolean(s));
+    const [firstShot, ...restShots] = shots;
+    if (firstShot) body.screenshotDataUrl = firstShot;
+    if (restShots.length > 0) body.screenshotsDataUrls = restShots.slice(0, MAX_EXTRA_SHOTS);
 
     try {
       const res = await buffers.rawFetch(`${cfg.endpoint}/api/ingest`, {

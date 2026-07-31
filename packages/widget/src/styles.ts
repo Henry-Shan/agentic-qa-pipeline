@@ -74,9 +74,28 @@ button { font-family: inherit; }
   font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--ink-3); margin: 14px 0 6px;
 }
-.shot { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
-.shot img { display: block; width: 100%; max-height: 150px; object-fit: cover; object-position: top; }
-.shot-cap { font-size: 11px; color: var(--ink-3); padding: 6px 10px; border-top: 1px solid var(--line-soft); }
+.shots { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.shot-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.thumb {
+  position: relative; width: 92px; height: 64px; flex: none;
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--paper);
+}
+.thumb img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.thumb-x {
+  position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; padding: 0;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: rgba(30,30,30,.72); color: #fff; font-size: 11px; line-height: 1;
+  display: grid; place-items: center;
+}
+.thumb-x:hover { background: var(--red); }
+.shots-cap { font-size: 11px; color: var(--ink-3); }
+.add-shot {
+  border: 1px dashed var(--line); border-radius: 8px; cursor: pointer;
+  background: var(--paper); color: var(--ink-2); font: inherit; font-size: 11.5px;
+  font-weight: 600; padding: 6px 12px;
+}
+.add-shot:hover { border-color: var(--qa-bright); color: var(--qa); }
+.add-shot:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
 .trail { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .trail .t {
   background: var(--paper); border: 1px solid var(--line-soft); border-radius: 6px;

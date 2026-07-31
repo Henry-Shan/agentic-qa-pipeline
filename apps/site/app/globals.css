@@ -1,12 +1,12 @@
 @import "tailwindcss";
 
-/* Design tokens — Figma-studio light theme (approved canvas prototype).
+/* Design tokens — Figma-studio light theme (approved prototype).
    White page + cards, #FAFAFA secondary surfaces, hairline borders, teal accent.
    Light is the only theme by design. */
 :root {
   color-scheme: light;
   --paper: #ffffff;
-  --canvas: #fafafa;
+  --surface: #fafafa;
   --stage: #ffffff;
   --ink: #1e1e1e;
   --ink-2: #57606a;
@@ -24,18 +24,13 @@
   --red: #dc2626;
   --red-soft: #fee2e2;
   --on-accent: #ffffff;
-  --sticky-bug: #f6b09e;
-  --sticky-bug-deep: #7c3421;
-  --sticky-feat: #c3b2ee;
-  --sticky-feat-deep: #43306e;
-  --section: #f4f5f6;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.05);
   --shadow-big: 0 2px 8px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
 }
 
 @theme inline {
   --color-paper: var(--paper);
-  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
   --color-stage: var(--stage);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
@@ -52,11 +47,6 @@
   --color-red: var(--red);
   --color-red-soft: var(--red-soft);
   --color-on-accent: var(--on-accent);
-  --color-sticky-bug: var(--sticky-bug);
-  --color-sticky-bug-deep: var(--sticky-bug-deep);
-  --color-sticky-feat: var(--sticky-feat);
-  --color-sticky-feat-deep: var(--sticky-feat-deep);
-  --color-section: var(--section);
   --font-sans: var(--font-inter), Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
   --shadow-card: var(--shadow);
@@ -89,12 +79,6 @@ textarea:focus-visible,
 select:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--qa-ring);
-}
-
-/* Canvas edit-in-place: ghost prompt inside an empty contenteditable block. */
-[data-hint]:empty::before {
-  content: attr(data-hint);
-  opacity: 0.55;
 }
 
 @layer components {
@@ -132,7 +116,7 @@ select:focus-visible {
     padding: 4px 10px;
     border: 1px solid var(--line-soft);
     border-radius: 8px;
-    background: var(--canvas);
+    background: var(--surface);
     color: var(--ink-2);
     max-width: 100%;
     overflow: hidden;

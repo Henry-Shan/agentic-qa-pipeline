@@ -14,8 +14,10 @@ import { ReportContext } from '@/components/task/report-context';
 import { GroundingChips } from '@/components/task/grounding-chips';
 import { NeedsHumanCard } from '@/components/task/needs-human-card';
 import { EventLog } from '@/components/task/event-log';
+import { PreviewEmbed } from '@/components/task/preview-embed';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
+import { CopySession } from '@/components/task/copy-session';
 
 interface Props {
   initialReport: QaReport;
@@ -34,6 +36,8 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [destroyError, setDestroyError] = useState<string | null>(null);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
+  // Live preview → hero replay window; otherwise the slim offline strip.
+  const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
 
   // Blocked + a needs_human hand-off → prominent amber summary above the log
   // (contracts § Needs-a-human). Latest such event wins (events are id-sorted).
@@ -142,6 +146,32 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
 
       <ReportContext report={report} />
 
+      {/* Hero preview — the embedded replay window sits top-center at full
+          content width (contracts § Site pages); the columns continue below. */}
+      <div className="mt-5">
+        {previewUrl ? (
+          <PreviewEmbed key={previewUrl} previewUrl={previewUrl} report={report} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5 rounded-[10px] border border-dashed border-line bg-surface px-3.5 py-2.5 text-[12px] text-ink-3">
+            <span className="font-semibold text-ink-2">preview offline</span>
+            <span aria-hidden>—</span>
+            {run?.preview_url ? (
+              <a
+                href={run.preview_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-semibold text-qa hover:underline"
+              >
+                Open task ↗
+              </a>
+            ) : (
+              <span>Open task ↗</span>
+            )}
+            <span>still works</span>
+          </div>
+        )}
+      </div>
+
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
           {needsHuman ? <NeedsHumanCard report={report} event={needsHuman} /> : null}
@@ -157,8 +187,11 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
 
         <div className="min-w-0">
           <div className="cap-label">Result</div>
-          <ResultCard run={run} report={report} />
-          <div className="cap-label mt-4">Talk to Claude — anytime</div>
+          <ResultCard run={run} />
+          <div className="mb-1.5 mt-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="cap-label mb-0">Talk to Claude — anytime</div>
+            {run ? <CopySession sessionId={run.session_id} /> : null}
+          </div>
           <SteerBox reportId={report.id} status={report.status} userEmail={userEmail} />
 
           <div className="relative mt-5">

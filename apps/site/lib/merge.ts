@@ -1,4 +1,4 @@
-// Realtime merge helpers shared by the board (list) and canvas views.
+// Realtime merge helpers for the board list.
 
 import type { QaReport, QaRun } from '@/lib/types';
 

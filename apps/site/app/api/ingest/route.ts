@@ -9,10 +9,11 @@ export const runtime = 'nodejs';
 const STATIC_ORIGINS = new Set(['https://example.com', 'https://www.example.com']);
 const LOCALHOST_RE = /^http:\/\/localhost(:\d+)?$/;
 
-// Hard request cap: 4 MB screenshot as base64 (~5.6 MB) + clamped logs, with
-// headroom. Checked against content-length BEFORE the body is buffered so an
-// oversized payload never allocates (`next start` has no platform body cap).
-const MAX_BODY_BYTES = 8 * 1024 * 1024;
+// Hard request cap: primary screenshot + up to 3 additional (each ≤4 MB PNG,
+// ~5.6 MB as base64) + clamped logs. Checked against content-length BEFORE the
+// body is buffered so an oversized payload never allocates (`next start` has
+// no platform body cap).
+const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 function originAllowed(origin: string): boolean {
   return STATIC_ORIGINS.has(origin) || LOCALHOST_RE.test(origin);
@@ -109,8 +110,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'invalid body', issues }, { status: 400, headers });
   }
 
-  const { screenshotDataUrl, ...rest } = clampIngest(parsed.data);
-  // Scrub everything except the screenshot (its base64 can coincidentally match the JWT pattern).
+  const { screenshotDataUrl, screenshotsDataUrls, ...rest } = clampIngest(parsed.data);
+  // Scrub everything except the screenshots (their base64 can coincidentally match the JWT pattern).
   const body = scrubSecrets(rest);
   // JWT path: the reporter is whoever the token verified as — never the body's claim.
   if (verifiedEmail) body.reporterEmail = verifiedEmail;
@@ -172,17 +173,23 @@ export async function POST(request: NextRequest) {
   }
   const id = inserted.id as number;
 
-  if (screenshotDataUrl) {
-    const buf = decodeScreenshot(screenshotDataUrl);
-    if (buf) {
-      const path = `report-${id}/marked.png`;
-      const { error: uploadError } = await admin.storage
-        .from('qa-screenshots')
-        .upload(path, buf, { contentType: 'image/png', upsert: true });
-      if (!uploadError) {
-        await admin.from('qa_reports').update({ screenshots: [path] }).eq('id', id);
-      }
-    }
+  // Primary → marked.png, additional → marked-2.png … in order;
+  // qa_reports.screenshots lists every stored path (contracts §Widget→Site).
+  const shots = [screenshotDataUrl, ...(screenshotsDataUrls ?? [])];
+  const storedPaths: string[] = [];
+  for (let i = 0; i < shots.length; i++) {
+    const dataUrl = shots[i];
+    if (!dataUrl) continue;
+    const buf = decodeScreenshot(dataUrl);
+    if (!buf) continue;
+    const path = i === 0 ? `report-${id}/marked.png` : `report-${id}/marked-${i + 1}.png`;
+    const { error: uploadError } = await admin.storage
+      .from('qa-screenshots')
+      .upload(path, buf, { contentType: 'image/png', upsert: true });
+    if (!uploadError) storedPaths.push(path);
+  }
+  if (storedPaths.length > 0) {
+    await admin.from('qa_reports').update({ screenshots: storedPaths }).eq('id', id);
   }
 
   await admin.from('qa_events').insert({

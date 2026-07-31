@@ -26,9 +26,14 @@ export const ingestSchema = z.object({
       z.object({
         ts: z.number(),
         route: z.string(),
+        // Defaults to 'click'; 'input' entries record typing (value = final
+        // field value, selector = stable selector for replay targeting).
+        kind: z.enum(['click', 'input']).optional(),
         text: z.string().optional(),
         testid: z.string().optional(),
         component: z.string().optional(),
+        selector: z.string().optional(),
+        value: z.string().optional(),
       }),
     )
     .max(MAX_ARRAY_ENTRIES),
@@ -56,6 +61,9 @@ export const ingestSchema = z.object({
   viewport: z.object({ w: z.number(), h: z.number(), dpr: z.number() }),
   appContext: z.record(z.string(), z.string()).optional(),
   screenshotDataUrl: z.string().max(MAX_SCREENSHOT_DATA_URL_CHARS).optional(),
+  // Additional captures (≤3), EACH under the same pre-decode length cap as the
+  // primary; stored as report-<id>/marked-2.png … in order after the primary.
+  screenshotsDataUrls: z.array(z.string().max(MAX_SCREENSHOT_DATA_URL_CHARS)).max(3).optional(),
 });
 
 export type IngestBody = z.infer<typeof ingestSchema>;
@@ -96,7 +104,12 @@ export function clampIngest(input: IngestBody): IngestBody {
     selector: input.selector?.slice(0, 500),
     testid: input.testid?.slice(0, 200),
     elementText: input.elementText?.slice(0, 120),
-    clickTrail: input.clickTrail.slice(-50).map((entry) => ({ ...entry, text: entry.text?.slice(0, 160) })),
+    clickTrail: input.clickTrail.slice(-50).map((entry) => ({
+      ...entry,
+      text: entry.text?.slice(0, 160),
+      selector: entry.selector?.slice(0, 500),
+      value: entry.value?.slice(0, 120),
+    })),
     consoleLog: input.consoleLog.slice(-50).map((entry) => ({ ...entry, text: entry.text.slice(0, 500) })),
     networkLog: clampNetworkLog(input.networkLog),
     appContext: input.appContext ? clampRecord(input.appContext) : undefined,
