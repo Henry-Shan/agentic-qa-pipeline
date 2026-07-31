@@ -28,11 +28,13 @@ export default async function TaskPage({ params }: { params: Promise<{ id: strin
   const events = ((eventsRes.data ?? []) as QaEvent[]).slice().reverse();
 
   return (
-    <TaskView
-      initialReport={report}
-      initialRun={run}
-      initialEvents={events}
-      userEmail={userData.user?.email ?? ''}
-    />
+    <main className="mx-auto w-full max-w-5xl px-5 py-6">
+      <TaskView
+        initialReport={report}
+        initialRun={run}
+        initialEvents={events}
+        userEmail={userData.user?.email ?? ''}
+      />
+    </main>
   );
 }

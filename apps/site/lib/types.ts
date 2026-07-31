@@ -150,6 +150,20 @@ export interface QaMessage {
   created_at: string;
 }
 
+export type CanvasBlockKind = 'pos' | 'text';
+
+/** qa_canvas_blocks — kind 'pos' pins a report's sticky on /canvas; kind 'text' is a free label. */
+export interface QaCanvasBlock {
+  id: number;
+  kind: CanvasBlockKind;
+  report_id: number | null;
+  text: string | null;
+  x: number;
+  y: number;
+  updated_by: string | null;
+  updated_at: string;
+}
+
 export interface QaAreaNote {
   id: number;
   area: string;

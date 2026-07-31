@@ -24,5 +24,9 @@ export default async function BoardPage() {
     runs = (runRows ?? []) as QaRun[];
   }
 
-  return <Board initialReports={reports} initialRuns={runs} />;
+  return (
+    <main className="mx-auto w-full max-w-5xl px-5 py-6">
+      <Board initialReports={reports} initialRuns={runs} />
+    </main>
+  );
 }
