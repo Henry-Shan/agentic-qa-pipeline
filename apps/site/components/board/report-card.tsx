@@ -36,15 +36,6 @@ export function ReportCard({
               {reporter} ·{' '}
               <span suppressHydrationWarning>{relativeAge(report.created_at)}</span>
             </span>
-            {report.app_context?.platform === 'mobile' ? (
-              <span
-                aria-label="Filed from the mobile app"
-                title="Filed from the mobile app"
-                className="text-[12px]"
-              >
-                📱
-              </span>
-            ) : null}
             <span
               className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
                 report.kind === 'feature' ? 'bg-qa-soft text-qa' : 'bg-line-soft text-ink-2'

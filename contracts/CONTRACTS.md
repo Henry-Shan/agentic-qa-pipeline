@@ -113,7 +113,7 @@ interface IngestBody {
   consoleLog: Array<{ ts: number; level: 'error'|'warn'; text: string }>;                              // ≤50, each ≤500 chars
   networkLog: Array<{ ts: number; method: string; url: string; status: number; ms: number; bodySnippet?: string }>; // ≤40, snippet ≤2000 chars, non-2xx always kept
   viewport: { w: number; h: number; dpr: number };
-  appContext?: Record<string, string>;  // mobile reporter sets platform:'mobile' (web omits it)
+  appContext?: Record<string, string>;
   screenshotDataUrl?: string;       // PNG data URL ≤4MB, element pre-marked
   screenshotsDataUrls?: string[];   // additional captures (≤3), same limits each; the widget's
                                     // drawer lets the tester re-enter the picker to add more.
@@ -214,62 +214,8 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   8s, shows a dismissible "the widget hasn't loaded inside this copy of the host app" note and
   keeps listening. Board header links here via "＋ Report an issue".
 - **Canvas view: REMOVED** (route, components, tools; `qa_canvas_blocks` table retained but unused).
-- **/capture platform toggle** — segmented `Web | Mobile` in the capture top bar. Web = the
-  embedded example.com iframe (unchanged). Mobile = a guided capture panel: how-to steps
-  (internal TestFlight build → floating 🐛 bubble in the app → report), a QR code from
-  `NEXT_PUBLIC_MOBILE_CAPTURE_URL` when set (e.g. TestFlight/dev-client link; hidden when unset),
-  and a live list of the latest mobile reports (`app_context.platform = 'mobile'`) linking to
-  their tasks. Capture itself happens IN the app; this panel is the desk-side companion.
-- **Mobile reports on the task page**: when `app_context.platform === 'mobile'`, the hero slot
-  shows the screenshot gallery (large, navigable) instead of the web preview iframe; replay/
-  preview-embed don't apply (simulator + Maestro video replay is a later phase). Board cards get
-  a small 📱 marker.
 
-### Mobile in-app reporter (the host app `apps/mobile`)
 
-RN module gated by env `EXPO_PUBLIC_QA_ENDPOINT` (unset = fully dormant, tree-shaken out of
-customer builds' behavior): a draggable floating 🐛 bubble (internal builds) → capture flow:
-screenshot of the root view via `react-native-view-shot` with the LAST TAP marked (tap
-coordinates recorded by a root capture-phase responder), then a modal form (description,
-＋ add another screenshot up to 3 extra). Buffers from app start: console error/warn patch,
-global fetch/XHR patch (same shapes as the web widget's networkLog, headers never stored,
-values scrubbed), navigation trail from expo-router (route markers) + tap entries
-`{ts, route, kind:'click', text:'tap', selector:'@x,y (WxH)'}`. Typed-input recording: NOT in
-v1 (RN TextInput patching is invasive) — noted limitation. Submit → POST
-`{EXPO_PUBLIC_QA_ENDPOINT}/api/ingest` with `Authorization: Bearer <mobile supabase session
-token>` (native requests carry no Origin header; the ingest CORS gate only applies when Origin
-is present), body per IngestBody with `appContext.platform='mobile'` and `route` = expo-router
-pathname. Reporter identity = the verified session email, as on web.
-- **Auto-assign on block**: the moment a report becomes `blocked` (a STOP outcome or a posted
-  `/api/ask` question), the worker assigns it — if `assignee` is null — to the reporter's
-  display name when they have one, else to `QA_DEFAULT_ASSIGNEE` (worker env). It writes a
-  `qa_events` `{type:'system'}` line "auto-assigned to <name> — needs a human" so the handoff is
-  visible. Manual assignment always wins and is never overwritten.
-- **"Assigned to me"** is a board TAB (between All and Fixing), not a pinned band — no banner
-  above the tabs. Membership: reports assigned to the signed-in tester's display name in ANY
-  non-cancelled status, plus blocked reports they filed. It carries a count like the other tabs,
-  its cards are the ordinary report cards (a blocked card previews the first line of its
-  needs_human summary in amber), and its empty state reads "Nothing assigned to you — reports
-  that block on a human land here."
-- **Assignment**: `qa_reports.assignee` holds a tester display name. The task page's steer card
-  shows a SINGLE button **Assign to <my display name>** beside Send — no picker, no dropdown.
-  Assigning writes `assignee` + a system event "assigned to <name> by <assigner>". Once the
-  report is theirs the button becomes a quiet "Assigned to <me>" chip with a × to unassign; a
-  report assigned to someone else still shows the button (one-click takeover). The board's
-  section is defined by the "Assigned to me" bullet above.
-- **Stale-report safety**: every task-page mutation writes through `lib/report-gone.ts` —
-  updates must confirm they hit a row (`.select('id').maybeSingle()`) before any dependent
-  `qa_events`/`qa_messages` insert, and a `23503` / `*_report_id_fkey` error means the report was
-  destroyed while the tab was open. Never report success before the write is confirmed; on a
-  gone report the page swaps to "This report no longer exists — it was deleted." and returns to
-  the board. The task page also treats a `qa_reports` DELETE (realtime) or an empty refetch the
-  same way.
-- **Widget drawer, steps only — NO video**: the drawer's primary context section is
-  "Replay · what Claude will see", the FULL numbered trail list (live-appending while the drawer
-  is open). It does NOT replay video: the tester just performed those actions, so the drawer
-  narrates rather than replays, and the widget ships the recorder ONLY (`@rrweb/record`, no
-  Replayer — half the bundle). Screenshots sit in a compact thumbnail row below.
-  The recording still travels with the report; the TASK PAGE is where it is watched.
 
 ### Session replay (rrweb)
 

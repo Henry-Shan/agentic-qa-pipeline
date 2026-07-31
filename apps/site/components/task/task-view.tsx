@@ -18,7 +18,6 @@ import { EventLog } from '@/components/task/event-log';
 import { HeroTabs, type HeroTab } from '@/components/task/hero-tabs';
 import { PreviewEmbed } from '@/components/task/preview-embed';
 import { ReplayPlayer } from '@/components/task/replay-player';
-import { ScreenshotGallery } from '@/components/task/screenshot-gallery';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
 import { CopySession } from '@/components/task/copy-session';
@@ -48,9 +47,6 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [afterVersion, setAfterVersion] = useState(0);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
-  // Mobile-filed report → the screenshot gallery leads the hero (contracts
-  // § Mobile reports on the task page); recordings still get their own tabs.
-  const isMobile = report.app_context?.platform === 'mobile';
   // The interactive preview embed exists only while the preview server is up —
   // there is NO offline placeholder (contracts § Task page layout).
   const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
@@ -188,12 +184,8 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   }
 
   // Hero tabs, in contract order. Only tabs with real content are built, so the
-  // default is simply "Before, else After, else Live preview" — falling through
-  // to whatever is left (mobile Screens) when none of the three exist.
+  // default is simply "Before, else After, else Live preview".
   const heroTabs: HeroTab[] = [];
-  if (isMobile) {
-    heroTabs.push({ id: 'shots', label: 'Screens', content: <ScreenshotGallery report={report} /> });
-  }
   if (hasBefore) {
     heroTabs.push({
       id: 'before',
@@ -287,7 +279,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
       <ReportContext report={report} />
 
       {/* Hero — full content width, top-center, a segmented switch over
-          [Screens (mobile) | Before (the report) | After the fix | Live preview]
+          [Before (the report) | After the fix | Live preview]
           (contracts § Task page layout). Each tab appears only when its content
           exists; with nothing to show there is NO hero and no offline
           placeholder. Live preview is mounted eagerly so its auto-replay — and
