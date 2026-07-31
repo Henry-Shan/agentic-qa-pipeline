@@ -70,6 +70,21 @@ export default function CapturePage() {
         return;
       }
 
+      if (data.type === 'qa-pipeline:token' && event.source) {
+        // The widget authenticates submissions with the QA session's token —
+        // the tester is signed in HERE even when the embedded app is not.
+        const source = event.source as WindowProxy;
+        const targetOrigin = event.origin;
+        void (async () => {
+          const { data: sessionData } = await getBrowserClient().auth.getSession();
+          source.postMessage(
+            { type: 'qa-pipeline:token-result', token: sessionData.session?.access_token ?? null },
+            targetOrigin,
+          );
+        })();
+        return;
+      }
+
       if (data.type === 'qa-pipeline:filed' && typeof data.url === 'string') {
         try {
           const task = new URL(data.url, window.location.origin);

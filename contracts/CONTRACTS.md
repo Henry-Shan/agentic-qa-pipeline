@@ -123,6 +123,13 @@ Messages (exact shapes, implement exactly):
    endpoint>)`.
 5. QA `/capture` page, on a filed (same origin check as hello): client-side navigate
    (`router.push`) to the task page path parsed from `url`.
+6. **token** — widget, at submit time when framed:
+   `window.parent.postMessage({type:'qa-pipeline:token'}, <origin of the configured endpoint>)`.
+7. **token-result** — QA `/capture` page, on a token request (same origin check as hello):
+   `event.source.postMessage({type:'qa-pipeline:token-result', token: <QA session access token
+   or null>}, event.origin)`. The widget uses it as `Authorization: Bearer` — this is the
+   PRIMARY submit auth in framed mode (the tester is always signed into the QA site, even when
+   the embedded app is logged out); the host `getToken` bridge and static token are fallbacks.
 
 Env — QA site: `NEXT_PUBLIC_CAPTURE_URL` (embedded the host app URL), `NEXT_PUBLIC_SITE_URL`
 (the activate endpoint). the host app: `NEXT_PUBLIC_QA_WIDGET_URL` (widget bundle URL; unset =

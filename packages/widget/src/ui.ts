@@ -245,11 +245,48 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   }
 
   /**
-   * Submit-time auth, in order: (a) the host's `window.QAPipeline.getToken`
-   * session bridge (awaited, 3s timeout) → `Authorization: Bearer`; (b) the
-   * configured static token → `x-qa-token`; (c) neither → null (not configured).
+   * When framed by the QA site, ask the parent (capture page) for the QA
+   * session's access token — the tester is always signed in THERE, even when
+   * the embedded app is logged out. Origin-checked both ways; null on timeout.
+   */
+  function requestParentToken(): Promise<string | null> {
+    if (window.self === window.top) return Promise.resolve(null);
+    let origin: string;
+    try {
+      origin = new URL(cfg.endpoint).origin;
+    } catch {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(null);
+      }, GET_TOKEN_TIMEOUT_MS);
+      const onMsg = (e: MessageEvent): void => {
+        if (e.origin !== origin) return;
+        const d = e.data as { type?: unknown; token?: unknown } | null;
+        if (!d || d.type !== 'qa-pipeline:token-result') return;
+        cleanup();
+        resolve(typeof d.token === 'string' && d.token ? d.token : null);
+      };
+      function cleanup(): void {
+        clearTimeout(timer);
+        window.removeEventListener('message', onMsg);
+      }
+      window.addEventListener('message', onMsg);
+      window.parent.postMessage({ type: 'qa-pipeline:token' }, origin);
+    });
+  }
+
+  /**
+   * Submit-time auth, in order: (a) framed → the QA site session via the
+   * parent token relay; (b) the host's `window.QAPipeline.getToken` session
+   * bridge (awaited, 3s timeout); (c) the configured static token →
+   * `x-qa-token`; (d) none → null.
    */
   async function resolveAuthHeader(): Promise<Record<string, string> | null> {
+    const parentToken = await requestParentToken();
+    if (parentToken) return { authorization: `Bearer ${parentToken}` };
     const getToken = window.QAPipeline?.getToken;
     if (typeof getToken === 'function') {
       try {
@@ -282,7 +319,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     if (!auth) {
       send.disabled = false;
       send.textContent = SEND_LABEL;
-      toast('err', "QA widget isn't configured — missing auth");
+      toast('err', "Couldn't authenticate — sign in to QA Pipeline, then try again");
       return;
     }
 
