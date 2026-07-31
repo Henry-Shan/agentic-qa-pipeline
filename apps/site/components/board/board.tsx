@@ -4,7 +4,8 @@ import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
-import { latestByReport, upsertReport } from '@/lib/merge';
+import { useDisplayName } from '@/lib/display-names';
+import { inPersonalBand, latestByReport, upsertReport } from '@/lib/merge';
 import { TABS, tabOf, type TabKey } from '@/lib/status';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 import { ReportCard } from '@/components/board/report-card';
@@ -37,6 +38,8 @@ export function Board({
     latestNeedsHuman(initialNeedsHuman),
   );
   const [tab, setTab] = useState<TabKey>('all');
+  // Display name decides "assigned to me" band membership (contracts § Assignment).
+  const myName = useDisplayName(userEmail);
 
   const refetch = useCallback(async () => {
     const supabase = getBrowserClient();
@@ -59,20 +62,18 @@ export function Board({
       .order('id', { ascending: false });
     if (runRows) setRuns(latestByReport(runRows as QaRun[]));
 
-    // Hand-off summaries for the "Needs {name}" band — only the signed-in
-    // user's blocked reports can appear there.
-    const blockedIds = fresh
-      .filter((r) => r.status === 'blocked' && r.reporter_email === userEmail)
-      .map((r) => r.id);
-    if (blockedIds.length === 0) return;
+    // Hand-off summaries for the "Needs {name}" band — the signed-in user's
+    // blocked reports plus reports assigned to their display name.
+    const bandIds = fresh.filter((r) => inPersonalBand(r, userEmail, myName)).map((r) => r.id);
+    if (bandIds.length === 0) return;
     const { data: eventRows } = await supabase
       .from('qa_events')
       .select('*')
       .eq('type', 'needs_human')
-      .in('report_id', blockedIds)
+      .in('report_id', bandIds)
       .order('id', { ascending: false });
     if (eventRows) setNeedsHuman((prev) => ({ ...prev, ...latestNeedsHuman(eventRows as QaEvent[]) }));
-  }, [userEmail]);
+  }, [userEmail, myName]);
 
   useLive(
     'qa-board',
@@ -81,6 +82,27 @@ export function Board({
       if (table === 'qa_reports') {
         const report = row as unknown as QaReport;
         setReports((prev) => upsertReport(prev, report));
+        // A row can enter the band via a live assignee/status change carrying
+        // an OLDER hand-off summary the band hasn't cached yet (the realtime
+        // events sub only delivers new inserts) — fetch it on demand.
+        if (!needsHuman[report.id] && inPersonalBand(report, userEmail, myName)) {
+          void (async () => {
+            const { data } = await getBrowserClient()
+              .from('qa_events')
+              .select('*')
+              .eq('type', 'needs_human')
+              .eq('report_id', report.id)
+              .order('id', { ascending: false })
+              .limit(1);
+            const event = (data ?? [])[0] as QaEvent | undefined;
+            if (!event) return;
+            setNeedsHuman((prev) => {
+              const current = prev[event.report_id];
+              if (current && current.id >= event.id) return prev;
+              return { ...prev, [event.report_id]: event };
+            });
+          })();
+        }
       } else if (table === 'qa_runs') {
         const run = row as unknown as QaRun;
         setRuns((prev) => {
@@ -105,8 +127,12 @@ export function Board({
   // the worker is still tearing down (it deletes the row when done).
   const live = reports.filter((r) => r.status !== 'cancelled');
 
-  // Blocked reports filed by the signed-in user — pinned above the tabs.
-  const needsMe = live.filter((r) => r.status === 'blocked' && r.reporter_email === userEmail);
+  // The tester's personal task list — reports assigned to their display name
+  // (any non-cancelled status) ∪ blocked reports they filed — pinned above the
+  // tabs. `live` already excludes cancelled; the filter dedupes by construction.
+  const bandItems = live
+    .filter((r) => inPersonalBand(r, userEmail, myName))
+    .map((r) => ({ report: r, assigned: r.assignee === myName }));
 
   const counts: Record<TabKey, number> = { all: live.length, fixing: 0, preview: 0, queued: 0, shipped: 0 };
   for (const report of live) {
@@ -118,8 +144,8 @@ export function Board({
 
   return (
     <div>
-      {needsMe.length > 0 ? (
-        <NeedsHumanBand reports={needsMe} events={needsHuman} userEmail={userEmail} />
+      {bandItems.length > 0 ? (
+        <NeedsHumanBand items={bandItems} events={needsHuman} runs={runs} userEmail={userEmail} />
       ) : null}
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

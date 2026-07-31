@@ -3,7 +3,8 @@ import { z } from 'zod';
 
 // DoS bounds that must bind BEFORE clamping/decoding: zod walks arrays and the
 // screenshot string in full, so cap them here. Far above anything the widget
-// sends (clamp keeps ≤50 entries), so legit reports are never rejected.
+// sends (clamp keeps ≤200 clickTrail / ≤50 other entries), so legit reports
+// are never rejected.
 const MAX_ARRAY_ENTRIES = 500;
 // "data:image/png;base64," + 4 MB of PNG as base64 (~5.6 MB chars).
 const MAX_SCREENSHOT_DATA_URL_CHARS = 5_600_000;
@@ -104,7 +105,7 @@ export function clampIngest(input: IngestBody): IngestBody {
     selector: input.selector?.slice(0, 500),
     testid: input.testid?.slice(0, 200),
     elementText: input.elementText?.slice(0, 120),
-    clickTrail: input.clickTrail.slice(-50).map((entry) => ({
+    clickTrail: input.clickTrail.slice(-200).map((entry) => ({
       ...entry,
       text: entry.text?.slice(0, 160),
       selector: entry.selector?.slice(0, 500),

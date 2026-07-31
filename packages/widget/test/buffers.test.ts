@@ -262,11 +262,11 @@ describe('click trail + routes', () => {
     expect(trail.at(-1)?.route).toBe('/inventory/42');
   });
 
-  it('keeps only the last 50 trail entries', () => {
+  it('keeps only the last 200 trail entries (TOTAL-RECALL ring)', () => {
     document.body.innerHTML = `<button>go</button>`;
     const btn = document.querySelector('button');
-    for (let i = 0; i < 60; i++) btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(buffers.clickTrail().length).toBe(50);
+    for (let i = 0; i < 210; i++) btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(buffers.clickTrail().length).toBe(200);
   });
 
   it('click entries carry kind and a stable selector', () => {
@@ -417,6 +417,149 @@ describe('input trail recording', () => {
     fire(input, 'input');
     fire(input, 'change');
     expect(buffers.clickTrail().length).toBe(before);
+  });
+});
+
+describe('total-recall recording (window-level capture)', () => {
+  it('records interactions even when the app stops propagation below window', () => {
+    document.body.innerHTML = `
+      <div id="wrap">
+        <button data-testid="swallowed">Go</button>
+        <input id="f" aria-label="Field" />
+      </div>`;
+    const wrap = document.getElementById('wrap') as HTMLElement;
+    for (const type of ['click', 'change', 'keydown', 'input']) {
+      wrap.addEventListener(type, (e) => e.stopPropagation(), true); // capture-phase swallow
+    }
+    const before = buffers.clickTrail().length;
+    document.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const input = document.getElementById('f') as HTMLInputElement;
+    input.value = 'v';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const trail = buffers.clickTrail().slice(before);
+    expect(trail.map((e) => e.kind)).toEqual(['click', 'input', 'click']);
+    expect(trail[0]?.testid).toBe('swallowed');
+    expect(trail[1]?.value).toBe('v');
+    expect(trail[2]?.text).toBe('pressed Enter');
+  });
+
+  it("records a select change as kind:'input' with the chosen option's LABEL", () => {
+    document.body.innerHTML = `
+      <label for="dept">Department</label>
+      <select id="dept" data-testid="dept">
+        <option value="1">Chemistry</option>
+        <option value="2">Molecular Biology</option>
+      </select>`;
+    const select = document.querySelector('select') as HTMLSelectElement;
+    select.value = '2';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    const entry = buffers.clickTrail().at(-1);
+    expect(entry?.kind).toBe('input');
+    expect(entry?.value).toBe('Molecular Biology'); // label, not the wire value "2"
+    expect(entry?.text).toBe('Department');
+    expect(entry?.selector).toBe('[data-testid="dept"]');
+  });
+
+  it("records checkbox toggles as kind:'input' with 'checked'/'unchecked' and the field label", () => {
+    document.body.innerHTML = `<label for="n">Email me updates</label><input id="n" type="checkbox" />`;
+    const box = document.querySelector('input') as HTMLInputElement;
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    const [on, off] = buffers.clickTrail().slice(-2);
+    expect(on?.kind).toBe('input');
+    expect(on?.value).toBe('checked');
+    expect(on?.text).toBe('Email me updates');
+    expect(on?.selector).toBe('#n');
+    expect(off?.kind).toBe('input');
+    expect(off?.value).toBe('unchecked'); // two discrete steps — toggles never coalesce
+  });
+
+  it('records radio selection with the checked state', () => {
+    document.body.innerHTML = `<input type="radio" id="r" name="plan" aria-label="Pro plan" />`;
+    const radio = document.querySelector('input') as HTMLInputElement;
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+    const entry = buffers.clickTrail().at(-1);
+    expect(entry?.kind).toBe('input');
+    expect(entry?.value).toBe('checked');
+    expect(entry?.text).toBe('Pro plan');
+  });
+
+  it("records Enter in a field as {kind:'click', text:'pressed Enter'} with the field's selector", () => {
+    document.body.innerHTML = `<input id="search" aria-label="Search" />`;
+    const input = document.getElementById('search') as HTMLInputElement;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const entry = buffers.clickTrail().at(-1);
+    expect(entry?.kind).toBe('click');
+    expect(entry?.text).toBe('pressed Enter');
+    expect(entry?.selector).toBe('#search');
+  });
+
+  it('flushes pending typing before the Enter step and drops the commit-on-Enter change', () => {
+    document.body.innerHTML = `<input id="q" aria-label="Search" />`;
+    const input = document.getElementById('q') as HTMLInputElement;
+    const before = buffers.clickTrail().length;
+    input.value = 'centri';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true })); // the browser's commit-on-Enter change
+    const trail = buffers.clickTrail().slice(before);
+    expect(trail.map((e) => [e.kind, e.kind === 'input' ? e.value : e.text])).toEqual([
+      ['input', 'centri'],
+      ['click', 'pressed Enter'],
+    ]);
+  });
+
+  it('never records Enter on password or sensitive-autocomplete fields', () => {
+    document.body.innerHTML = `<input type="password" id="pw" /><input autocomplete="otp" id="otp" />`;
+    const before = buffers.clickTrail().length;
+    for (const id of ['pw', 'otp']) {
+      document.getElementById(id)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    }
+    expect(buffers.clickTrail().length).toBe(before);
+  });
+
+  it('records contenteditable edits via the debounce with scrubbed, clamped textContent', () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `<div id="notes" contenteditable="true" aria-label="Notes"></div>`;
+      const ed = document.getElementById('notes') as HTMLElement;
+      ed.textContent = `hello ${JWT} ${'y'.repeat(200)}`;
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(800);
+      const entry = buffers.clickTrail().at(-1);
+      expect(entry?.kind).toBe('input');
+      expect(entry?.selector).toBe('#notes');
+      expect(entry?.text).toBe('Notes');
+      expect(entry?.value).toContain('hello');
+      expect(entry?.value).not.toContain('eyJhbGci');
+      expect(entry?.value?.length).toBeLessThanOrEqual(120);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces a contenteditable edit burst into one entry', () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `<div id="ed" contenteditable="">start</div>`;
+      const ed = document.getElementById('ed') as HTMLElement;
+      const before = buffers.clickTrail().length;
+      ed.textContent = 'first';
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(800);
+      ed.textContent = 'first second';
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(800);
+      const trail = buffers.clickTrail();
+      expect(trail.length).toBe(before + 1);
+      expect(trail.at(-1)?.value).toBe('first second');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

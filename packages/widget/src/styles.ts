@@ -80,7 +80,7 @@ button { font-family: inherit; }
   position: relative; width: 92px; height: 64px; flex: none;
   border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--paper);
 }
-.thumb img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.thumb img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; cursor: zoom-in; }
 .thumb-x {
   position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; padding: 0;
   border: none; border-radius: 50%; cursor: pointer;
@@ -96,13 +96,36 @@ button { font-family: inherit; }
 }
 .add-shot:hover { border-color: var(--qa-bright); color: var(--qa); }
 .add-shot:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
-.trail { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-.trail .t {
-  background: var(--paper); border: 1px solid var(--line-soft); border-radius: 6px;
-  font-size: 11.5px; padding: 3px 9px; color: var(--ink-2); font-weight: 500;
+/* ---- replay-first trail list (primary drawer section) ---- */
+.replay-list {
+  list-style: none; max-height: 180px; overflow-y: auto;
+  border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper);
+  padding: 4px 0;
 }
-.trail .t.click { background: var(--qa-soft); border-color: transparent; color: var(--qa); font-weight: 600; }
-.trail .arr { color: var(--ink-3); font-size: 11px; }
+.replay-step {
+  display: flex; align-items: baseline; gap: 7px; padding: 3px 10px;
+  font-size: 11.5px; color: var(--ink-2);
+  transition: opacity 200ms ease, background 200ms ease;
+}
+.replay-step .rs-num {
+  flex: none; min-width: 16px; text-align: right; color: var(--ink-3);
+  font-size: 10.5px; font-variant-numeric: tabular-nums;
+}
+.replay-step .rs-ico { flex: none; color: var(--qa); }
+.replay-step .rs-lbl { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.replay-step.pending { opacity: .32; }
+.replay-step.now { opacity: 1; background: var(--qa-soft); color: var(--qa); }
+@media (prefers-reduced-motion: reduce) { .replay-step { transition: none; } }
+
+/* ---- lightbox (thumbnail enlarge) ---- */
+.qa-lightbox {
+  position: fixed; inset: 0; z-index: 70; cursor: zoom-out;
+  background: rgba(30,30,30,.55); display: grid; place-items: center;
+}
+.qa-lightbox img {
+  max-width: min(920px, 92vw); max-height: 86vh; border-radius: 10px;
+  background: var(--stage); box-shadow: var(--shadow-big);
+}
 .chips { display: flex; flex-direction: column; gap: 5px; }
 .chip {
   display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 6px 10px;

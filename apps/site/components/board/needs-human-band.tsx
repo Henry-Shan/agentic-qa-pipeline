@@ -1,30 +1,42 @@
 'use client';
 
-// "Needs {displayName}" — the personal blocked-reports band pinned above the
-// board's filter tabs (contracts § Needs-a-human). Lists reports blocked on the
-// signed-in tester, each collapsed to the first line of the worker's
-// needs_human hand-off with an expand chevron.
+// "Needs {displayName}" — the signed-in tester's personal TASK LIST, pinned
+// above the board's filter tabs (contracts § Assignment / § Needs-a-human):
+// reports ASSIGNED to their display name (any non-cancelled status, marked
+// with an "assigned" chip) plus blocked reports they filed. Each row shows
+// the worker's needs_human hand-off when one exists — collapsed to its first
+// line with an expand chevron — otherwise the status pill and latest log tail.
 
 import { useState } from 'react';
 import Link from 'next/link';
 import { relativeAge } from '@/lib/format';
 import { useDisplayName } from '@/lib/display-names';
 import { boldSpans, firstLine, NeedsHumanText } from '@/components/needs-human-text';
-import type { QaEvent, QaReport } from '@/lib/types';
+import { StatusPill } from '@/components/status-pill';
+import type { QaEvent, QaReport, QaRun } from '@/lib/types';
+
+export interface BandItem {
+  report: QaReport;
+  /** True when the report is assigned to the signed-in tester's display name. */
+  assigned: boolean;
+}
 
 export function NeedsHumanBand({
-  reports,
+  items,
   events,
+  runs,
   userEmail,
 }: {
-  /** Blocked reports filed by the signed-in user, newest first. */
-  reports: QaReport[];
+  /** The tester's task-list rows, newest first (deduped by the board). */
+  items: BandItem[];
   /** Latest needs_human event per report id. */
   events: Record<number, QaEvent>;
+  /** Latest run per report id (for the log_tail fallback line). */
+  runs: Record<number, QaRun>;
   userEmail: string;
 }) {
   const name = useDisplayName(userEmail);
-  if (reports.length === 0) return null;
+  if (items.length === 0) return null;
 
   return (
     <section
@@ -38,15 +50,31 @@ export function NeedsHumanBand({
         </h2>
       </div>
       <ul>
-        {reports.map((report) => (
-          <BandItem key={report.id} report={report} event={events[report.id]} />
+        {items.map(({ report, assigned }) => (
+          <BandRow
+            key={report.id}
+            report={report}
+            assigned={assigned}
+            event={events[report.id]}
+            run={runs[report.id]}
+          />
         ))}
       </ul>
     </section>
   );
 }
 
-function BandItem({ report, event }: { report: QaReport; event?: QaEvent }) {
+function BandRow({
+  report,
+  assigned,
+  event,
+  run,
+}: {
+  report: QaReport;
+  assigned: boolean;
+  event?: QaEvent;
+  run?: QaRun;
+}) {
   const [open, setOpen] = useState(false);
   const message = event?.message ?? null;
 
@@ -54,8 +82,13 @@ function BandItem({ report, event }: { report: QaReport; event?: QaEvent }) {
     <li className="border-t border-amber/15 px-4 py-3 first:border-t-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-[13.5px] font-semibold">{report.title}</span>
+            {assigned ? (
+              <span className="rounded-full bg-qa-soft px-2 py-0.5 text-[10.5px] font-semibold text-qa">
+                assigned
+              </span>
+            ) : null}
             <span suppressHydrationWarning className="text-[11.5px] text-ink-3">
               {relativeAge(report.created_at)}
             </span>
@@ -68,7 +101,14 @@ function BandItem({ report, event }: { report: QaReport; event?: QaEvent }) {
                 <p className="truncate text-[12.5px] text-ink-2">{boldSpans(firstLine(message))}</p>
               )
             ) : (
-              <p className="text-[12.5px] italic text-ink-3">Claude is writing the hand-off…</p>
+              <div className="flex min-w-0 items-center gap-2">
+                <StatusPill status={report.status} />
+                {run?.log_tail ? (
+                  <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-3">
+                    ▸ {run.log_tail}
+                  </span>
+                ) : null}
+              </div>
             )}
           </div>
           <Link

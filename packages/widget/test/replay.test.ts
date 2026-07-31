@@ -314,6 +314,86 @@ describe('startReplay — executes the real procedure', () => {
     expect(changes).toBe(1);
   });
 
+  it('executes a select step by matching the option LABEL via the native setter, with change observed', async () => {
+    const container = mount(
+      `<select id="dept"><option value="1">Chemistry</option><option value="2">Molecular Biology</option></select>`,
+    );
+    const select = get('#dept') as HTMLSelectElement;
+    const nativeGet = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.get;
+    if (!nativeGet) throw new Error('missing native select value getter');
+    const seen: string[] = [];
+    let changes = 0;
+    select.addEventListener('change', () => {
+      changes++;
+      seen.push(String(nativeGet.call(select)));
+    });
+    // React-style instance value tracker: a naive `select.value = x` write
+    // lands HERE and would never reach the real DOM selection.
+    const naiveWrites: string[] = [];
+    Object.defineProperty(select, 'value', {
+      configurable: true,
+      get: () => 'tracked',
+      set: (v: unknown) => {
+        naiveWrites.push(String(v));
+      },
+    });
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'input', selector: '#dept', value: 'Molecular Biology' }],
+      true,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+    expect(nativeGet.call(select)).toBe('2'); // label "Molecular Biology" matched back to its option
+    expect(changes).toBe(1);
+    expect(seen).toEqual(['2']);
+    expect(naiveWrites).toEqual([]); // the instance (tracker) setter was bypassed
+  });
+
+  it('executes checkbox steps with a REAL click only when the recorded state differs', async () => {
+    const container = mount(`<input type="checkbox" id="c" /><input type="checkbox" id="d" checked />`);
+    const unchecked = get('#c') as HTMLInputElement;
+    const alreadyChecked = get('#d') as HTMLInputElement;
+    let clicksOnUnchecked = 0;
+    let clicksOnChecked = 0;
+    let changesOnUnchecked = 0;
+    unchecked.addEventListener('click', () => clicksOnUnchecked++);
+    unchecked.addEventListener('change', () => changesOnUnchecked++);
+    alreadyChecked.addEventListener('click', () => clicksOnChecked++);
+    const handle = replay(
+      container,
+      [
+        { ts: 1, route: location.pathname, kind: 'input', selector: '#c', value: 'checked' },
+        { ts: 2, route: location.pathname, kind: 'input', selector: '#d', value: 'checked' },
+      ],
+      true,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 2, skipped: 0 });
+    expect(unchecked.checked).toBe(true);
+    expect(clicksOnUnchecked).toBe(1); // real click — app handlers fired
+    expect(changesOnUnchecked).toBe(1);
+    expect(alreadyChecked.checked).toBe(true);
+    expect(clicksOnChecked).toBe(0); // state already matched — no click
+  });
+
+  it("dispatches keydown/keyup Enter on the field for a 'pressed Enter' step", async () => {
+    const container = mount(`<input id="q" />`);
+    const input = get('#q') as HTMLInputElement;
+    const keys: string[] = [];
+    input.addEventListener('keydown', (e) => keys.push(`down:${(e as KeyboardEvent).key}`));
+    input.addEventListener('keyup', (e) => keys.push(`up:${(e as KeyboardEvent).key}`));
+    const handle = replay(
+      container,
+      [{ ts: 1, route: location.pathname, kind: 'click', text: 'pressed Enter', selector: '#q' }],
+      true,
+    );
+    const result = await finish(handle);
+    expect(result).toEqual({ shown: 1, skipped: 0 });
+    expect(keys).toEqual(['down:Enter', 'up:Enter']);
+    expect(document.activeElement).toBe(input);
+  });
+
   it('counts an input step whose target is not a field as skipped', async () => {
     const container = mount(`<div id="box">just text</div>`);
     const handle = replay(

@@ -2,15 +2,18 @@
 
 import { useState } from 'react';
 import { getBrowserClient } from '@/lib/supabase/client';
+import { AssignControl } from '@/components/task/assign-control';
 import type { MessageKind, ReportStatus } from '@/lib/types';
 
 interface Props {
   reportId: number;
   status: ReportStatus;
+  /** Current qa_reports.assignee (display name) or null. */
+  assignee: string | null;
   userEmail: string;
 }
 
-export function SteerBox({ reportId, status, userEmail }: Props) {
+export function SteerBox({ reportId, status, assignee, userEmail }: Props) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -74,7 +77,7 @@ export function SteerBox({ reportId, status, userEmail }: Props) {
         }
         className="h-20 w-full resize-none rounded-[10px] border border-line bg-surface px-3 py-2.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none"
       />
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         {canStop ? (
           <button
             onClick={() => void send('stop', '', 'Stop signal sent.')}
@@ -87,10 +90,11 @@ export function SteerBox({ reportId, status, userEmail }: Props) {
         <button
           onClick={() => void send('steer', text.trim(), 'Sent — Claude will pick it up shortly.')}
           disabled={busy || !hasText}
-          className="flex-1 rounded-lg bg-qa px-3.5 py-2 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
+          className="min-w-32 flex-1 rounded-lg bg-qa px-3.5 py-2 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
         >
           Send to Claude
         </button>
+        <AssignControl reportId={reportId} assignee={assignee} userEmail={userEmail} />
       </div>
       {note ? <div className="mt-2 text-[11.5px] text-ink-3">{note}</div> : null}
     </div>

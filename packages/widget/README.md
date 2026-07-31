@@ -74,8 +74,11 @@ fab and runs `src/replay.ts`:
   the in-flight run and restarts.
 
 All replay visuals live in a `pointer-events: none` overlay inside the widget's
-ShadowRoot — the host page's DOM is never written to (no real clicks are
-dispatched; the replay is purely visual).
+ShadowRoot. The recorded steps themselves EXECUTE for real: click steps fire
+`element.click()`, input steps type via the native value setter, select steps
+set the option matched by its recorded label, checkbox/radio steps click when
+the state differs, and 'pressed Enter' steps dispatch keydown/keyup Enter on
+the field.
 
 Security property: activation requires a parent whose origin is allow-listed in
 `NEXT_PUBLIC_QA_SITE_ORIGINS`; direct visitors to example.com never see the
@@ -117,7 +120,7 @@ guarded via the same global.
 |---|---|---|
 | Console | wrapped `console.error/warn`, `window` `error` + `unhandledrejection` | ring 50, entries ≤500 chars |
 | Network | patched `fetch` **and** `XMLHttpRequest` | ring 40; ts/method/url/status/ms for every call |
-| Click trail | capture-phase click listener + patched `history.pushState/replaceState` + `popstate` | ring 50, click text ≤40 chars |
+| Click trail | WINDOW-level capture-phase listeners (click, change, input, keydown — `stopPropagation` in the app can't hide an interaction) + patched `history.pushState/replaceState` + `popstate`. Records clicks, typing, select changes (value = chosen option LABEL), checkbox/radio toggles (`checked`/`unchecked`), contenteditable edits (debounced), Enter presses (`kind:'click'`, `text:'pressed Enter'`) | ring 200, click text ≤40 chars, input values ≤120 chars (password/cc/otp never recorded) |
 
 Network body snippets (≤2000 chars, via `clone()`) are captured **only** for
 same-origin calls whose path contains an `/api` segment, and only when the
@@ -138,8 +141,12 @@ from `data-sentry-component`/`data-sentry-source-file` **or**
 `data-component`/`data-source-file` — both annotation families are read, first
 non-empty wins; click selects, Esc cancels) → viewport screenshot with the
 element ring-marked in teal `#14B8A6` (max dimension 1600 px, data URL ≤4 MB,
-`null` on any failure — the report still sends) → drawer with the captured
-preview + required description → `POST {endpoint}/api/ingest` with the
+`null` on any failure — the report still sends) → replay-first drawer: the
+primary section is "Replay · what Claude will see" — the full numbered trail
+(icons: → route, ⊕ click, ⌨ typed, ☑ toggled, ⏎ Enter) auto-playing once on
+open (~350ms/step, scroll follows; reduced motion = static), with screenshots
+as a compact thumbnail row below it (＋ Add another; thumbs enlarge in a
+lightbox) + required description → `POST {endpoint}/api/ingest` with the
 `IngestBody` shape from `contracts/CONTRACTS.md`, headers
 `content-type: application/json` + `Authorization: Bearer` (session bridge) or
 `x-qa-token` (static). Success: toast linking to `{endpoint}{url}`. Failure:

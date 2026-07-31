@@ -106,6 +106,8 @@ export interface QaReport {
   app_context: Record<string, string> | null;
   envelope: unknown;
   dedup_note: string | null;
+  /** Tester display name this report is assigned to (db/0005_assignee.sql). */
+  assignee: string | null;
   created_at: string;
   updated_at: string;
 }

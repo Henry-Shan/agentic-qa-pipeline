@@ -15,6 +15,7 @@ import { GroundingChips } from '@/components/task/grounding-chips';
 import { NeedsHumanCard } from '@/components/task/needs-human-card';
 import { EventLog } from '@/components/task/event-log';
 import { PreviewEmbed } from '@/components/task/preview-embed';
+import { ScreenshotGallery } from '@/components/task/screenshot-gallery';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
 import { CopySession } from '@/components/task/copy-session';
@@ -36,6 +37,9 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [destroyError, setDestroyError] = useState<string | null>(null);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
+  // Mobile-filed report → the hero is the screenshot gallery; replay and the
+  // preview embed don't apply (contracts § Mobile reports on the task page).
+  const isMobile = report.app_context?.platform === 'mobile';
   // Live preview → hero replay window; otherwise the slim offline strip.
   const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
 
@@ -134,6 +138,14 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
               <span title={report.reporter_email}>filed by {reporter}</span>
             </>
           ) : null}
+          {report.assignee ? (
+            <>
+              {' · '}
+              <span className="font-semibold text-qa" title={`Assigned to ${report.assignee}`}>
+                assigned · {report.assignee}
+              </span>
+            </>
+          ) : null}
           {run?.branch ? ` · branch ${run.branch}` : ''}
         </span>
       </div>
@@ -147,9 +159,12 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
       <ReportContext report={report} />
 
       {/* Hero preview — the embedded replay window sits top-center at full
-          content width (contracts § Site pages); the columns continue below. */}
+          content width (contracts § Site pages); the columns continue below.
+          Mobile reports get the screenshot gallery here instead. */}
       <div className="mt-5">
-        {previewUrl ? (
+        {isMobile ? (
+          <ScreenshotGallery report={report} />
+        ) : previewUrl ? (
           <PreviewEmbed key={previewUrl} previewUrl={previewUrl} report={report} />
         ) : (
           <div className="flex flex-wrap items-center gap-1.5 rounded-[10px] border border-dashed border-line bg-surface px-3.5 py-2.5 text-[12px] text-ink-3">
@@ -192,7 +207,12 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
             <div className="cap-label mb-0">Talk to Claude — anytime</div>
             {run ? <CopySession sessionId={run.session_id} /> : null}
           </div>
-          <SteerBox reportId={report.id} status={report.status} userEmail={userEmail} />
+          <SteerBox
+            reportId={report.id}
+            status={report.status}
+            assignee={report.assignee}
+            userEmail={userEmail}
+          />
 
           <div className="relative mt-5">
             <button

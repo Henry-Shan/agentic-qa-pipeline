@@ -26,6 +26,15 @@ export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
               {reporter} ·{' '}
               <span suppressHydrationWarning>{relativeAge(report.created_at)}</span>
             </span>
+            {report.app_context?.platform === 'mobile' ? (
+              <span
+                aria-label="Filed from the mobile app"
+                title="Filed from the mobile app"
+                className="text-[12px]"
+              >
+                📱
+              </span>
+            ) : null}
             <span
               className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
                 report.kind === 'feature' ? 'bg-qa-soft text-qa' : 'bg-line-soft text-ink-2'
@@ -33,6 +42,14 @@ export function ReportCard({ report, run }: { report: QaReport; run?: QaRun }) {
             >
               {report.kind === 'feature' ? 'feature request' : 'bug'}
             </span>
+            {report.assignee ? (
+              <span
+                title={`Assigned to ${report.assignee}`}
+                className="rounded-full bg-qa-soft px-2 py-0.5 text-[11px] font-semibold text-qa"
+              >
+                assigned · {report.assignee}
+              </span>
+            ) : null}
             {codeHint ? <span className="truncate font-mono">{codeHint}</span> : null}
             {report.console_log.length > 0 ? <span>console error attached</span> : null}
           </div>

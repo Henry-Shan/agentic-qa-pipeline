@@ -5,8 +5,13 @@
 // dialogs actually happen, with a MutationObserver settle wait after); input
 // steps focus the field and type the recorded value character-by-character via
 // the native value setter + dispatched input/change events, so React-controlled
-// fields update. It finishes with a sustained highlight on the report's
-// selector/elementText. All visuals live inside the widget's shadow-DOM overlay
+// fields update. Total-recall step shapes execute too: select input-steps set
+// the select's value by matching the recorded option LABEL (native setter +
+// change); checkbox/radio steps ('checked'/'unchecked') real-click only when
+// the current state differs; 'pressed Enter' steps dispatch keydown/keyup
+// Enter on the resolved field; contenteditable steps land textContent + input.
+// It finishes with a sustained highlight on the report's selector/elementText.
+// All visuals live inside the widget's shadow-DOM overlay
 // (pointer-events: none); the only host-page writes are the executed steps.
 
 import type { ClickTrailEntry } from './types';
@@ -178,6 +183,39 @@ function fieldOf(el: Element): FieldEl | null {
     return inner;
   }
   return null;
+}
+
+function isToggleField(field: FieldEl | null): field is HTMLInputElement {
+  if (!(field instanceof HTMLInputElement)) return false;
+  const type = field.type.toLowerCase();
+  return type === 'checkbox' || type === 'radio';
+}
+
+/** Contenteditable editing host of the resolved element (attribute-based so jsdom agrees with browsers). */
+function editableOf(el: Element): HTMLElement | null {
+  const host = el.closest('[contenteditable]');
+  if (!(host instanceof HTMLElement)) return null;
+  const mode = (host.getAttribute('contenteditable') ?? '').toLowerCase();
+  return mode === '' || mode === 'true' || mode === 'plaintext-only' ? host : null;
+}
+
+/** Match the recorded label back to an option: exact label → case-insensitive → clamped-prefix → wire value. */
+function matchOption(select: HTMLSelectElement, recorded: string): HTMLOptionElement | null {
+  const needle = recorded.replace(/\s+/g, ' ').trim();
+  if (!needle) return null;
+  const lower = needle.toLowerCase();
+  let caseInsensitive: HTMLOptionElement | null = null;
+  let prefix: HTMLOptionElement | null = null;
+  let byValue: HTMLOptionElement | null = null;
+  for (const opt of Array.from(select.options)) {
+    const label = (opt.label || opt.text || '').replace(/\s+/g, ' ').trim();
+    if (label === needle) return opt;
+    const labelLower = label.toLowerCase();
+    if (!caseInsensitive && labelLower === lower) caseInsensitive = opt;
+    if (!prefix && labelLower.startsWith(lower)) prefix = opt; // recorded labels are clamped to 120 chars
+    if (!byValue && opt.value === needle) byValue = opt; // legacy trails recorded el.value
+  }
+  return caseInsensitive ?? prefix ?? byValue;
 }
 
 /**
@@ -435,6 +473,91 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     await c.sleep(STEP_MS - spent);
   }
 
+  /** Select step: match the recorded option LABEL, set the value via the native setter, dispatch input+change. */
+  async function runSelectStep(field: HTMLSelectElement, index: number, entry: ClickTrailEntry): Promise<void> {
+    const rect = await glideTo(field);
+    if (c.cancelled) return;
+    const recorded = entry.value ?? '';
+    pulse(rect, `${index} · selected "${clip(recorded, TYPE_DISPLAY_CAP)}"`, CAPTION_MS);
+    try {
+      field.focus();
+    } catch {
+      /* non-focusable — the set still works */
+    }
+    const option = matchOption(field, recorded);
+    setNativeValue(field, option ? option.value : recorded);
+    fire(field, 'input');
+    fire(field, 'change');
+    const spent = instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS;
+    await c.sleep(STEP_MS - spent);
+  }
+
+  /** Toggle step: REAL click only when the recorded 'checked'/'unchecked' state differs from the current one. */
+  async function runToggleStep(field: HTMLInputElement, index: number, entry: ClickTrailEntry): Promise<void> {
+    const rect = await glideTo(field);
+    if (c.cancelled) return;
+    const desired = entry.value === 'checked';
+    pulse(rect, `${index} · toggled ${stepLabel(entry)}`, CAPTION_MS);
+    await c.sleep(CLICK_BEAT_MS);
+    if (c.cancelled) return;
+    if (field.checked !== desired) {
+      try {
+        field.click(); // real click — change events and app handlers actually fire
+      } catch {
+        /* handler threw — the replay carries on */
+      }
+      await settleAfterClick();
+    }
+    const spent = (instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS) + CLICK_BEAT_MS;
+    await c.sleep(STEP_MS - spent);
+  }
+
+  /** 'pressed Enter' step: dispatch keydown/keyup Enter on the resolved field (submit-intent). */
+  async function runEnterStep(el: Element, index: number): Promise<void> {
+    const rect = await glideTo(el);
+    if (c.cancelled) return;
+    pulse(rect, `${index} · pressed Enter`, CAPTION_MS);
+    await c.sleep(CLICK_BEAT_MS);
+    if (c.cancelled) return;
+    const target: Element = fieldOf(el) ?? el;
+    if (target instanceof HTMLElement) {
+      try {
+        target.focus();
+      } catch {
+        /* non-focusable */
+      }
+    }
+    for (const type of ['keydown', 'keyup'] as const) {
+      let event: Event;
+      try {
+        event = new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
+      } catch {
+        event = new Event(type, { bubbles: true, cancelable: true });
+      }
+      target.dispatchEvent(event);
+    }
+    await settleAfterClick();
+    const spent = (instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS) + CLICK_BEAT_MS;
+    await c.sleep(STEP_MS - spent);
+  }
+
+  /** Contenteditable step: land the recorded text in one set + input event. */
+  async function runEditableStep(host: HTMLElement, index: number, entry: ClickTrailEntry): Promise<void> {
+    const rect = await glideTo(host);
+    if (c.cancelled) return;
+    const value = entry.value ?? '';
+    pulse(rect, `${index} · typed "${clip(value, TYPE_DISPLAY_CAP)}"`, CAPTION_MS);
+    try {
+      host.focus();
+    } catch {
+      /* non-focusable */
+    }
+    host.textContent = value;
+    fire(host, 'input');
+    const spent = instant ? 0 : SCROLL_SETTLE_MS + GLIDE_MS;
+    await c.sleep(STEP_MS - spent);
+  }
+
   function finalTarget(): Element | null {
     if (req.selector) {
       try {
@@ -489,11 +612,22 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
       }
       if (entry.kind === 'input') {
         const field = fieldOf(el);
-        if (!field) {
-          skipped++;
-          continue;
+        if (field instanceof HTMLSelectElement) {
+          await runSelectStep(field, i + 1, entry);
+        } else if (isToggleField(field) && (entry.value === 'checked' || entry.value === 'unchecked')) {
+          await runToggleStep(field, i + 1, entry);
+        } else if (field) {
+          await runInputStep(field, i + 1, entry);
+        } else {
+          const editable = editableOf(el);
+          if (!editable) {
+            skipped++;
+            continue;
+          }
+          await runEditableStep(editable, i + 1, entry);
         }
-        await runInputStep(field, i + 1, entry);
+      } else if (entry.text === 'pressed Enter') {
+        await runEnterStep(el, i + 1);
       } else {
         await runClickStep(el, i + 1, entry);
       }

@@ -5,15 +5,20 @@ export interface ClickTrailEntry {
   route: string;
   /** Defaults to 'click' when absent (back-compat). Route markers carry neither kind nor metadata. */
   kind?: 'click' | 'input';
-  /** Click: element text. Input: field label/placeholder (≤40 chars). */
+  /**
+   * Click: element text ('pressed Enter' for Enter-key submits — kind 'click',
+   * selector of the field). Input: field label/placeholder (≤40 chars).
+   */
   text?: string;
   testid?: string;
   component?: string;
   /** Stable CSS selector for replay targeting. */
   selector?: string;
   /**
-   * Input steps only: final field value — scrubbed, ≤120 chars. NEVER recorded
-   * for type=password or autocomplete matching password|cc-*|card|otp.
+   * Input steps only — scrubbed, ≤120 chars. Text fields/textareas/
+   * contenteditable: final value. Selects: the chosen option's LABEL.
+   * Checkbox/radio: 'checked' | 'unchecked'. NEVER recorded for type=password
+   * or autocomplete matching password|cc-*|card|otp.
    */
   value?: string;
 }

@@ -12,6 +12,18 @@ export function latestByReport(runs: QaRun[]): Record<number, QaRun> {
   return map;
 }
 
+/**
+ * Personal "Needs <name>" band membership (contracts § Assignment): reports
+ * ASSIGNED to the signed-in tester's display name (any non-cancelled status)
+ * plus blocked reports they filed. Shared by the server initial fetch and the
+ * board's live filtering so both agree.
+ */
+export function inPersonalBand(report: QaReport, userEmail: string, myName: string): boolean {
+  if (report.status === 'cancelled') return false;
+  if (report.assignee === myName) return true;
+  return report.status === 'blocked' && report.reporter_email === userEmail;
+}
+
 /** Insert-or-replace a report, newest first, capped at the page size (100). */
 export function upsertReport(list: QaReport[], report: QaReport): QaReport[] {
   const next = list.filter((r) => r.id !== report.id);

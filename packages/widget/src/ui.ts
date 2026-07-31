@@ -9,9 +9,10 @@ import { startReplay, type ReplayHandle, type ReplayRequest } from './replay';
 import { widgetCss } from './styles';
 
 const SEND_LABEL = 'Send — Claude starts now ▸';
-const TRAIL_PREVIEW = 6;
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
+// Drawer auto-play cadence: one trail step lights up every ~350ms.
+const STEP_PLAY_MS = 350;
 
 export interface WidgetUI {
   host: HTMLElement;
@@ -41,6 +42,31 @@ function h<K extends keyof HTMLElementTagNameMap>(
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/** Icon + label for one trail entry in the drawer's replay list (contract replay-first icons). */
+function stepView(entry: ClickTrailEntry): { icon: string; label: string } {
+  if (entry.kind === 'input') {
+    if (entry.value === 'checked' || entry.value === 'unchecked') {
+      const name = entry.text ?? entry.testid ?? entry.component ?? 'field';
+      return { icon: '☑', label: `toggled ${truncate(name, 26)} · ${entry.value}` };
+    }
+    const where = entry.text ?? entry.testid ?? entry.component;
+    const typed = `typed "${truncate(entry.value ?? '', 32)}"`;
+    return { icon: '⌨', label: where ? `${typed} · ${truncate(where, 22)}` : typed };
+  }
+  if (entry.text === 'pressed Enter') return { icon: '⏎', label: 'pressed Enter' };
+  const label = entry.text ?? entry.testid ?? entry.component;
+  if (label) return { icon: '⊕', label: truncate(label, 44) };
+  return { icon: '→', label: entry.route };
+}
+
+function prefersReducedMotion(): boolean {
+  try {
+    return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
 }
 
 export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
@@ -102,15 +128,68 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     return el;
   }
 
-  function trailChip(entry: ClickTrailEntry): HTMLElement {
-    if (entry.kind === 'input') {
-      const label = entry.text ?? entry.testid ?? entry.component ?? 'input';
-      return h('span', 't click', `⌨ ${truncate(label, 26)}`);
+  // ---- lightbox (thumbnail enlarge) ---------------------------------------
+  let lightbox: HTMLElement | null = null;
+  let lightboxKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  function closeLightbox(): void {
+    if (lightboxKeyHandler) {
+      window.removeEventListener('keydown', lightboxKeyHandler, true);
+      lightboxKeyHandler = null;
     }
-    const clickLabel = entry.text ?? entry.testid ?? entry.component;
-    return clickLabel
-      ? h('span', 't click', `⊕ ${truncate(clickLabel, 26)}`)
-      : h('span', 't', entry.route);
+    lightbox?.remove();
+    lightbox = null;
+  }
+
+  function openLightbox(src: string, alt: string): void {
+    closeLightbox();
+    const overlay = h('div', 'qa-lightbox');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-label', `${alt} enlarged`);
+    const img = h('img');
+    img.src = src;
+    img.alt = alt;
+    overlay.appendChild(img);
+    overlay.addEventListener('click', closeLightbox);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') closeLightbox();
+    };
+    lightboxKeyHandler = onKey;
+    window.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    lightbox = overlay;
+  }
+
+  // ---- trail auto-play (once per drawer open) -----------------------------
+  let stopPlayback: (() => void) | null = null;
+
+  function playTrail(list: HTMLElement): void {
+    if (prefersReducedMotion()) return; // static list — every step fully visible
+    const items = Array.from(list.children).filter((el): el is HTMLElement => el instanceof HTMLElement);
+    if (items.length === 0) return;
+    for (const item of items) item.classList.add('pending');
+    let timer = 0;
+    let idx = 0;
+    const tick = (): void => {
+      items[idx - 1]?.classList.remove('now');
+      const item = items[idx];
+      if (!item) return;
+      item.classList.remove('pending');
+      item.classList.add('now');
+      try {
+        item.scrollIntoView({ block: 'nearest' }); // the list scroll follows the run-through
+      } catch {
+        /* jsdom / detached */
+      }
+      idx++;
+      timer = window.setTimeout(idx < items.length ? tick : () => item.classList.remove('now'), STEP_PLAY_MS);
+    };
+    tick();
+    stopPlayback = () => {
+      clearTimeout(timer);
+      for (const item of items) item.classList.remove('pending', 'now');
+      stopPlayback = null;
+    };
   }
 
   function lastConsoleError(): ConsoleEntry | undefined {
@@ -167,7 +246,29 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     head.appendChild(close);
     panel.appendChild(head);
 
-    panel.appendChild(h('div', 'cap-label', draft.kind === 'bug' ? 'Screenshots · element marked' : 'Screenshots'));
+    // Primary context section (contract §Widget drawer replay-first): the FULL
+    // numbered trail — what Claude will replay — auto-playing once on open.
+    panel.appendChild(h('div', 'cap-label', 'Replay · what Claude will see'));
+    const steps = buffers.clickTrail();
+    if (steps.length === 0) {
+      panel.appendChild(h('div', 'chip', 'No steps recorded yet'));
+    } else {
+      const list = h('ol', 'replay-list');
+      steps.forEach((entry, i) => {
+        const li = h('li', 'replay-step');
+        const view = stepView(entry);
+        li.appendChild(h('span', 'rs-num', String(i + 1)));
+        li.appendChild(h('span', 'rs-ico', view.icon));
+        li.appendChild(h('span', 'rs-lbl', view.label));
+        list.appendChild(li);
+      });
+      panel.appendChild(list);
+      playTrail(list);
+    }
+
+    // Screenshots: compact thumbnail row below the trail (capture unchanged;
+    // each thumb enlarges via the lightbox).
+    panel.appendChild(h('div', 'cap-label', 'Screenshots'));
     const shotsWrap = h('div', 'shots');
     panel.appendChild(shotsWrap);
 
@@ -176,6 +277,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       const img = h('img');
       img.src = src;
       img.alt = alt;
+      img.addEventListener('click', () => openLightbox(src, alt));
       cell.appendChild(img);
       if (onRemove) {
         const x = h('button', 'thumb-x', '×');
@@ -235,17 +337,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
 
     renderShots();
 
-    const trail = buffers.clickTrail().slice(-TRAIL_PREVIEW);
-    if (trail.length > 0) {
-      panel.appendChild(h('div', 'cap-label', 'Click trail'));
-      const wrap = h('div', 'trail');
-      trail.forEach((entry, i) => {
-        if (i > 0) wrap.appendChild(h('span', 'arr', '→'));
-        wrap.appendChild(trailChip(entry));
-      });
-      panel.appendChild(wrap);
-    }
-
     const { meta } = draft;
     if (meta.component || meta.sourceFile || meta.testid || draft.selector) {
       panel.appendChild(h('div', 'cap-label', 'Code location'));
@@ -289,6 +380,8 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   }
 
   function closeDrawer(): void {
+    stopPlayback?.();
+    closeLightbox();
     drawer?.remove();
     drawer = null;
     if (!replay) fab.hidden = false;

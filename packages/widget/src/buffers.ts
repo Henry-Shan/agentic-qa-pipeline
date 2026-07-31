@@ -1,5 +1,8 @@
 // Rolling capture buffers, armed from page load: console, network, click trail,
 // route changes. Headers are NEVER read into storage; URLs and bodies are scrubbed.
+// TOTAL-RECALL (contracts §IngestBody clickTrail): all interaction listeners are
+// WINDOW-level capture-phase — the capture phase visits window before any app
+// listener, so stopPropagation in the app can never hide an interaction.
 
 import { scrubString } from './scrub';
 import { annotationOf, buildSelector } from './selector';
@@ -9,7 +12,8 @@ const CONSOLE_MAX = 50;
 const CONSOLE_CHARS = 500;
 const NETWORK_MAX = 40;
 const SNIPPET_CHARS = 2000;
-const TRAIL_MAX = 50;
+// Trail ring only — console/network rings are unchanged (contract TOTAL-RECALL).
+const TRAIL_MAX = 200;
 const CLICK_TEXT_CHARS = 40;
 const INPUT_VALUE_CHARS = 120;
 const FIELD_LABEL_CHARS = 40;
@@ -80,10 +84,49 @@ function isSensitiveField(el: FieldEl): boolean {
   return SENSITIVE_AUTOCOMPLETE_RE.test(el.getAttribute('autocomplete') ?? '');
 }
 
+/** Checkbox/radio input, or null — toggles record as kind:'input' with value 'checked'/'unchecked'. */
+function asToggle(target: EventTarget | null): HTMLInputElement | null {
+  if (!(target instanceof HTMLInputElement)) return null;
+  const type = target.type.toLowerCase();
+  return type === 'checkbox' || type === 'radio' ? target : null;
+}
+
+/** Field an Enter press records for. type=password rejected HERE; autocomplete checked at the call site. */
+function asEnterField(target: EventTarget | null): HTMLInputElement | HTMLTextAreaElement | null {
+  if (target instanceof HTMLInputElement) {
+    return target.type.toLowerCase() === 'password' ? null : target;
+  }
+  return target instanceof HTMLTextAreaElement ? target : null;
+}
+
+/** The contenteditable editing host of the event target, or null. Attribute-based so jsdom agrees with browsers. */
+function editableHost(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return null;
+  }
+  const host = target.closest('[contenteditable]');
+  if (!(host instanceof HTMLElement)) return null;
+  const mode = (host.getAttribute('contenteditable') ?? '').toLowerCase();
+  return mode === '' || mode === 'true' || mode === 'plaintext-only' ? host : null;
+}
+
+/** The chosen option's LABEL(s) — what the tester saw, not the wire value. */
+function selectedLabel(el: HTMLSelectElement): string {
+  const labels = Array.from(el.selectedOptions).map((o) =>
+    (o.label || o.text || o.value).replace(/\s+/g, ' ').trim(),
+  );
+  return labels.filter(Boolean).join(', ');
+}
+
 /** Human name for the field: <label> → aria-label → placeholder, ≤40 chars. */
-function fieldLabel(el: FieldEl): string | undefined {
+function fieldLabel(el: Element): string | undefined {
   let raw = '';
-  const labels = 'labels' in el ? el.labels : null;
+  const labels = 'labels' in el ? (el as HTMLInputElement).labels : null;
   if (labels && labels.length > 0) raw = labels[0]?.textContent ?? '';
   if (!raw.trim()) raw = el.closest('label')?.textContent ?? '';
   if (!raw.trim()) raw = el.getAttribute('aria-label') ?? '';
@@ -277,7 +320,9 @@ export function startBuffers(): Buffers {
   }
 
   // --- click + input trail -------------------------------------------------
-  // Clicks and input steps share ONE ring buffer, interleaved in event order.
+  // Clicks, typing, toggles, selects, contenteditable edits and Enter presses
+  // share ONE ring buffer, interleaved in event order. Every listener sits on
+  // WINDOW in the capture phase (fires before any app listener).
   const inIgnoredRoot = (e: Event): boolean => {
     if (!ignoreRoot) return false;
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
@@ -286,8 +331,24 @@ export function startBuffers(): Buffers {
 
   // The trail entry currently accumulating typing for a field. While it is the
   // most recent trail item, further change/debounce fires for the SAME field
-  // update it in place (no duplicate steps); any click or route change seals it.
-  let activeInput: { el: FieldEl; entry: ClickTrailEntry } | null = null;
+  // update it in place (no duplicate steps); any click, toggle, Enter press or
+  // route change seals it.
+  let activeInput: { el: Element; entry: ClickTrailEntry } | null = null;
+  // Enter commits a field value: the change event it triggers would duplicate
+  // the just-flushed input step, so the NEXT change on that element is dropped.
+  let suppressChangeFor: Element | null = null;
+
+  const stepMetaInto = (entry: ClickTrailEntry, el: Element): void => {
+    try {
+      entry.selector = buildSelector(el);
+    } catch {
+      /* selector is best-effort — the step still records */
+    }
+    const testid = el.closest('[data-testid]')?.getAttribute('data-testid');
+    if (testid) entry.testid = testid;
+    const { component } = annotationOf(el);
+    if (component) entry.component = component;
+  };
 
   const onClick = (e: MouseEvent): void => {
     if (inIgnoredRoot(e)) return;
@@ -298,49 +359,28 @@ export function startBuffers(): Buffers {
     const entry: ClickTrailEntry = { ts: Date.now(), route: location.pathname, kind: 'click' };
     const text = (target.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, CLICK_TEXT_CHARS);
     if (text) entry.text = text;
-    const testid = target.closest('[data-testid]')?.getAttribute('data-testid');
-    if (testid) entry.testid = testid;
-    const { component } = annotationOf(target);
-    if (component) entry.component = component;
-    try {
-      entry.selector = buildSelector(target);
-    } catch {
-      /* selector is best-effort — the click still records */
-    }
+    stepMetaInto(entry, target);
     activeInput = null;
+    suppressChangeFor = null;
     trail.push(entry);
   };
-  document.addEventListener('click', onClick, true);
-  disposers.push(() => document.removeEventListener('click', onClick, true));
+  window.addEventListener('click', onClick, true);
+  disposers.push(() => window.removeEventListener('click', onClick, true));
 
-  const inputTimers = new Map<FieldEl, number>();
+  const inputTimers = new Map<Element, number>();
   // Last value seen via 'input' events — the change-time fallback for fields
   // that frameworks (React) clear before the change listener reads them.
   const lastTyped = new WeakMap<FieldEl, string>();
 
-  const inputEntryOf = (el: FieldEl, value: string): ClickTrailEntry => {
+  const recordInput = (el: Element, value: string, label?: string): void => {
     const entry: ClickTrailEntry = {
       ts: Date.now(),
       route: location.pathname,
       kind: 'input',
       value: scrubString(value).slice(0, INPUT_VALUE_CHARS),
     };
-    try {
-      entry.selector = buildSelector(el);
-    } catch {
-      /* best-effort */
-    }
-    const testid = el.closest('[data-testid]')?.getAttribute('data-testid');
-    if (testid) entry.testid = testid;
-    const { component } = annotationOf(el);
-    if (component) entry.component = component;
-    const label = fieldLabel(el);
+    stepMetaInto(entry, el);
     if (label) entry.text = label;
-    return entry;
-  };
-
-  const recordInput = (el: FieldEl, value: string): void => {
-    const entry = inputEntryOf(el, value);
     if (activeInput && activeInput.el === el) {
       Object.assign(activeInput.entry, entry); // still the latest step — refresh in place
       return;
@@ -349,7 +389,22 @@ export function startBuffers(): Buffers {
     trail.push(entry);
   };
 
-  const clearInputTimer = (el: FieldEl): void => {
+  /** Discrete toggle step — checkbox/radio state changes never coalesce. */
+  const recordToggle = (el: HTMLInputElement): void => {
+    const entry: ClickTrailEntry = {
+      ts: Date.now(),
+      route: location.pathname,
+      kind: 'input',
+      value: el.checked ? 'checked' : 'unchecked',
+    };
+    stepMetaInto(entry, el);
+    const label = fieldLabel(el);
+    if (label) entry.text = label;
+    activeInput = null;
+    trail.push(entry);
+  };
+
+  const clearInputTimer = (el: Element): void => {
     const timer = inputTimers.get(el);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -359,36 +414,93 @@ export function startBuffers(): Buffers {
 
   const onChange = (e: Event): void => {
     if (inIgnoredRoot(e)) return;
+    const toggle = asToggle(e.target);
+    if (toggle) {
+      if (isSensitiveField(toggle)) return;
+      recordToggle(toggle);
+      return;
+    }
     const el = asField(e.target);
     if (!el || isSensitiveField(el)) return;
+    if (suppressChangeFor === el) {
+      suppressChangeFor = null; // Enter already flushed this exact value
+      return;
+    }
     clearInputTimer(el);
-    const raw = el.value;
-    recordInput(el, raw !== '' ? raw : (lastTyped.get(el) ?? raw));
+    if (el instanceof HTMLSelectElement) {
+      recordInput(el, selectedLabel(el), fieldLabel(el));
+    } else {
+      const raw = el.value;
+      recordInput(el, raw !== '' ? raw : (lastTyped.get(el) ?? raw), fieldLabel(el));
+    }
     lastTyped.delete(el);
   };
-  document.addEventListener('change', onChange, true);
-  disposers.push(() => document.removeEventListener('change', onChange, true));
+  window.addEventListener('change', onChange, true);
+  disposers.push(() => window.removeEventListener('change', onChange, true));
 
   const onInput = (e: Event): void => {
     if (inIgnoredRoot(e)) return;
+    suppressChangeFor = null; // fresh typing — the next change is real again
     const el = asField(e.target);
-    if (!el || isSensitiveField(el)) return;
-    lastTyped.set(el, el.value);
-    clearInputTimer(el);
+    if (el) {
+      if (isSensitiveField(el)) return;
+      lastTyped.set(el, el.value);
+      clearInputTimer(el);
+      inputTimers.set(
+        el,
+        window.setTimeout(() => {
+          inputTimers.delete(el);
+          if (el instanceof HTMLSelectElement) recordInput(el, selectedLabel(el), fieldLabel(el));
+          else recordInput(el, lastTyped.get(el) ?? el.value, fieldLabel(el));
+        }, INPUT_DEBOUNCE_MS),
+      );
+      return;
+    }
+    // Contenteditable edits debounce like text inputs; value = textContent
+    // (scrubbed + clamped by recordInput), coalesced per edit burst.
+    const host = editableHost(e.target);
+    if (!host) return;
+    clearInputTimer(host);
     inputTimers.set(
-      el,
+      host,
       window.setTimeout(() => {
-        inputTimers.delete(el);
-        recordInput(el, lastTyped.get(el) ?? el.value);
+        inputTimers.delete(host);
+        recordInput(host, host.textContent ?? '', fieldLabel(host));
       }, INPUT_DEBOUNCE_MS),
     );
   };
-  document.addEventListener('input', onInput, true);
+  window.addEventListener('input', onInput, true);
   disposers.push(() => {
-    document.removeEventListener('input', onInput, true);
+    window.removeEventListener('input', onInput, true);
     for (const timer of inputTimers.values()) clearTimeout(timer);
     inputTimers.clear();
   });
+
+  // Enter inside an input/textarea is a submit-intent step: flush any pending
+  // typing first (so the trail reads "typed … → pressed Enter"), then record
+  // {kind:'click', text:'pressed Enter', selector of the field}.
+  const onKeydown = (e: KeyboardEvent): void => {
+    if (e.key !== 'Enter' || inIgnoredRoot(e)) return;
+    const el = asEnterField(e.target);
+    if (!el || isSensitiveField(el)) return;
+    if (inputTimers.has(el)) {
+      clearInputTimer(el);
+      recordInput(el, lastTyped.get(el) ?? el.value, fieldLabel(el));
+      lastTyped.delete(el);
+    }
+    const entry: ClickTrailEntry = {
+      ts: Date.now(),
+      route: location.pathname,
+      kind: 'click',
+      text: 'pressed Enter',
+    };
+    stepMetaInto(entry, el);
+    activeInput = null;
+    suppressChangeFor = el; // the commit-on-Enter change would duplicate the flush
+    trail.push(entry);
+  };
+  window.addEventListener('keydown', onKeydown, true);
+  disposers.push(() => window.removeEventListener('keydown', onKeydown, true));
 
   // --- route changes -------------------------------------------------------
   let lastRoute = location.pathname;
@@ -397,6 +509,7 @@ export function startBuffers(): Buffers {
     if (location.pathname === lastRoute) return;
     lastRoute = location.pathname;
     activeInput = null; // a route change seals any in-progress input step
+    suppressChangeFor = null;
     trail.push({ ts: Date.now(), route: lastRoute });
   };
   const pushStateOrig = history.pushState;

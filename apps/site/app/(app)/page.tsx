@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { Board } from '@/components/board/board';
+import { inPersonalBand } from '@/lib/merge';
+import { nameOf } from '@/lib/format';
 import type { QaEvent, QaReport, QaRun } from '@/lib/types';
 
 export default async function BoardPage() {
@@ -15,24 +17,30 @@ export default async function BoardPage() {
   let needsHuman: QaEvent[] = [];
   if (reports.length > 0) {
     const ids = reports.map((r) => r.id);
-    // Hand-off summaries for the "Needs {name}" band — only the signed-in
-    // user's blocked reports can appear there.
-    const blockedIds = reports
-      .filter((r) => r.status === 'blocked' && r.reporter_email === userEmail)
-      .map((r) => r.id);
-    const [runRes, eventRes] = await Promise.all([
+    const [runRes, meRes] = await Promise.all([
       supabase.from('qa_runs').select('*').in('report_id', ids).order('id', { ascending: false }),
-      blockedIds.length > 0
-        ? supabase
-            .from('qa_events')
-            .select('*')
-            .eq('type', 'needs_human')
-            .in('report_id', blockedIds)
-            .order('id', { ascending: false })
-        : Promise.resolve({ data: null }),
+      supabase
+        .from('qa_allowed_emails')
+        .select('display_name')
+        .eq('email', userEmail)
+        .maybeSingle(),
     ]);
     runs = (runRes.data ?? []) as QaRun[];
-    needsHuman = (eventRes.data ?? []) as QaEvent[];
+    // Same display-name fallback as useDisplayName (email local-part), so the
+    // server band membership matches what the client renders.
+    const myName = (meRes.data?.display_name as string | null) || nameOf(userEmail);
+    // Hand-off summaries for the "Needs {name}" band — the signed-in user's
+    // blocked reports plus reports assigned to their display name.
+    const bandIds = reports.filter((r) => inPersonalBand(r, userEmail, myName)).map((r) => r.id);
+    if (bandIds.length > 0) {
+      const { data: eventRows } = await supabase
+        .from('qa_events')
+        .select('*')
+        .eq('type', 'needs_human')
+        .in('report_id', bandIds)
+        .order('id', { ascending: false });
+      needsHuman = (eventRows ?? []) as QaEvent[];
+    }
   }
 
   return (

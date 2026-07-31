@@ -98,15 +98,22 @@ interface IngestBody {
   selector?: string;                // computed CSS selector
   testid?: string;
   elementText?: string;             // ≤120 chars
-  clickTrail: Array<{ ts: number; route: string; kind?: 'click'|'input'; text?: string; testid?: string; component?: string; selector?: string; value?: string }>; // ≤50
+  clickTrail: Array<{ ts: number; route: string; kind?: 'click'|'input'; text?: string; testid?: string; component?: string; selector?: string; value?: string }>; // ≤200
                                     // kind defaults to 'click'. 'input' entries record typing:
                                     // value = final field value (≤120 chars, scrubbed; NEVER
                                     // recorded for type=password / autocomplete password|cc-*),
                                     // selector = stable selector for replay targeting.
+                                    // TOTAL-RECALL rules: listeners are window-level capture-phase
+                                    // (stopPropagation cannot hide events); recorded inputs include
+                                    // text fields, textareas, contenteditable, select changes
+                                    // (value = chosen label), checkbox/radio toggles
+                                    // (value = 'checked'/'unchecked'), and Enter-key submits
+                                    // (kind 'click', text 'pressed Enter'). Ring buffer 200;
+                                    // server clamps to the last 200. Privacy rules unchanged.
   consoleLog: Array<{ ts: number; level: 'error'|'warn'; text: string }>;                              // ≤50, each ≤500 chars
   networkLog: Array<{ ts: number; method: string; url: string; status: number; ms: number; bodySnippet?: string }>; // ≤40, snippet ≤2000 chars, non-2xx always kept
   viewport: { w: number; h: number; dpr: number };
-  appContext?: Record<string, string>;
+  appContext?: Record<string, string>;  // mobile reporter sets platform:'mobile' (web omits it)
   screenshotDataUrl?: string;       // PNG data URL ≤4MB, element pre-marked
   screenshotsDataUrls?: string[];   // additional captures (≤3), same limits each; the widget's
                                     // drawer lets the tester re-enter the picker to add more.
@@ -207,6 +214,44 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   8s, shows a dismissible "the widget hasn't loaded inside this copy of the host app" note and
   keeps listening. Board header links here via "＋ Report an issue".
 - **Canvas view: REMOVED** (route, components, tools; `qa_canvas_blocks` table retained but unused).
+- **/capture platform toggle** — segmented `Web | Mobile` in the capture top bar. Web = the
+  embedded example.com iframe (unchanged). Mobile = a guided capture panel: how-to steps
+  (internal TestFlight build → floating 🐛 bubble in the app → report), a QR code from
+  `NEXT_PUBLIC_MOBILE_CAPTURE_URL` when set (e.g. TestFlight/dev-client link; hidden when unset),
+  and a live list of the latest mobile reports (`app_context.platform = 'mobile'`) linking to
+  their tasks. Capture itself happens IN the app; this panel is the desk-side companion.
+- **Mobile reports on the task page**: when `app_context.platform === 'mobile'`, the hero slot
+  shows the screenshot gallery (large, navigable) instead of the web preview iframe; replay/
+  preview-embed don't apply (simulator + Maestro video replay is a later phase). Board cards get
+  a small 📱 marker.
+
+### Mobile in-app reporter (the host app `apps/mobile`)
+
+RN module gated by env `EXPO_PUBLIC_QA_ENDPOINT` (unset = fully dormant, tree-shaken out of
+customer builds' behavior): a draggable floating 🐛 bubble (internal builds) → capture flow:
+screenshot of the root view via `react-native-view-shot` with the LAST TAP marked (tap
+coordinates recorded by a root capture-phase responder), then a modal form (description,
+＋ add another screenshot up to 3 extra). Buffers from app start: console error/warn patch,
+global fetch/XHR patch (same shapes as the web widget's networkLog, headers never stored,
+values scrubbed), navigation trail from expo-router (route markers) + tap entries
+`{ts, route, kind:'click', text:'tap', selector:'@x,y (WxH)'}`. Typed-input recording: NOT in
+v1 (RN TextInput patching is invasive) — noted limitation. Submit → POST
+`{EXPO_PUBLIC_QA_ENDPOINT}/api/ingest` with `Authorization: Bearer <mobile supabase session
+token>` (native requests carry no Origin header; the ingest CORS gate only applies when Origin
+is present), body per IngestBody with `appContext.platform='mobile'` and `route` = expo-router
+pathname. Reporter identity = the verified session email, as on web.
+- **Assignment**: `qa_reports.assignee` holds a tester display name. The task page's steer card
+  gains **Assign to <name>** beside Send — a small picker over `qa_tester_names` (defaults to the
+  signed-in user's own name); assigning writes `assignee` + a system event "assigned to <name>
+  by <assigner>"; an "Unassign" option clears it. The board's personal band becomes the user's
+  TASK LIST: titled "Needs <displayName>", it lists (a) reports ASSIGNED to that name — any
+  status, with an "assigned" chip — and (b) blocked reports they filed; each row links to the
+  task and shows the needs_human summary when present.
+- **Widget drawer, replay-first**: the drawer's primary context section is no longer the marked
+  screenshot — it is "Replay · what Claude will see": the FULL numbered trail (every recorded
+  step: routes, clicks, typing ⌨, selects, toggles, Enter), auto-highlighting step-by-step once
+  on open (a compact animated run-through, ~350ms/step, reduced-motion = static). Screenshots
+  move to a compact thumbnail row below it (capture still automatic; ＋ Add another unchanged).
 - Task page "Talk to Claude" card includes **⧉ Copy Claude session** — copies
   `cd $NEXT_PUBLIC_RUNNER_REPO && claude --resume <latest run session_id>` to the clipboard so a
   developer can open the very session that produced the fix.
