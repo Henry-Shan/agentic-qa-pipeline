@@ -1,56 +1,36 @@
 @import "tailwindcss";
 
-/* Design tokens — mirror the approved flow prototype (teal QA accent, cool paper ground). */
+/* Design tokens — Figma-studio light theme (approved canvas prototype).
+   White page + cards, #FAFAFA secondary surfaces, hairline borders, teal accent.
+   Light is the only theme by design. */
 :root {
-  --paper: #f7f9fa;
+  color-scheme: light;
+  --paper: #ffffff;
+  --canvas: #fafafa;
   --stage: #ffffff;
-  --ink: #16232e;
-  --ink-2: #4a5a68;
-  --ink-3: #8496a4;
-  --line: #dde4e9;
-  --line-soft: #e9eef2;
-  --qa: #0f766e;
+  --ink: #1e1e1e;
+  --ink-2: #57606a;
+  --ink-3: #9aa4af;
+  --line: #ececf0;
+  --line-soft: #f3f4f6;
+  --qa: #0d9488;
   --qa-bright: #14b8a6;
-  --qa-soft: #e6f5f3;
-  --qa-ring: rgba(20, 184, 166, 0.35);
-  --amber: #b45309;
-  --amber-soft: #fdf3e3;
-  --green: #15803d;
-  --green-soft: #e8f6ec;
-  --red: #b91c1c;
-  --red-soft: #fdecec;
+  --qa-soft: #effaf8;
+  --qa-ring: rgba(13, 148, 136, 0.28);
+  --amber: #d97706;
+  --amber-soft: #fef3e2;
+  --green: #16a34a;
+  --green-soft: #e9f9ef;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
   --on-accent: #ffffff;
-  --shadow: 0 1px 2px rgba(22, 35, 46, 0.06), 0 8px 24px rgba(22, 35, 46, 0.08);
-  --shadow-big: 0 2px 4px rgba(22, 35, 46, 0.08), 0 16px 48px rgba(22, 35, 46, 0.14);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #0e1519;
-    --stage: #161f26;
-    --ink: #e8eef2;
-    --ink-2: #a7b6c2;
-    --ink-3: #64788a;
-    --line: #2a3843;
-    --line-soft: #22303a;
-    --qa: #2dd4bf;
-    --qa-bright: #2dd4bf;
-    --qa-soft: #11312e;
-    --qa-ring: rgba(45, 212, 191, 0.3);
-    --amber: #f0b35c;
-    --amber-soft: #33260f;
-    --green: #4ade80;
-    --green-soft: #12301b;
-    --red: #f87171;
-    --red-soft: #391a1a;
-    --on-accent: #0e1519;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
-    --shadow-big: 0 2px 4px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.5);
-  }
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.05);
+  --shadow-big: 0 2px 8px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
 }
 
 @theme inline {
   --color-paper: var(--paper);
+  --color-canvas: var(--canvas);
   --color-stage: var(--stage);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
@@ -67,7 +47,7 @@
   --color-red: var(--red);
   --color-red-soft: var(--red-soft);
   --color-on-accent: var(--on-accent);
-  --font-sans: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-inter), Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
   --shadow-card: var(--shadow);
   --shadow-pop: var(--shadow-big);
@@ -77,23 +57,42 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.01em;
+}
+
+/* Interactive polish — teal focus ring everywhere. */
+:where(a, button, summary, [role="tab"]):focus-visible {
+  outline: 2px solid var(--qa-bright);
+  outline-offset: 2px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--qa-ring);
 }
 
 @layer components {
   .card {
     background: var(--stage);
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 14px;
     box-shadow: var(--shadow);
     padding: 16px 18px;
   }
   .cap-label {
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--ink-3);
     margin-bottom: 6px;
@@ -116,8 +115,8 @@ body {
     font-size: 11.5px;
     padding: 4px 10px;
     border: 1px solid var(--line-soft);
-    border-radius: 7px;
-    background: var(--paper);
+    border-radius: 8px;
+    background: var(--canvas);
     color: var(--ink-2);
     max-width: 100%;
     overflow: hidden;

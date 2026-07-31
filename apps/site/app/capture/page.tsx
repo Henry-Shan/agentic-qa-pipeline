@@ -104,7 +104,7 @@ export default function CapturePage() {
 
   return (
     <div className="h-dvh bg-paper">
-      <header className="relative flex h-12 items-center gap-4 border-b border-line-soft bg-stage/90 px-4 backdrop-blur">
+      <header className="relative flex h-12 items-center gap-4 border-b border-line bg-stage/90 px-4 backdrop-blur">
         <Link href="/" className="flex-none text-[13px] font-semibold text-qa hover:underline">
           ← Board
         </Link>

@@ -5,13 +5,13 @@ export function ResultCard({ run }: { run: QaRun | null }) {
   const verdict = typeof run?.featuretest?.verdict === 'string' ? run.featuretest.verdict : null;
 
   return (
-    <div className="rounded-[10px] border border-line bg-stage p-3.5 shadow-card">
+    <div className="rounded-[14px] border border-line bg-stage p-3.5 shadow-card">
       {previewUrl ? (
         <a
           href={previewUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="block w-full rounded-lg bg-qa px-3 py-2.5 text-center text-[12.5px] font-bold text-on-accent"
+          className="block w-full rounded-lg bg-qa px-3 py-2.5 text-center text-[12.5px] font-bold text-on-accent transition-colors hover:bg-qa-bright"
         >
           Open the fixed app ↗
         </a>
@@ -30,7 +30,7 @@ export function ResultCard({ run }: { run: QaRun | null }) {
           href={run.pr_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-2 block w-full rounded-lg border border-line px-3 py-2.5 text-center text-[12.5px] font-semibold text-ink-2 hover:border-qa-bright hover:text-ink"
+          className="mt-2 block w-full rounded-lg border border-line bg-stage px-3 py-2.5 text-center text-[12.5px] font-semibold text-ink-2 transition-colors hover:bg-canvas hover:text-ink"
         >
           PR {run.pr_number ? `#${run.pr_number} ` : ''}on GitHub ↗
         </a>

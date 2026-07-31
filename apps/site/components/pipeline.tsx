@@ -38,7 +38,7 @@ export function Pipeline({ status, detail = false }: { status: ReportStatus; det
       items.push(
         <span
           key={`link-${i}`}
-          className={`mx-2 h-0.5 w-6 flex-none ${i <= spec.done ? 'bg-qa-bright' : 'bg-line'}`}
+          className={`mx-1.5 h-px w-5 flex-none ${i <= spec.done ? 'bg-qa-bright' : 'bg-line'}`}
         />,
       );
     }
@@ -50,7 +50,7 @@ export function Pipeline({ status, detail = false }: { status: ReportStatus; det
         }`}
       >
         <span
-          className={`grid size-5 flex-none place-items-center rounded-full text-[10px] tabular-nums ${
+          className={`grid size-4 flex-none place-items-center rounded-full text-[9px] tabular-nums ${
             isDone ? 'bg-qa-soft text-qa' : isNow ? NOW_DOT[tone] : 'bg-line-soft text-ink-3'
           }`}
         >

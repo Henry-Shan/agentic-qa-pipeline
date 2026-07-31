@@ -8,7 +8,7 @@ import { getBrowserClient } from '@/lib/supabase/client';
 type Mode = 'checking' | 'form' | 'denied';
 
 const inputCls =
-  'w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink focus:border-qa-bright focus:outline-none';
+  'w-full rounded-[10px] border border-line bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus:border-qa-bright focus:outline-none';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -102,7 +102,7 @@ export default function LoginPage() {
               </p>
               <button
                 onClick={() => void onSignOut()}
-                className="mt-4 rounded-lg border border-line px-4 py-2 text-[13px] font-semibold text-ink-2 hover:border-qa-bright hover:text-ink"
+                className="mt-4 rounded-lg border border-line bg-stage px-4 py-2 text-[13px] font-semibold text-ink-2 hover:bg-canvas hover:text-ink"
               >
                 Sign out
               </button>
@@ -158,7 +158,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={busy}
-                className="mt-4 w-full rounded-lg bg-qa py-2.5 text-sm font-bold text-on-accent disabled:opacity-50"
+                className="mt-4 w-full rounded-lg bg-qa py-2.5 text-sm font-bold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
               >
                 {busy ? 'Signing in…' : 'Sign in'}
               </button>

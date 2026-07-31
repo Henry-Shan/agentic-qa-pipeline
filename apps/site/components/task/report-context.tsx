@@ -52,7 +52,7 @@ export function ReportContext({ report }: { report: QaReport }) {
             <img
               src={`/api/shot/${report.id}`}
               alt="Screenshot with the reported element marked"
-              className="max-h-64 w-full rounded-lg border border-line bg-paper object-contain"
+              className="max-h-64 w-full rounded-[10px] border border-line bg-canvas object-contain"
             />
           </a>
         ) : null}

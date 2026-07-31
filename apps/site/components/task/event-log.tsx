@@ -24,7 +24,7 @@ export function EventLog({ events }: { events: QaEvent[] }) {
   return (
     <div
       ref={scrollRef}
-      className="max-h-[420px] overflow-y-auto rounded-lg border border-line-soft bg-paper px-3 py-2.5 font-mono text-[11.5px] leading-[1.9]"
+      className="max-h-[420px] overflow-y-auto rounded-[10px] border border-line bg-canvas px-3 py-2.5 font-mono text-[11.5px] leading-[1.9]"
     >
       {visible.length === 0 ? (
         <div className="text-ink-3">Waiting for the worker to pick this up…</div>

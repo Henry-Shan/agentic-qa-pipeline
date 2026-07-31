@@ -1,33 +1,22 @@
-// Shadow-root stylesheet. Tokens and component looks mirror the approved
-// prototype's report-drawer scene (teal #0F766E accent, cool paper ground).
+// Shadow-root stylesheet. Tokens mirror the approved Figma-studio light theme
+// (white surfaces, #FAFAFA fills, hairline #ECECF0 borders, teal #0D9488 accent).
+// Light-only by design — the QA site renders white for everyone.
 
 export const widgetCss = `
 :host { all: initial; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 .root {
-  --paper: #f7f9fa; --stage: #ffffff;
-  --ink: #16232e; --ink-2: #4a5a68; --ink-3: #8496a4;
-  --line: #dde4e9; --line-soft: #e9eef2;
-  --qa: #0f766e; --qa-bright: #14b8a6; --qa-soft: #e6f5f3; --qa-ring: rgba(20,184,166,.35);
+  --paper: #fafafa; --stage: #ffffff;
+  --ink: #1e1e1e; --ink-2: #57606a; --ink-3: #9aa4af;
+  --line: #ececf0; --line-soft: #f3f4f6;
+  --qa: #0d9488; --qa-bright: #14b8a6; --qa-soft: #effaf8; --qa-ring: rgba(13,148,136,.28);
   --qa-contrast: #ffffff;
-  --red: #b91c1c; --red-soft: #fdecec; --green: #15803d;
-  --shadow: 0 1px 2px rgba(22,35,46,.06), 0 8px 24px rgba(22,35,46,.08);
-  --shadow-big: 0 2px 4px rgba(22,35,46,.08), 0 16px 48px rgba(22,35,46,.14);
-  font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --red: #dc2626; --red-soft: #fee2e2; --green: #16a34a;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05);
+  --shadow-big: 0 2px 8px rgba(0,0,0,.06), 0 16px 40px rgba(0,0,0,.10);
+  font-family: Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
   font-size: 14px; line-height: 1.5; color: var(--ink);
   -webkit-font-smoothing: antialiased;
-}
-@media (prefers-color-scheme: dark) {
-  .root {
-    --paper: #0e1519; --stage: #161f26;
-    --ink: #e8eef2; --ink-2: #a7b6c2; --ink-3: #64788a;
-    --line: #2a3843; --line-soft: #22303a;
-    --qa: #2dd4bf; --qa-bright: #2dd4bf; --qa-soft: #11312e; --qa-ring: rgba(45,212,191,.3);
-    --qa-contrast: #06211e;
-    --red: #f87171; --red-soft: #391a1a; --green: #4ade80;
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
-    --shadow-big: 0 2px 4px rgba(0,0,0,.5), 0 16px 48px rgba(0,0,0,.5);
-  }
 }
 .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace; }
 button { font-family: inherit; }
@@ -43,7 +32,7 @@ button { font-family: inherit; }
 .qa-fab:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
 
 /* ---- picker ---- */
-.qa-veil { position: fixed; inset: 0; z-index: 40; cursor: crosshair; background: rgba(22,35,46,.07); }
+.qa-veil { position: fixed; inset: 0; z-index: 40; cursor: crosshair; background: rgba(30,30,30,.06); }
 .qa-picker-banner {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 42;
   background: var(--ink); color: var(--paper); font-size: 12.5px; font-weight: 600;
@@ -67,7 +56,7 @@ button { font-family: inherit; }
 .qa-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(360px, 92vw); z-index: 30;
   background: var(--stage); border-left: 1px solid var(--line);
-  box-shadow: -12px 0 40px rgba(22,35,46,.18); padding: 20px 22px; overflow-y: auto;
+  box-shadow: -2px 0 8px rgba(0,0,0,.06), -16px 0 40px rgba(0,0,0,.10); padding: 20px 22px; overflow-y: auto;
 }
 .drawer-head { display: flex; align-items: center; gap: 10px; }
 .drawer-head .di {
@@ -82,10 +71,10 @@ button { font-family: inherit; }
 }
 .drawer-close:hover { background: var(--line-soft); color: var(--ink); }
 .cap-label {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--ink-3); margin: 14px 0 6px;
 }
-.shot { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--paper); }
+.shot { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
 .shot img { display: block; width: 100%; max-height: 150px; object-fit: cover; object-position: top; }
 .shot-cap { font-size: 11px; color: var(--ink-3); padding: 6px 10px; border-top: 1px solid var(--line-soft); }
 .trail { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
@@ -102,19 +91,21 @@ button { font-family: inherit; }
   color: var(--ink-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .chip .k { color: var(--ink-3); flex: none; }
-.chip.err { border-color: rgba(185,28,28,.3); background: var(--red-soft); color: var(--red); }
+.chip.err { border-color: rgba(220,38,38,.3); background: var(--red-soft); color: var(--red); }
 .chip.err .k { color: inherit; opacity: .7; }
 .desc {
-  width: 100%; border: 1px solid var(--line); border-radius: 9px; background: var(--paper);
+  width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--paper);
   color: var(--ink); font: inherit; font-size: 13px; padding: 10px 12px; resize: none; height: 74px;
 }
 .desc:focus { outline: 2px solid var(--qa-ring); border-color: var(--qa-bright); }
-.desc.invalid { border-color: var(--red); outline: 2px solid rgba(185,28,28,.25); }
+.desc.invalid { border-color: var(--red); outline: 2px solid rgba(220,38,38,.25); }
 .send-btn {
-  width: 100%; margin-top: 14px; border: none; border-radius: 9px; cursor: pointer;
+  width: 100%; margin-top: 14px; border: none; border-radius: 8px; cursor: pointer;
   background: var(--qa); color: var(--qa-contrast); font: inherit; font-size: 14px;
   font-weight: 700; padding: 11px;
 }
+.send-btn:hover:not(:disabled) { background: var(--qa-bright); }
+.send-btn:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
 .send-btn:disabled { opacity: .6; cursor: default; }
 .send-note { font-size: 11px; color: var(--ink-3); text-align: center; margin-top: 8px; }
 

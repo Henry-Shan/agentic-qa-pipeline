@@ -87,14 +87,18 @@ export function Board({
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter reports">
+        <div
+          className="flex flex-wrap gap-0.5 rounded-lg border border-line bg-stage p-0.5"
+          role="tablist"
+          aria-label="Filter reports"
+        >
           {TABS.map((t) => (
             <button
               key={t.key}
               role="tab"
               aria-selected={tab === t.key}
               onClick={() => setTab(t.key)}
-              className={`rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold ${
+              className={`rounded-[7px] px-3 py-1 text-[12.5px] font-semibold transition-colors ${
                 tab === t.key ? 'bg-qa-soft text-qa' : 'text-ink-3 hover:text-ink'
               }`}
             >

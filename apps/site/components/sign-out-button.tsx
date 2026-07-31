@@ -16,7 +16,7 @@ export function SignOutButton() {
           });
       }}
       disabled={busy}
-      className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-ink-2 hover:border-qa-bright hover:text-ink disabled:opacity-50"
+      className="rounded-lg border border-line bg-stage px-3 py-1.5 text-xs font-semibold text-ink-2 transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50"
     >
       Sign out
     </button>
