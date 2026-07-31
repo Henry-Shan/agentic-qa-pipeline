@@ -9,13 +9,22 @@
 // the preview embed; the recorded viewport is letterboxed and scaled to fit the
 // stage.
 //
-// STEP-BASED, not scrubbed (contracts § Player UX): the primary controls are
-// ◀ Prev / Next ▶ over the recording's step marks, with a caption `N / M ·
-// <label>`, a clickable rail of ticks, and the numbered trail as a list that
-// seeks. Seeking a step is `pause(offset)`, so the frame is exactly the moment
-// of that interaction; the player opens PAUSED on step 1. Continuous playback
-// survives only as a small ▶ auto-advance (the 1×/2× control is its speed).
-// ← / → / Home / End work when the card itself has focus.
+// A KEYFRAME SLIDESHOW, not a video (contracts § Player UX). The player only
+// ever shows the frames AT the steps — every move is `pause(mark.offset)` — and
+// the footage between them is never played. Moving between steps animates a
+// synthetic cursor (teal dot + soft ring, an overlay above the stage) gliding
+// ~450ms from the previous step's target to the new one's and landing with a
+// small pulse; the frame swaps as the glide begins. The target is resolved
+// INSIDE the replayed iframe by selector → data-testid → component attr →
+// visible text and mapped through the stage's letterbox scale; unresolvable
+// targets simply get no cursor (the frame still changes).
+//
+// It AUTOPLAYS on load: step 1, then one step every ~1.8s to the last, then it
+// stops (⟲ replays it). Any manual navigation pauses autoplay; ▶/⏸ toggles it.
+// Navigation: ← / → / Home / End while the card has focus, clicking the LEFT
+// third of the stage steps back and the RIGHT third forward (the middle third
+// is inert), the tick rail jumps to any step, and so does a row of the numbered
+// trail list beneath (list and player stay two-way synced).
 //
 // Marks come from the recording's own `qa-step` custom events; recordings made
 // before markers existed fall back to marks derived from the report's
@@ -33,18 +42,32 @@ type Phase = 'loading' | 'ready' | 'error';
 /** One seekable step: `offset` ms into the recording. */
 interface StepMark {
   offset: number;
-  /** 1-based step number as recorded. */
+  /** 1-based step number as recorded — also the index into the report's click_trail. */
   i: number;
   label: string;
   kind?: string;
 }
 
-// Progress-poll cadence while auto-advancing.
+/** A point in the replayed iframe's own coordinate space. */
+interface Point {
+  x: number;
+  y: number;
+}
+
+// Progress-poll cadence while the plain-timeline fallback is playing.
 const TICK_MS = 100;
 // Slack so a mark exactly at the current time counts as reached.
 const REACHED_EPS_MS = 1;
 // rrweb custom-event type.
 const EVENT_TYPE_CUSTOM = 5;
+// Cursor glide between two step targets.
+const GLIDE_MS = 450;
+// Dwell + glide per step while autoplaying.
+const AUTOPLAY_MS = 1800;
+// How far outside the stage a mapped point may land before we give up on it.
+const OFF_STAGE_SLACK_PX = 8;
+// Upper bound on the visible-text scan inside the replayed document.
+const TEXT_SCAN_LIMIT = 5000;
 
 function formatClock(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -150,10 +173,132 @@ function stepAt(marks: readonly StepMark[], t: number): number {
   return idx;
 }
 
+// ---------------------------------------------------------------------------
+// Cursor target resolution — everything below runs INSIDE the replayed
+// document and must never throw: a miss just means "no cursor this step".
+// ---------------------------------------------------------------------------
+
+function normalizeText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Escape a value for use inside a quoted attribute selector. */
+function escapeAttr(value: string): string {
+  return value.replace(/["\\]/g, '\\$&');
+}
+
+function isVisible(el: Element): DOMRect | null {
+  const rect = el.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return rect;
+}
+
+/** First element matching `selector` that actually occupies space. */
+function firstVisible(doc: Document, selector: string): Element | null {
+  let nodes: ArrayLike<Element>;
+  try {
+    nodes = doc.querySelectorAll(selector);
+  } catch {
+    return null; // recorded selectors can be invalid CSS
+  }
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (el && isVisible(el)) return el;
+  }
+  return null;
+}
+
+/** The text a candidate element "reads as" — inputs answer with their value. */
+function elementText(el: Element): string {
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    const value = (el as HTMLInputElement).value;
+    return normalizeText(
+      value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '',
+    );
+  }
+  return normalizeText(el.textContent ?? '') || normalizeText(el.getAttribute('aria-label') ?? '');
+}
+
+const TEXT_CANDIDATES =
+  'button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"],' +
+  ' summary, label, li, h1, h2, h3, h4, h5, h6, p, span, div, td, th, input, textarea, select, option';
+
+/**
+ * Smallest visible element whose text matches — smallest wins so we land on the
+ * button, not the card that contains it. Labels are often clipped with an
+ * ellipsis, so a prefix match counts.
+ */
+function findByText(doc: Document, raw: string): Element | null {
+  const needle = normalizeText(raw.replace(/…+$/, ''));
+  if (needle.length < 2) return null;
+  const body = doc.body;
+  if (!body) return null;
+  let nodes: ArrayLike<Element>;
+  try {
+    nodes = body.querySelectorAll(TEXT_CANDIDATES);
+  } catch {
+    return null;
+  }
+  const limit = Math.min(nodes.length, TEXT_SCAN_LIMIT);
+  let best: Element | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < limit; i++) {
+    const el = nodes[i];
+    if (!el) continue;
+    const text = elementText(el);
+    if (!text) continue;
+    if (text !== needle && !(needle.length >= 4 && text.startsWith(needle))) continue;
+    const rect = isVisible(el);
+    if (!rect) continue;
+    const area = rect.width * rect.height;
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
+    }
+  }
+  return best;
+}
+
+/** Text to hunt for when the step has no trail entry — recovered from its label. */
+export function textFromLabel(label: string): string | null {
+  const value = label.trim();
+  if (!value || value === 'pressed Enter') return null;
+  if (value.startsWith('clicked ')) return value.slice(8);
+  if (value.startsWith('went to ')) return null;
+  if (value.startsWith('toggled ')) {
+    const rest = value.slice(8);
+    const sep = rest.lastIndexOf(' · ');
+    return sep > 0 ? rest.slice(0, sep) : rest;
+  }
+  if (value.startsWith('typed ')) {
+    const sep = value.lastIndexOf(' · ');
+    return sep > 0 ? value.slice(sep + 3) : null;
+  }
+  return value;
+}
+
+/** selector → [data-testid] → component attr → visible text (contracts § Player UX). */
+function findTarget(doc: Document, entry: ClickTrailEntry | undefined, mark: StepMark): Element | null {
+  if (entry?.selector) {
+    const el = firstVisible(doc, entry.selector);
+    if (el) return el;
+  }
+  if (entry?.testid) {
+    const el = firstVisible(doc, `[data-testid="${escapeAttr(entry.testid)}"]`);
+    if (el) return el;
+  }
+  if (entry?.component) {
+    const name = escapeAttr(entry.component);
+    const el = firstVisible(doc, `[data-sentry-component="${name}"],[data-component="${name}"]`);
+    if (el) return el;
+  }
+  const text = entry?.text ?? textFromLabel(mark.label);
+  return text ? findByText(doc, text) : null;
+}
+
 const CONTROL_BTN =
   'flex-none rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-qa transition-colors hover:bg-qa-soft disabled:cursor-not-allowed disabled:opacity-40';
-const STEP_BTN =
-  'flex-none rounded-md border border-line px-2 py-0.5 text-[11px] font-semibold text-qa transition-colors hover:bg-qa-soft disabled:cursor-not-allowed disabled:opacity-40';
 
 interface ReplayPlayerProps {
   reportId: number;
@@ -162,8 +307,9 @@ interface ReplayPlayerProps {
   /** Chrome-bar caption — keeps the hero tabs' window language consistent. */
   label?: string;
   /**
-   * The report's click_trail — used ONLY to derive step marks for recordings
-   * that predate the `qa-step` custom events.
+   * The report's click_trail. Two jobs: step marks for recordings that predate
+   * the `qa-step` custom events, and — aligned to the marks by index — the
+   * per-step selector the synthetic cursor aims at.
    */
   steps?: readonly ClickTrailEntry[];
 }
@@ -172,21 +318,140 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
   const stageRef = useRef<HTMLDivElement | null>(null); // letterbox viewport
   const mountRef = useRef<HTMLDivElement | null>(null); // rrweb root, scaled to fit
   const listRef = useRef<HTMLOListElement | null>(null);
+  const cursorRef = useRef<HTMLDivElement | null>(null);
   const replayerRef = useRef<Replayer | null>(null);
   const sizeRef = useRef<{ w: number; h: number } | null>(null); // recorded viewport
   const playingRef = useRef(false);
   const marksRef = useRef<StepMark[]>([]);
+  // Last resolved target, in the replayed iframe's coordinates (re-mapped on resize).
+  const pointRef = useRef<Point | null>(null);
+  // The cursor has a live on-screen position to glide FROM.
+  const placedRef = useRef(false);
+  const rafRef = useRef<number | null>(null);
+  const pulseRef = useRef<number | null>(null);
   // Read inside the load effect only — a later trail edit must not refetch.
   const stepsRef = useRef(steps);
   stepsRef.current = steps;
 
   const [phase, setPhase] = useState<Phase>('loading');
-  const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState<1 | 2>(1);
+  const [playing, setPlaying] = useState(false); // plain-timeline playback only
+  const [autoplay, setAutoplay] = useState(false); // the slideshow
+  const [speed, setSpeed] = useState<1 | 2>(1); // plain-timeline playback only
   const [total, setTotal] = useState(0);
   const [current, setCurrent] = useState(0);
   const [marks, setMarks] = useState<StepMark[]>([]);
   const [stepIndex, setStepIndex] = useState(0);
+
+  // --- synthetic cursor ----------------------------------------------------
+
+  const hideCursor = () => {
+    const el = cursorRef.current;
+    placedRef.current = false;
+    if (pulseRef.current !== null) {
+      window.clearTimeout(pulseRef.current);
+      pulseRef.current = null;
+    }
+    if (!el) return;
+    el.style.opacity = '0';
+    el.classList.remove('is-pulsing');
+  };
+
+  /**
+   * Map the stored iframe-space point into overlay coordinates and move the
+   * cursor there. `animate` glides + pulses (a step change); a bare repaint
+   * (resize) jumps silently.
+   */
+  const paintCursor = (animate: boolean) => {
+    const el = cursorRef.current;
+    const stage = stageRef.current;
+    const frame = replayerRef.current?.iframe;
+    const point = pointRef.current;
+    if (!el) return;
+    if (!stage || !frame || !point) {
+      hideCursor();
+      return;
+    }
+    const stageRect = stage.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const baseW = frame.offsetWidth;
+    const baseH = frame.offsetHeight;
+    if (stageRect.width <= 0 || baseW <= 0 || baseH <= 0 || frameRect.width <= 0) {
+      hideCursor(); // hidden tab / not laid out yet — the ResizeObserver repaints
+      return;
+    }
+    // The stage's letterbox transform, read off the live iframe box.
+    const scaleX = frameRect.width / baseW;
+    const scaleY = frameRect.height / baseH;
+    const x = frameRect.left - stageRect.left + point.x * scaleX;
+    const y = frameRect.top - stageRect.top + point.y * scaleY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      hideCursor();
+      return;
+    }
+    if (
+      x < -OFF_STAGE_SLACK_PX ||
+      y < -OFF_STAGE_SLACK_PX ||
+      x > stageRect.width + OFF_STAGE_SLACK_PX ||
+      y > stageRect.height + OFF_STAGE_SLACK_PX
+    ) {
+      hideCursor(); // scrolled out of the recorded viewport
+      return;
+    }
+
+    const reduced =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const glideMs = animate && placedRef.current && !reduced ? GLIDE_MS : 0;
+    el.style.transition =
+      glideMs > 0
+        ? `transform ${glideMs}ms cubic-bezier(0.33, 0.85, 0.35, 1), opacity 180ms ease`
+        : 'opacity 180ms ease';
+    el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    el.style.opacity = '1';
+    placedRef.current = true;
+
+    if (pulseRef.current !== null) window.clearTimeout(pulseRef.current);
+    el.classList.remove('is-pulsing');
+    if (animate) {
+      void el.offsetWidth; // restart the pulse animation from scratch
+      pulseRef.current = window.setTimeout(() => {
+        pulseRef.current = null;
+        cursorRef.current?.classList.add('is-pulsing');
+      }, glideMs);
+    }
+  };
+
+  /** Resolve the step's target inside the replayed document. Never throws. */
+  const resolvePoint = (index: number): Point | null => {
+    try {
+      const mark = marksRef.current[index];
+      const frame = replayerRef.current?.iframe;
+      if (!mark || !frame) return null;
+      const doc = frame.contentDocument;
+      if (!doc || !doc.body) return null;
+      // Marks and click_trail entries line up by index — `mark.i` is 1-based.
+      const entry = stepsRef.current?.[mark.i - 1];
+      const el = findTarget(doc, entry, mark);
+      if (!el) return null;
+      const rect = isVisible(el);
+      if (!rect) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    } catch {
+      return null; // cross-document access can fail — the frame just changes
+    }
+  };
+
+  /** After the frame swaps, resolve on the next paint and start the glide. */
+  const scheduleCursor = (index: number) => {
+    if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      pointRef.current = resolvePoint(index);
+      paintCursor(true);
+    });
+  };
+
+  // --- load ----------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
@@ -204,6 +469,7 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
       mount.style.width = `${size.w}px`;
       mount.style.height = `${size.h}px`;
       mount.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      paintCursor(false); // the mapping moved with it
     };
 
     (async () => {
@@ -261,8 +527,10 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
         setStepIndex(0);
         const first = next[0];
         if (first) {
-          replayer.pause(first.offset); // opens PAUSED on step 1
+          replayer.pause(first.offset); // opens on step 1…
           setCurrent(first.offset);
+          scheduleCursor(0);
+          setAutoplay(next.length > 1); // …and plays itself through to the end
         }
 
         observer = new ResizeObserver(fit);
@@ -283,10 +551,16 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+      if (pulseRef.current !== null) window.clearTimeout(pulseRef.current);
+      rafRef.current = null;
+      pulseRef.current = null;
       observer?.disconnect();
       const r = replayerRef.current;
       replayerRef.current = null;
       playingRef.current = false;
+      placedRef.current = false;
+      pointRef.current = null;
       marksRef.current = [];
       try {
         r?.destroy();
@@ -294,10 +568,13 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
         // already torn down
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one load per recording
   }, [reportId, src]);
 
   const stepped = marks.length > 0;
   const currentMark = marks[stepIndex];
+  const atFirst = stepIndex <= 0;
+  const atLast = stepIndex >= marks.length - 1;
 
   // Keep the highlighted row visible without ever scrolling the page.
   useEffect(() => {
@@ -311,21 +588,53 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
     else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight;
   }, [stepIndex, marks]);
 
-  /** Seek a step: `pause(offset)` — the exact frame of that interaction. */
-  const seekStep = (index: number) => {
+  /**
+   * Go to a step: `pause(offset)` — the exact frame of that interaction — then
+   * glide the cursor onto its target. Manual moves stop the slideshow.
+   */
+  const goToStep = (index: number, manual = true) => {
     const r = replayerRef.current;
     const list = marksRef.current;
     if (!r || list.length === 0) return;
     const clamped = Math.max(0, Math.min(index, list.length - 1));
     const mark = list[clamped];
     if (!mark) return;
+    if (manual) setAutoplay(false);
     playingRef.current = false;
     setPlaying(false);
     setStepIndex(clamped);
     setCurrent(mark.offset);
-    r.pause(mark.offset);
+    try {
+      r.pause(mark.offset);
+    } catch {
+      // a malformed event mid-recording — keep the last good frame
+    }
+    scheduleCursor(clamped);
   };
 
+  // The slideshow: one step every ~1.8s, stopping ON the last step. Never loops.
+  useEffect(() => {
+    if (!autoplay || phase !== 'ready' || marks.length === 0) return;
+    if (stepIndex >= marks.length - 1) {
+      setAutoplay(false);
+      return;
+    }
+    const id = window.setTimeout(() => goToStep(stepIndex + 1, false), AUTOPLAY_MS);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- goToStep reads live refs
+  }, [autoplay, phase, stepIndex, marks.length]);
+
+  const toggleAutoplay = () => {
+    if (autoplay) {
+      setAutoplay(false);
+      return;
+    }
+    if (marks.length < 2) return;
+    if (stepIndex >= marks.length - 1) goToStep(0, false); // finished → from the top
+    setAutoplay(true);
+  };
+
+  // Plain-timeline fallback only (no marks): play/pause, scrub, speed.
   const togglePlay = () => {
     const r = replayerRef.current;
     if (!r) return;
@@ -333,23 +642,17 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
       r.pause();
       playingRef.current = false;
       setPlaying(false);
-      const at = r.getCurrentTime();
-      setCurrent(at);
-      if (marksRef.current.length > 0) setStepIndex(stepAt(marksRef.current, at));
+      setCurrent(r.getCurrentTime());
       return;
     }
     const totalTime = r.getMetaData().totalTime;
-    // Finished → auto-advance again from the top (step 1 when stepped).
-    const restartAt = marksRef.current[0]?.offset ?? 0;
-    const at = current >= totalTime ? restartAt : current;
+    const at = current >= totalTime ? 0 : current;
     setCurrent(at);
-    if (marksRef.current.length > 0) setStepIndex(stepAt(marksRef.current, at));
     r.play(at);
     playingRef.current = true;
     setPlaying(true);
   };
 
-  // Plain-timeline fallback only (no marks): scrub.
   const seek = (t: number) => {
     const r = replayerRef.current;
     if (!r) return;
@@ -369,7 +672,8 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
 
   const restart = () => {
     if (stepped) {
-      seekStep(0); // back to step 1, paused
+      goToStep(0, false); // back to step 1 and play it through again
+      setAutoplay(marks.length > 1);
       return;
     }
     const r = replayerRef.current;
@@ -380,23 +684,28 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
     setPlaying(true);
   };
 
-  // ← / → step, Home/End jump — ONLY while this card holds focus, so the rest
-  // of the page keeps its arrow keys.
+  // ← / → step, Home/End jump — ONLY while this card holds focus, and never
+  // stolen from a field inside it, so the rest of the page keeps its keys.
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (phase !== 'ready' || !stepped) return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+      return;
+    }
     switch (event.key) {
       case 'ArrowLeft':
-        seekStep(stepIndex - 1);
+        goToStep(stepIndex - 1);
         break;
       case 'ArrowRight':
-        seekStep(stepIndex + 1);
+        goToStep(stepIndex + 1);
         break;
       case 'Home':
-        seekStep(0);
+        goToStep(0);
         break;
       case 'End':
-        seekStep(marks.length - 1);
+        goToStep(marks.length - 1);
         break;
       default:
         return;
@@ -439,6 +748,45 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
           className="absolute left-1/2 top-1/2"
           style={{ transform: 'translate(-50%, -50%)' }}
         />
+
+        {/* Side-click navigation: left third back, right third forward, inert middle. */}
+        {phase === 'ready' && stepped ? (
+          <>
+            <button
+              type="button"
+              onClick={() => goToStep(stepIndex - 1)}
+              disabled={atFirst}
+              aria-label="Previous step"
+              className="group absolute inset-y-0 left-0 w-1/3 cursor-pointer disabled:cursor-default"
+            >
+              <span className="absolute inset-0 bg-gradient-to-r from-ink/[0.07] to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-disabled:opacity-0" />
+              <span className="absolute left-2 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full bg-stage/85 text-[13px] leading-none text-ink-2 opacity-0 shadow-card transition-opacity group-hover:opacity-100 group-disabled:opacity-0">
+                ‹
+              </span>
+            </button>
+            <div className="pointer-events-auto absolute inset-y-0 left-1/3 w-1/3" aria-hidden />
+            <button
+              type="button"
+              onClick={() => goToStep(stepIndex + 1)}
+              disabled={atLast}
+              aria-label="Next step"
+              className="group absolute inset-y-0 right-0 w-1/3 cursor-pointer disabled:cursor-default"
+            >
+              <span className="absolute inset-0 bg-gradient-to-l from-ink/[0.07] to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-disabled:opacity-0" />
+              <span className="absolute right-2 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full bg-stage/85 text-[13px] leading-none text-ink-2 opacity-0 shadow-card transition-opacity group-hover:opacity-100 group-disabled:opacity-0">
+                ›
+              </span>
+            </button>
+          </>
+        ) : null}
+
+        {/* Synthetic cursor — driven imperatively, never intercepts pointers. */}
+        <div ref={cursorRef} className="qa-cursor" aria-hidden>
+          <span className="qa-cursor-halo" />
+          <span className="qa-cursor-pulse" />
+          <span className="qa-cursor-dot" />
+        </div>
+
         {phase === 'loading' ? (
           <div className="absolute inset-0 grid place-items-center text-[12px] text-ink-3">
             <span className="flex items-center gap-2">
@@ -459,89 +807,52 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
 
       {stepped ? (
         <>
-          {/* Rail — one tick per step, current filled, all clickable. */}
-          <div
-            className="flex items-center gap-[3px] overflow-x-auto border-t border-line bg-surface px-2.5 pb-1 pt-2"
-            role="group"
-            aria-label="Steps"
-          >
-            {marks.map((mark, index) => (
-              <button
-                key={`${mark.i}-${mark.offset}-${index}`}
-                type="button"
-                onClick={() => seekStep(index)}
-                title={`${index + 1} · ${mark.label}`}
-                aria-label={`Step ${index + 1} of ${marks.length} — ${mark.label}`}
-                aria-current={index === stepIndex ? 'true' : undefined}
-                className="group min-w-[6px] flex-1 cursor-pointer py-1"
-              >
-                <span
-                  className={`block h-[5px] w-full rounded-full transition-colors ${
-                    index === stepIndex
-                      ? 'bg-qa'
-                      : 'border border-line-soft bg-transparent group-hover:border-qa-bright'
-                  }`}
-                />
-              </button>
-            ))}
-          </div>
-
-          {/* Step-first controls: Prev/Next · caption · auto-advance · speed · restart. */}
-          <div className="flex flex-wrap items-center gap-2 bg-surface px-2.5 pb-1.5 pt-0.5">
-            <button
-              type="button"
-              onClick={() => seekStep(stepIndex - 1)}
-              disabled={phase !== 'ready' || stepIndex === 0}
-              aria-label="Previous step"
-              className={STEP_BTN}
+          {/* Rail (position + jump) with the slideshow controls beside it. */}
+          <div className="flex items-center gap-2 border-t border-line bg-surface px-2.5 py-1.5">
+            <div
+              className="flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
+              role="group"
+              aria-label="Steps"
             >
-              ◀ Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => seekStep(stepIndex + 1)}
-              disabled={phase !== 'ready' || stepIndex >= marks.length - 1}
-              aria-label="Next step"
-              className={STEP_BTN}
-            >
-              Next ▶
-            </button>
-            <span
-              aria-live="polite"
-              className="min-w-0 flex-1 truncate text-[11.5px] text-ink-2"
-              title={currentMark?.label}
-            >
-              <span className="font-mono tabular-nums text-ink-3">
-                {stepIndex + 1} / {marks.length}
-              </span>
-              {currentMark ? <> · {currentMark.label}</> : null}
+              {marks.map((mark, index) => (
+                <button
+                  key={`${mark.i}-${mark.offset}-${index}`}
+                  type="button"
+                  onClick={() => goToStep(index)}
+                  title={`${index + 1} · ${mark.label}`}
+                  aria-label={`Step ${index + 1} of ${marks.length} — ${mark.label}`}
+                  aria-current={index === stepIndex ? 'true' : undefined}
+                  className="group min-w-[6px] flex-1 cursor-pointer py-1"
+                >
+                  <span
+                    className={`block h-[5px] w-full rounded-full transition-colors ${
+                      index === stepIndex
+                        ? 'bg-qa'
+                        : 'border border-line-soft bg-transparent group-hover:border-qa-bright'
+                    }`}
+                  />
+                </button>
+              ))}
+            </div>
+            <span className="sr-only" aria-live="polite">
+              {currentMark ? `Step ${stepIndex + 1} of ${marks.length} — ${currentMark.label}` : ''}
             </span>
             <button
               type="button"
-              onClick={togglePlay}
-              disabled={phase !== 'ready'}
-              title={playing ? 'Pause auto-advance' : 'Auto-advance through the steps'}
-              aria-label={playing ? 'Pause auto-advance' : 'Auto-advance through the steps'}
+              onClick={toggleAutoplay}
+              disabled={phase !== 'ready' || marks.length < 2}
+              title={autoplay ? 'Pause the slideshow' : 'Play the steps'}
+              aria-label={autoplay ? 'Pause the slideshow' : 'Play the steps'}
               className={CONTROL_BTN}
             >
-              {playing ? '⏸' : '▶'}
-            </button>
-            <button
-              type="button"
-              onClick={toggleSpeed}
-              disabled={phase !== 'ready'}
-              title={`Auto-advance speed ${speed}× — click to switch`}
-              aria-label={`Auto-advance speed ${speed}x — click to switch`}
-              className={CONTROL_BTN}
-            >
-              {speed}×
+              {autoplay ? '⏸' : '▶'}
             </button>
             <button
               type="button"
               onClick={restart}
               disabled={phase !== 'ready'}
-              title="Back to step 1"
-              aria-label="Back to step 1"
+              title="Replay from step 1"
+              aria-label="Replay from step 1"
               className={CONTROL_BTN}
             >
               ⟲
@@ -557,7 +868,7 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
               <li key={`row-${mark.i}-${mark.offset}-${index}`} data-step={index}>
                 <button
                   type="button"
-                  onClick={() => seekStep(index)}
+                  onClick={() => goToStep(index)}
                   aria-current={index === stepIndex ? 'step' : undefined}
                   className={`flex w-full items-center gap-2 px-2.5 py-1 text-left text-[11.5px] transition-colors ${
                     index === stepIndex ? 'bg-qa-soft text-qa' : 'text-ink-2 hover:bg-line-soft'

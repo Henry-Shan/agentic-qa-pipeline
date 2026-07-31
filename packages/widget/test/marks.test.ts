@@ -1,11 +1,11 @@
-// Step markers and the step-based player's mark model (contracts §Session
-// replay, "Step markers" + "Player UX … step-based"). Everything here is pure:
-// no rrweb, no Replayer — synthetic event arrays in, marks out.
+// Step markers and the keyframe player's mark model (contracts §Session
+// replay, "Step markers" + "Player UX … KEYFRAME slideshow"). Everything here
+// is pure: no rrweb, no Replayer — synthetic event arrays in, marks out.
 
 import { describe, expect, it, vi } from 'vitest';
 import { startBuffers } from '../src/buffers';
 import {
-  captionFor,
+  stepAriaLabel,
   clampStep,
   extractStepMarks,
   markForStep,
@@ -185,10 +185,10 @@ describe('playerMarks — markers first, trail second, plain timeline last', () 
   });
 });
 
-describe('clampStep — Prev/Next never wrap', () => {
+describe('clampStep — stepping never wraps', () => {
   it('clamps at both ends and reports -1 with no steps', () => {
-    expect(clampStep(0 - 1, 5)).toBe(0); // ◀ Prev on step 1 stays on step 1
-    expect(clampStep(4 + 1, 5)).toBe(4); // Next ▶ on the last step stays there
+    expect(clampStep(0 - 1, 5)).toBe(0); // ← on step 1 stays on step 1
+    expect(clampStep(4 + 1, 5)).toBe(4); // → on the last step stays there
     expect(clampStep(2, 5)).toBe(2);
     expect(clampStep(99, 5)).toBe(4);
     expect(clampStep(-99, 5)).toBe(0);
@@ -233,19 +233,22 @@ describe('markForStep — list row → mark (two-way sync)', () => {
   });
 });
 
-describe('captionFor — N / M · <label>', () => {
+// There is no caption ROW any more (contract: no `N / M · label`) — the rail is
+// the position indicator, so the numbering survives only as each tick's
+// accessible name.
+describe('stepAriaLabel — the tick rail is the position indicator', () => {
   const marks = [
     { offset: 0, i: 1, label: '/labs' },
     { offset: 900, i: 2, label: 'Save' },
   ];
 
   it('numbers by position in the mark list', () => {
-    expect(captionFor(marks, 0)).toBe('1 / 2 · /labs');
-    expect(captionFor(marks, 1)).toBe('2 / 2 · Save');
+    expect(stepAriaLabel(marks, 0)).toBe('Step 1 of 2 · /labs');
+    expect(stepAriaLabel(marks, 1)).toBe('Step 2 of 2 · Save');
   });
 
   it('clamps out-of-range indexes and is empty with no marks', () => {
-    expect(captionFor(marks, 9)).toBe('2 / 2 · Save');
-    expect(captionFor([], 0)).toBe('');
+    expect(stepAriaLabel(marks, 9)).toBe('Step 2 of 2 · Save');
+    expect(stepAriaLabel([], 0)).toBe('');
   });
 });

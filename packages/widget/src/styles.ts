@@ -140,15 +140,42 @@ button { font-family: inherit; }
 .rr-btn:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
 .rr-btn:disabled { opacity: .4; cursor: default; }
 .rr-btn[hidden] { display: none; }
-.rr-step { font-weight: 600; padding: 5px 10px; }
-.rr-speed { min-width: 32px; font-variant-numeric: tabular-nums; }
-/* caption: N / M · <label> */
-.rr-cap {
-  flex: 1; min-width: 0; font-size: 11.5px; color: var(--ink-2);
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right;
-  font-variant-numeric: tabular-nums;
+/* side-click zones: left third = back, right third = forward, middle inert */
+.rr-edges { position: absolute; inset: 0; z-index: 2; display: flex; }
+.rr-edges[hidden] { display: none; }
+.rr-edge { flex: 1 1 33.333%; position: relative; }
+.rr-edge-m { pointer-events: none; }
+.rr-edge-l, .rr-edge-r {
+  cursor: pointer; transition: background 140ms ease;
+  background: linear-gradient(to right, rgba(13,148,136,0), rgba(13,148,136,0));
 }
-.rr-cap[hidden] { display: none; }
+.rr-edge-l:hover { background: linear-gradient(to right, rgba(13,148,136,.10), rgba(13,148,136,0)); }
+.rr-edge-r:hover { background: linear-gradient(to left, rgba(13,148,136,.10), rgba(13,148,136,0)); }
+.rr-edge-l::after, .rr-edge-r::after {
+  content: '‹'; position: absolute; top: 50%; transform: translateY(-50%);
+  font-size: 22px; line-height: 1; font-weight: 700; color: var(--qa);
+  opacity: 0; transition: opacity 140ms ease;
+}
+.rr-edge-l::after { left: 6px; }
+.rr-edge-r::after { content: '›'; right: 6px; }
+.rr-edge-l:hover::after, .rr-edge-r:hover::after { opacity: .75; }
+/* synthetic cursor — its own layer ABOVE the stage, never interactive */
+.rr-cursor-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.rr-cursor {
+  position: absolute; left: -6px; top: -6px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--qa-bright); box-shadow: 0 0 0 5px var(--qa-ring), 0 1px 4px rgba(0,0,0,.18);
+  opacity: 0; transition: transform 450ms cubic-bezier(.22,.61,.36,1), opacity 140ms ease;
+  will-change: transform;
+}
+.rr-cursor.on { opacity: 1; }
+.rr-cursor-pulse {
+  position: absolute; left: -13px; top: -13px; width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid var(--qa-bright); animation: rr-land 700ms ease-out forwards;
+}
+@keyframes rr-land {
+  0% { opacity: .9; scale: .35; }
+  100% { opacity: 0; scale: 1.25; }
+}
 /* rail of tick marks — one per step, current one filled, all clickable */
 .rr-rail { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 .rr-rail[hidden] { display: none; }
@@ -160,9 +187,6 @@ button { font-family: inherit; }
 .rr-tick:hover { border-color: var(--qa-bright); }
 .rr-tick.on { background: var(--qa); border-color: var(--qa); }
 .rr-tick:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
-/* non-interactive progress hairline */
-.rr-bar { flex: 1; height: 2px; border-radius: 999px; background: var(--line); overflow: hidden; }
-.rr-fill { height: 100%; width: 0%; background: var(--qa); }
 .rr-note {
   font-size: 11.5px; color: var(--ink-3); padding: 10px 12px;
   border: 1px dashed var(--line); border-radius: 8px; background: var(--paper);
@@ -200,7 +224,9 @@ button { font-family: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .replay-step { transition: none; }
   .replay-step.fresh { animation: none; }
-  .rr-tick { transition: none; }
+  .rr-tick, .rr-edge-l, .rr-edge-r { transition: none; }
+  .rr-cursor { transition: opacity 140ms ease; }
+  .rr-cursor-pulse { animation: none; opacity: 0; }
 }
 
 /* ---- lightbox (thumbnail enlarge) ---- */

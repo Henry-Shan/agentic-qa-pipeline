@@ -287,15 +287,26 @@ pathname. Reporter identity = the verified session email, as on web.
   the tester acts, and from the dedicated recorder while a replay executes — so each recording
   carries its own step index inside the event stream. Players read them back
   (`{type:5, data:{tag:'qa-step', payload}}`) as marks at `ev.timestamp - events[0].timestamp`.
-- **Player UX (both the widget drawer and the task page): step-based.** Primary controls are
-  **◀ Prev / Next ▶** with a caption `N / M · <label>`; a rail of tick marks (one per step,
-  current one filled) that can be clicked to jump; ← / → arrow keys do the same when the player
-  has focus. Seeking a step = `pause(offset)` on the rrweb Replayer, so the frame is exactly the
-  moment of that interaction. Continuous playback stays available as a small ▶ (auto-advance
-  through the remaining steps) but is NOT the default posture — the player opens paused on
-  step 1. Clicking a row in the numbered trail list seeks the player to that step (list and
-  video are one control). Recordings without `qa-step` marks (pre-existing ones) fall back to
-  marks derived from the report's `click_trail` timestamps, and failing that to a plain timeline.
+- **Player UX (both the widget drawer and the task page): a KEYFRAME slideshow, not a video.**
+  The player shows only the frames AT the steps — `pause(mark.offset)` on the rrweb Replayer —
+  never continuous playback of the footage between them. Moving between steps animates a
+  synthetic cursor across the stage (~450ms ease) from the previous step's target to the new
+  one's, landing with a small pulse on the target; the frame swaps to the new step as the glide
+  begins. Target position is resolved inside the replayed iframe by the step's
+  selector → testid → component attr → visible text, mapped through the stage's scale; when it
+  can't be resolved the frame simply changes with no cursor.
+  - **Autoplay by default**: on load it starts at step 1 and advances every ~1.8s (glide +
+    dwell) to the end, then stops on the last step (a ⟲ restart replays it). Any manual
+    navigation pauses autoplay; ▶/⏸ toggles it.
+  - **Navigation**: ← / → arrow keys (ignored while a text field has focus); clicking the LEFT
+    third of the stage steps back, the RIGHT third steps forward (a subtle hover affordance on
+    each side, and the middle third stays inert so it can't be clicked through by accident); the
+    tick rail below the stage jumps to any step; clicking a row of the numbered trail list does
+    the same (list and player stay two-way synced).
+  - **No Prev/Next buttons and no `N / M · label` caption row** — the tick rail is the position
+    indicator and the highlighted row in the trail list is the caption.
+  Recordings without `qa-step` marks (pre-existing ones) fall back to marks derived from the
+  report's `click_trail` timestamps, and failing that to a plain timeline.
 - Site: `GET /api/replay/[id]` — auth+allowlist gated like /api/shot, 302 to a 10-min signed URL.
   The task page, when `replay_path` is set, shows a "Session replay" player card (rrweb-player
   or rrweb Replayer + minimal controls) in the hero area — above/tabbed with the live-preview

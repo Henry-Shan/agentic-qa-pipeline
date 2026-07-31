@@ -14,8 +14,13 @@
 // All visuals live inside the widget's shadow-DOM overlay
 // (pointer-events: none); the only host-page writes are the executed steps.
 
+import { isVisible, resolveByText, resolveStep } from './resolve';
 import { stepKind, stepLabel } from './trail-list';
 import type { ClickTrailEntry, StepMark } from './types';
+
+// The resolution order lives in ./resolve (shared with the drawer's keyframe
+// player, which resolves the same steps inside the replayed iframe).
+export { resolveByText, resolveStep } from './resolve';
 
 export interface ReplayRequest {
   route: string;
@@ -67,105 +72,6 @@ const SETTLE_QUIET_MS = 220; // mutations quiet for this long = settled early
 const SETTLE_POLL_MS = 60;
 const TYPE_CHAR_MS = 30; // typing cadence
 const TYPE_DISPLAY_CAP = 40; // chars typed one-by-one; the rest lands in one set
-
-// ---------------------------------------------------------------------------
-// Step resolver (pure DOM reads; unit-tested in test/replay.test.ts)
-// ---------------------------------------------------------------------------
-
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HTML', 'HEAD', 'BODY']);
-const INTERACTIVE_SELECTOR =
-  'button, a, [role="button"], [role="tab"], [role="link"], [role="menuitem"], ' +
-  'input[type="button"], input[type="submit"], summary';
-
-function esc(value: string): string {
-  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(value)
-    : value.replace(/(["\\#.:[\]>+~*])/g, '\\$1');
-}
-
-function normalize(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-/** Best-effort visibility: hidden/aria-hidden ancestors and computed display/visibility. */
-function isVisible(el: Element, ignore?: Element): boolean {
-  if (SKIP_TAGS.has(el.tagName)) return false;
-  if (ignore && (el === ignore || ignore.contains(el))) return false;
-  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  try {
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
-  } catch {
-    /* jsdom edge — treat as visible */
-  }
-  return true;
-}
-
-function firstVisible(list: Iterable<Element>, ignore?: Element): Element | null {
-  for (const el of list) if (isVisible(el, ignore)) return el;
-  return null;
-}
-
-/**
- * Visible-text fallback: exact (whitespace-normalized, case-insensitive) before
- * contains, buttons/links/tabs before everything else, tightest text on ties.
- */
-export function resolveByText(text: string, root: ParentNode = document, ignore?: Element): Element | null {
-  const needle = normalize(text);
-  if (!needle) return null;
-  let exactAny: Element | null = null;
-  let containsInteractive: Element | null = null;
-  let containsInteractiveLen = Infinity;
-  let containsAny: Element | null = null;
-  let containsAnyLen = Infinity;
-  for (const el of Array.from(root.querySelectorAll('*'))) {
-    if (!isVisible(el, ignore)) continue;
-    const own = normalize(el.textContent ?? '');
-    if (!own) continue;
-    const interactive = el.matches(INTERACTIVE_SELECTOR);
-    if (own === needle) {
-      if (interactive) return el; // best possible match — take the first
-      exactAny ??= el;
-    } else if (own.includes(needle)) {
-      if (interactive && own.length < containsInteractiveLen) {
-        containsInteractive = el;
-        containsInteractiveLen = own.length;
-      } else if (!interactive && own.length < containsAnyLen) {
-        containsAny = el;
-        containsAnyLen = own.length;
-      }
-    }
-  }
-  return exactAny ?? containsInteractive ?? containsAny;
-}
-
-/** Resolve a trail step: selector → data-testid → data-sentry-component/data-component → visible text. */
-export function resolveStep(
-  entry: Pick<ClickTrailEntry, 'selector' | 'testid' | 'component' | 'text'>,
-  root: ParentNode = document,
-  ignore?: Element,
-): Element | null {
-  if (entry.selector) {
-    try {
-      const el = firstVisible(root.querySelectorAll(entry.selector), ignore);
-      if (el) return el;
-    } catch {
-      /* invalid/stale selector — fall through */
-    }
-  }
-  if (entry.testid) {
-    const el = firstVisible(root.querySelectorAll(`[data-testid="${esc(entry.testid)}"]`), ignore);
-    if (el) return el;
-  }
-  if (entry.component) {
-    for (const attr of ['data-sentry-component', 'data-component'] as const) {
-      const el = firstVisible(root.querySelectorAll(`[${attr}="${esc(entry.component)}"]`), ignore);
-      if (el) return el;
-    }
-  }
-  if (entry.text) return resolveByText(entry.text, root, ignore);
-  return null;
-}
 
 /** Trail entries with no step metadata are route markers, not replayable steps. */
 function isStep(entry: ClickTrailEntry): boolean {

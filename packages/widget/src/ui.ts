@@ -4,7 +4,9 @@ import { Replayer } from 'rrweb';
 import type { Buffers, StepSink } from './buffers';
 import type { ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
-import { clampStep, captionFor, markForStep, playerMarks, type PlayerMark } from './marks';
+import { clampStep, markForStep, playerMarks, stepAriaLabel, type PlayerMark } from './marks';
+import { createAutoplay } from './autoplay';
+import { fitStage, stageZone, stepPoint, IDENTITY_TRANSFORM, type Point, type StageTransform } from './stage';
 import { pickElement } from './picker';
 import { replayDoneMessage, replayEventsField, startRecorder, type Recorder } from './record';
 import { captureShot } from './shot';
@@ -15,8 +17,10 @@ import { createTrailList, type TrailList } from './trail-list';
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
-// Session-replay mini player: progress poll cadence while auto-advancing.
-const PLAYER_POLL_MS = 250;
+// Keyframe slideshow: synthetic-cursor glide (matches the .rr-cursor transition)
+// and how long the landing pulse ring lives.
+const CURSOR_GLIDE_MS = 450;
+const CURSOR_PULSE_MS = 700;
 // An untouched mini player rebuilds itself once this many new steps landed.
 const PLAYER_STALE_STEPS = 5;
 
@@ -155,16 +159,19 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     lightbox = overlay;
   }
 
-  // ---- session-replay mini player (contract "Player UX … step-based") -----
+  // ---- session-replay mini player (contract "Player UX … KEYFRAME slideshow") --
   // A real rrweb Replayer over the recorder's buffered events, inside the
   // shadow root, above the numbered trail list. rrweb sandboxes its replay
   // iframe itself (sandbox="allow-same-origin", interaction disabled); we scale
   // the recorded viewport down into the drawer-width ~16:10 stage.
   //
-  // The player is STEPPED, not scrubbed: the recording's own `qa-step` markers
-  // (or, for marker-less recordings, the trail's timestamps) become marks, and
-  // ◀ Prev / Next ▶ seek between them with `pause(offset)` — the frame is
-  // exactly the moment of that interaction. It opens PAUSED on step 1.
+  // It is a KEYFRAME SLIDESHOW, never continuous playback: the recording's own
+  // `qa-step` markers (or, for marker-less recordings, the trail's timestamps)
+  // become marks, and each step is `pause(mark.offset)` — the frame is exactly
+  // the moment of that interaction. Moving between steps glides a synthetic
+  // cursor across the stage from the previous step's target to the new one's.
+  // It AUTOPLAYS from step 1 on mount and stops on the last step.
+  /** Stop autoplay (collapse / picker / anything that hides the stage). */
   let pausePlayer: (() => void) | null = null;
   let destroyPlayer: (() => void) | null = null;
   /** Live-append hook: fold newly recorded steps into the marks + rail. */
@@ -234,16 +241,19 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     }
 
     // Scale the replay (recorded at the tester's viewport size) into the stage.
+    // The SAME transform maps points measured inside the replay iframe into the
+    // cursor overlay's coordinates (src/stage.ts) — keep them in one place.
+    let transform: StageTransform = { ...IDENTITY_TRANSFORM };
     const fit = (w: number, ht: number): void => {
       const cw = stage.clientWidth;
       const ch = stage.clientHeight;
       if (!cw || !ch || !w || !ht) return;
-      const scale = Math.min(cw / w, ch / ht);
+      transform = fitStage(cw, ch, w, ht);
       const el = replayer.wrapper;
       el.style.transformOrigin = 'top left';
-      el.style.transform = `scale(${scale})`;
-      el.style.left = `${Math.max(0, (cw - w * scale) / 2)}px`;
-      el.style.top = `${Math.max(0, (ch - ht * scale) / 2)}px`;
+      el.style.transform = `scale(${transform.scale})`;
+      el.style.left = `${transform.left}px`;
+      el.style.top = `${transform.top}px`;
     };
     replayer.on('resize', (dim) => {
       const d = dim as { width: number; height: number };
@@ -256,85 +266,118 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     }
     fit(Number(replayer.iframe.getAttribute('width')), Number(replayer.iframe.getAttribute('height')));
 
-    // Row 1: the primary step pair + caption. Row 2: the tick rail.
-    // Row 3: auto-advance, speed, the progress hairline and ↻.
-    const controls = h('div', 'rr-controls');
-    const prevBtn = h('button', 'rr-btn rr-step', '◀ Prev');
-    prevBtn.type = 'button';
-    prevBtn.setAttribute('aria-label', 'Previous step');
-    const nextBtn = h('button', 'rr-btn rr-step', 'Next ▶');
-    nextBtn.type = 'button';
-    nextBtn.setAttribute('aria-label', 'Next step');
-    const cap = h('span', 'rr-cap');
-    cap.setAttribute('aria-live', 'polite');
-    controls.append(prevBtn, nextBtn, cap);
+    // Side-click navigation + hover affordance (contract "Player UX …
+    // Navigation"): three edge panes over the stage — the outer two tint and
+    // show a chevron on hover, the middle one is inert. They carry no handlers
+    // of their own; the click bubbles to the stage, which decides from the
+    // pointer's x which third was hit (stageZone).
+    const edges = h('div', 'rr-edges');
+    edges.append(h('div', 'rr-edge rr-edge-l'), h('div', 'rr-edge rr-edge-m'), h('div', 'rr-edge rr-edge-r'));
+    stage.appendChild(edges);
 
+    // Cursor overlay — ABOVE the replayer stage, never interactive.
+    const cursorLayer = h('div', 'rr-cursor-layer');
+    const cursor = h('div', 'rr-cursor');
+    cursorLayer.appendChild(cursor);
+    stage.appendChild(cursorLayer);
+
+    // The tick rail is the position indicator; the foot carries ▶/⏸ ⟲ ↻.
     const rail = h('div', 'rr-rail');
     rail.setAttribute('role', 'group');
     rail.setAttribute('aria-label', 'Recorded steps');
 
     const foot = h('div', 'rr-foot');
-    const playBtn = h('button', 'rr-btn', '▶');
+    const playBtn = h('button', 'rr-btn', '⏸');
     playBtn.type = 'button';
-    playBtn.setAttribute('aria-label', 'Auto-advance through the steps');
-    const speedBtn = h('button', 'rr-btn rr-speed', '1×');
-    speedBtn.type = 'button';
-    speedBtn.setAttribute('aria-label', 'Toggle playback speed');
-    const bar = h('div', 'rr-bar');
-    const fill = h('div', 'rr-fill');
-    bar.appendChild(fill);
-    foot.append(playBtn, speedBtn, bar, freshButton(box));
-    box.append(controls, rail, foot);
+    playBtn.setAttribute('aria-label', 'Pause the slideshow');
+    const restartBtn = h('button', 'rr-btn', '⟲');
+    restartBtn.type = 'button';
+    restartBtn.title = 'Replay from the first step';
+    restartBtn.setAttribute('aria-label', 'Replay from the first step');
+    foot.append(playBtn, restartBtn, freshButton(box));
+    box.append(rail, foot);
     box.tabIndex = 0; // ← / → work when the player itself holds focus
 
-    let playing = false;
-    let speed = 1;
     const total = Math.max(1, replayer.getMetaData().totalTime);
     const baseline = events[0]?.timestamp ?? 0;
     let marks: PlayerMark[] = playerMarks(events, buffers.clickTrail(), baseline, total);
     let cur = marks.length > 0 ? 0 : -1;
 
-    const paintBar = (): void => {
-      const t = Math.min(replayer.getCurrentTime(), total);
-      fill.style.width = `${Math.max(0, (t / total) * 100)}%`;
+    // ---- synthetic cursor ---------------------------------------------------
+    /** Where the cursor currently sits (overlay coords) — the glide's origin. */
+    let cursorAt: Point | null = null;
+    let glideTimer = 0;
+
+    const placeCursor = (p: Point, animate: boolean): void => {
+      cursor.style.transition = animate ? '' : 'none';
+      cursor.style.transform = `translate(${p.x}px, ${p.y}px)`;
+      if (!animate) void cursor.offsetHeight; // flush, so the NEXT move animates
     };
 
-    const paintCaption = (): void => {
-      const stepped = marks.length > 0;
-      cap.textContent = captionFor(marks, cur);
-      // No marks at all: the plain timeline (▶ + hairline) is all that is left.
-      prevBtn.hidden = !stepped;
-      nextBtn.hidden = !stepped;
-      cap.hidden = !stepped;
-      rail.hidden = !stepped;
-      prevBtn.disabled = !stepped || cur <= 0;
-      nextBtn.disabled = !stepped || cur >= marks.length - 1;
+    const pulseAt = (p: Point): void => {
+      const ring = h('div', 'rr-cursor-pulse');
+      ring.style.transform = `translate(${p.x}px, ${p.y}px)`;
+      cursorLayer.appendChild(ring);
+      window.setTimeout(() => ring.remove(), CURSOR_PULSE_MS);
     };
 
+    /**
+     * The point a step's cursor lands on: resolve the trail entry INSIDE the
+     * replayed iframe (selector → testid → component → text), then map its rect
+     * through the stage transform. Unresolvable → null → no cursor at all.
+     */
+    const pointFor = (index: number): Point | null => {
+      const mark = marks[index];
+      if (!mark) return null;
+      let doc: Document | null = null;
+      try {
+        doc = replayer.iframe.contentDocument;
+      } catch {
+        doc = null; // sandboxed/torn down — frame change only
+      }
+      return stepPoint(buffers.clickTrail()[mark.i - 1], doc, transform);
+    };
+
+    /** Glide A → B over ~450ms and pulse on arrival; hide instead of stranding a stale cursor. */
+    const moveCursor = (to: Point | null): void => {
+      window.clearTimeout(glideTimer);
+      if (!to) {
+        cursor.classList.remove('on');
+        cursorAt = null;
+        return;
+      }
+      const from = cursorAt;
+      cursor.classList.add('on');
+      if (from) {
+        placeCursor(from, false);
+        requestAnimationFrame(() => placeCursor(to, true));
+      } else {
+        placeCursor(to, false); // first resolved step — appear where it happened
+      }
+      cursorAt = to;
+      glideTimer = window.setTimeout(() => pulseAt(to), from ? CURSOR_GLIDE_MS : 0);
+    };
+
+    // ---- painting -----------------------------------------------------------
     const paintRail = (): void => {
       while (rail.children.length > marks.length) rail.lastElementChild?.remove();
       for (let k = rail.children.length; k < marks.length; k++) {
         const tick = h('button', 'rr-tick');
         tick.type = 'button';
-        tick.addEventListener('click', () => {
-          playerPlayed = true;
-          seek(k);
-        });
+        tick.addEventListener('click', () => navigate(k));
         rail.appendChild(tick);
       }
+      const stepped = marks.length > 0;
+      rail.hidden = !stepped;
+      edges.hidden = !stepped;
+      playBtn.hidden = !stepped;
+      restartBtn.hidden = !stepped;
       Array.from(rail.children).forEach((node, k) => {
         if (!(node instanceof HTMLElement)) return;
-        const mark = marks[k];
         node.classList.toggle('on', k === cur);
-        node.setAttribute('aria-label', `Step ${k + 1}${mark ? `: ${mark.label}` : ''}`);
+        node.setAttribute('aria-label', stepAriaLabel(marks, k));
         node.setAttribute('aria-current', k === cur ? 'true' : 'false');
       });
-    };
-
-    const setPlaying = (next: boolean): void => {
-      playing = next;
-      playBtn.textContent = next ? '⏸' : '▶';
-      playBtn.setAttribute('aria-label', next ? 'Pause' : 'Auto-advance through the steps');
     };
 
     /** Light the row this step came from, and scroll the list to it. */
@@ -343,7 +386,10 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       if (mark) trailList?.setActive(mark.i - 1);
     };
 
-    /** Seek = pause(offset): the frame is exactly the moment of that interaction. */
+    /**
+     * One keyframe: `pause(offset)` puts the frame exactly at that interaction,
+     * then the cursor glides from the previous step's target to this one's.
+     */
     function seek(index: number, fromList = false): void {
       if (marks.length === 0) return;
       cur = clampStep(index, marks.length);
@@ -355,70 +401,53 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
           /* corrupt event stream — the stage keeps its last frame */
         }
       }
-      setPlaying(false);
-      paintCaption();
       paintRail();
-      paintBar();
       if (!fromList) syncList();
+      moveCursor(pointFor(cur));
     }
 
-    const step = (delta: number): void => {
+    // Autoplay owns the ▶/⏸ label; every manual navigation stops it.
+    const auto = createAutoplay({
+      index: () => cur,
+      total: () => marks.length,
+      go: (index) => seek(index),
+      onChange: (playing) => {
+        playBtn.textContent = playing ? '⏸' : '▶';
+        playBtn.setAttribute('aria-label', playing ? 'Pause the slideshow' : 'Play the slideshow');
+      },
+    });
+
+    /** Manual navigation: stops autoplay and freezes the auto-rebuild. */
+    function navigate(index: number, fromList = false): void {
       playerPlayed = true; // from here on the player only refreshes on demand (↻)
-      seek(cur + delta);
-    };
-    prevBtn.addEventListener('click', () => step(-1));
-    nextBtn.addEventListener('click', () => step(1));
+      auto.stop();
+      seek(index, fromList);
+    }
+
+    const step = (delta: number): void => navigate(cur + delta);
+
+    // Left third = back, right third = forward, middle third inert.
+    stage.addEventListener('click', (e) => {
+      if (marks.length === 0) return;
+      const stageBox = stage.getBoundingClientRect();
+      const delta = stageZone(e.clientX - stageBox.left, stageBox.width);
+      if (delta !== 0) step(delta);
+    });
 
     playBtn.addEventListener('click', () => {
       playerPlayed = true;
-      if (playing) {
-        replayer.pause();
-        setPlaying(false);
-        return;
-      }
-      const from = marks[cur]?.offset ?? replayer.getCurrentTime();
-      replayer.play(from >= total ? 0 : from); // auto-advance from the top once finished
-      setPlaying(true);
+      auto.toggle();
     });
-
-    speedBtn.addEventListener('click', () => {
-      speed = speed === 1 ? 2 : 1;
-      speedBtn.textContent = `${speed}×`;
-      if (playing) {
-        const t = replayer.getCurrentTime();
-        replayer.pause();
-        replayer.setConfig({ speed });
-        replayer.play(t);
-      } else {
-        replayer.setConfig({ speed });
-      }
-    });
-
-    // While auto-advancing, the caption/rail/list follow the playhead.
-    const timer = window.setInterval(() => {
-      if (!playing) return;
-      paintBar();
-      const t = replayer.getCurrentTime();
-      let at = cur;
-      for (let k = 0; k < marks.length; k++) {
-        const mark = marks[k];
-        if (mark && mark.offset <= t) at = k;
-      }
-      if (at === cur) return;
-      cur = at;
-      paintCaption();
-      paintRail();
-      syncList();
-    }, PLAYER_POLL_MS);
-
-    replayer.on('finish', () => {
-      setPlaying(false);
-      paintBar();
+    restartBtn.addEventListener('click', () => {
+      playerPlayed = true;
+      cursorAt = null; // the run starts over — no glide from wherever it stopped
+      auto.restart();
     });
 
     // Live append: steps taken while the drawer is open extend the marks and
     // the rail. The playhead does NOT move — a player parked on the last step
-    // stays there instead of chasing the newest one.
+    // stays there instead of chasing the newest one — but a RUNNING autoplay
+    // simply keeps walking into the new steps on its next beat.
     refreshMarks = () => {
       const next = playerMarks(recorder?.events() ?? events, buffers.clickTrail(), baseline, total);
       if (next.length === marks.length) return;
@@ -426,27 +455,27 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       marks = next;
       cur = clampStep(cur, marks.length);
       paintRail();
-      paintCaption();
-      if (wasEmpty && marks.length > 0) seek(0);
+      if (wasEmpty && marks.length > 0) {
+        seek(0);
+        if (!playerPlayed) auto.start(); // the first steps just landed — autoplay them
+      }
     };
     stepPlayer = step;
     seekToStep = (trailStep) => {
       const at = markForStep(marks, trailStep);
-      if (at >= 0) seek(at, true);
+      if (at >= 0) navigate(at, true);
     };
 
     paintRail();
-    paintCaption();
-    paintBar();
-    if (marks.length > 0) seek(0); // opens PAUSED on step 1
+    if (marks.length > 0) {
+      seek(0); // opens on step 1 …
+      auto.start(); // … and walks itself to the end (contract: autoplay by default)
+    }
 
-    pausePlayer = () => {
-      if (!playing) return;
-      replayer.pause();
-      setPlaying(false);
-    };
+    pausePlayer = () => auto.stop();
     destroyPlayer = () => {
-      clearInterval(timer);
+      auto.dispose();
+      window.clearTimeout(glideTimer);
       try {
         replayer.pause();
       } catch {

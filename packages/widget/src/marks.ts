@@ -99,7 +99,7 @@ export function playerMarks(
   return trailMarks(trail, t0, totalTime);
 }
 
-/** Clamp a step index into 0…total-1 (−1 when there are no steps) — Prev/Next never wrap. */
+/** Clamp a step index into 0…total-1 (−1 when there are no steps) — stepping never wraps. */
 export function clampStep(index: number, total: number): number {
   if (total <= 0) return -1;
   if (!Number.isFinite(index)) return 0;
@@ -123,9 +123,15 @@ export function markForStep(marks: readonly PlayerMark[], step: number): number 
   return best === -1 ? 0 : best;
 }
 
-/** `N / M · <label>` — the player's caption (contract "Player UX"). */
-export function captionFor(marks: readonly PlayerMark[], index: number): string {
+/**
+ * `Step N of M · <label>` — the accessible name of a tick on the rail. There is
+ * no caption row any more (contract "Player UX": no `N / M · label` row) — the
+ * rail is the position indicator and the highlighted trail row is the caption,
+ * so this string is the only place the numbering is spelled out, for
+ * screen-reader users.
+ */
+export function stepAriaLabel(marks: readonly PlayerMark[], index: number): string {
   const at = clampStep(index, marks.length);
   const mark = at >= 0 ? marks[at] : undefined;
-  return mark ? `${at + 1} / ${marks.length} · ${mark.label}` : '';
+  return mark ? `Step ${at + 1} of ${marks.length} · ${mark.label}` : '';
 }

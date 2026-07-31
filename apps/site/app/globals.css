@@ -155,6 +155,68 @@ select:focus-visible {
   }
 }
 
+/* Synthetic replay cursor (contracts § Player UX — the keyframe slideshow).
+   A zero-size anchor moved with translate3d by replay-player.tsx; the glide
+   transition is set inline so it can be turned off for an instant placement. */
+.qa-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform;
+  z-index: 3;
+}
+.qa-cursor > span {
+  position: absolute;
+  display: block;
+  border-radius: 9999px;
+}
+.qa-cursor-halo {
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  background: color-mix(in srgb, var(--qa) 14%, transparent);
+  box-shadow: 0 0 0 1px var(--qa-ring);
+}
+.qa-cursor-pulse {
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  border: 2px solid var(--qa-bright);
+  opacity: 0;
+}
+.qa-cursor-dot {
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  background: var(--qa);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+@keyframes qa-cursor-pulse {
+  from {
+    opacity: 0.65;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+.qa-cursor.is-pulsing .qa-cursor-pulse {
+  animation: qa-cursor-pulse 520ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .qa-cursor {
+    transition: none !important;
+  }
+  .qa-cursor.is-pulsing .qa-cursor-pulse {
+    animation: none;
+  }
+}
+
 @keyframes blink {
   50% {
     opacity: 0.25;
