@@ -4,9 +4,17 @@ import { Replayer } from 'rrweb';
 import type { Buffers, StepSink } from './buffers';
 import type { ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
-import { clampStep, markForStep, playerMarks, stepAriaLabel, type PlayerMark } from './marks';
+import {
+  clampStep,
+  markForStep,
+  playerMarks,
+  settledOffset,
+  stepAriaLabel,
+  withResultMark,
+  type PlayerMark,
+} from './marks';
 import { createAutoplay } from './autoplay';
-import { fitStage, stageZone, stepPoint, IDENTITY_TRANSFORM, type Point, type StageTransform } from './stage';
+import { fitStage, stageZone, IDENTITY_TRANSFORM, type StageTransform } from './stage';
 import { pickElement } from './picker';
 import { replayDoneMessage, replayEventsField, startRecorder, type Recorder } from './record';
 import { captureShot } from './shot';
@@ -17,10 +25,6 @@ import { createTrailList, type TrailList } from './trail-list';
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
-// Keyframe slideshow: synthetic-cursor glide (matches the .rr-cursor transition)
-// and how long the landing pulse ring lives.
-const CURSOR_GLIDE_MS = 450;
-const CURSOR_PULSE_MS = 700;
 // An untouched mini player rebuilds itself once this many new steps landed.
 const PLAYER_STALE_STEPS = 5;
 
@@ -167,9 +171,9 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
   //
   // It is a KEYFRAME SLIDESHOW, never continuous playback: the recording's own
   // `qa-step` markers (or, for marker-less recordings, the trail's timestamps)
-  // become marks, and each step is `pause(mark.offset)` — the frame is exactly
-  // the moment of that interaction. Moving between steps glides a synthetic
-  // cursor across the stage from the previous step's target to the new one's.
+  // become marks, and each step pauses on its SETTLED frame (the step's effect,
+  // not the instant of the event) so typed values and the reactions they cause
+  // are actually visible. There is no synthetic cursor — the step list narrates.
   // It AUTOPLAYS from step 1 on mount and stops on the last step.
   /** Stop autoplay (collapse / picker / anything that hides the stage). */
   let pausePlayer: (() => void) | null = null;
@@ -241,8 +245,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     }
 
     // Scale the replay (recorded at the tester's viewport size) into the stage.
-    // The SAME transform maps points measured inside the replay iframe into the
-    // cursor overlay's coordinates (src/stage.ts) — keep them in one place.
     let transform: StageTransform = { ...IDENTITY_TRANSFORM };
     const fit = (w: number, ht: number): void => {
       const cw = stage.clientWidth;
@@ -275,12 +277,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     edges.append(h('div', 'rr-edge rr-edge-l'), h('div', 'rr-edge rr-edge-m'), h('div', 'rr-edge rr-edge-r'));
     stage.appendChild(edges);
 
-    // Cursor overlay — ABOVE the replayer stage, never interactive.
-    const cursorLayer = h('div', 'rr-cursor-layer');
-    const cursor = h('div', 'rr-cursor');
-    cursorLayer.appendChild(cursor);
-    stage.appendChild(cursorLayer);
-
     // The tick rail is the position indicator; the foot carries ▶/⏸ ⟲ ↻.
     const rail = h('div', 'rr-rail');
     rail.setAttribute('role', 'group');
@@ -300,63 +296,11 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
 
     const total = Math.max(1, replayer.getMetaData().totalTime);
     const baseline = events[0]?.timestamp ?? 0;
-    let marks: PlayerMark[] = playerMarks(events, buffers.clickTrail(), baseline, total);
+    let marks: PlayerMark[] = withResultMark(
+      playerMarks(events, buffers.clickTrail(), baseline, total),
+      total,
+    );
     let cur = marks.length > 0 ? 0 : -1;
-
-    // ---- synthetic cursor ---------------------------------------------------
-    /** Where the cursor currently sits (overlay coords) — the glide's origin. */
-    let cursorAt: Point | null = null;
-    let glideTimer = 0;
-
-    const placeCursor = (p: Point, animate: boolean): void => {
-      cursor.style.transition = animate ? '' : 'none';
-      cursor.style.transform = `translate(${p.x}px, ${p.y}px)`;
-      if (!animate) void cursor.offsetHeight; // flush, so the NEXT move animates
-    };
-
-    const pulseAt = (p: Point): void => {
-      const ring = h('div', 'rr-cursor-pulse');
-      ring.style.transform = `translate(${p.x}px, ${p.y}px)`;
-      cursorLayer.appendChild(ring);
-      window.setTimeout(() => ring.remove(), CURSOR_PULSE_MS);
-    };
-
-    /**
-     * The point a step's cursor lands on: resolve the trail entry INSIDE the
-     * replayed iframe (selector → testid → component → text), then map its rect
-     * through the stage transform. Unresolvable → null → no cursor at all.
-     */
-    const pointFor = (index: number): Point | null => {
-      const mark = marks[index];
-      if (!mark) return null;
-      let doc: Document | null = null;
-      try {
-        doc = replayer.iframe.contentDocument;
-      } catch {
-        doc = null; // sandboxed/torn down — frame change only
-      }
-      return stepPoint(buffers.clickTrail()[mark.i - 1], doc, transform);
-    };
-
-    /** Glide A → B over ~450ms and pulse on arrival; hide instead of stranding a stale cursor. */
-    const moveCursor = (to: Point | null): void => {
-      window.clearTimeout(glideTimer);
-      if (!to) {
-        cursor.classList.remove('on');
-        cursorAt = null;
-        return;
-      }
-      const from = cursorAt;
-      cursor.classList.add('on');
-      if (from) {
-        placeCursor(from, false);
-        requestAnimationFrame(() => placeCursor(to, true));
-      } else {
-        placeCursor(to, false); // first resolved step — appear where it happened
-      }
-      cursorAt = to;
-      glideTimer = window.setTimeout(() => pulseAt(to), from ? CURSOR_GLIDE_MS : 0);
-    };
 
     // ---- painting -----------------------------------------------------------
     const paintRail = (): void => {
@@ -387,8 +331,9 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     };
 
     /**
-     * One keyframe: `pause(offset)` puts the frame exactly at that interaction,
-     * then the cursor glides from the previous step's target to this one's.
+     * One keyframe: pause on the step's SETTLED frame — `mark.offset` plus a
+     * beat for the page to react, clamped short of the next step — so the frame
+     * shows what the step DID (the typed value, the banner it triggered).
      */
     function seek(index: number, fromList = false): void {
       if (marks.length === 0) return;
@@ -396,14 +341,13 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       const mark = marks[cur];
       if (mark) {
         try {
-          replayer.pause(mark.offset);
+          replayer.pause(settledOffset(marks, cur, total));
         } catch {
           /* corrupt event stream — the stage keeps its last frame */
         }
       }
       paintRail();
       if (!fromList) syncList();
-      moveCursor(pointFor(cur));
     }
 
     // Autoplay owns the ▶/⏸ label; every manual navigation stops it.
@@ -440,7 +384,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     });
     restartBtn.addEventListener('click', () => {
       playerPlayed = true;
-      cursorAt = null; // the run starts over — no glide from wherever it stopped
       auto.restart();
     });
 
@@ -449,7 +392,10 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     // stays there instead of chasing the newest one — but a RUNNING autoplay
     // simply keeps walking into the new steps on its next beat.
     refreshMarks = () => {
-      const next = playerMarks(recorder?.events() ?? events, buffers.clickTrail(), baseline, total);
+      const next = withResultMark(
+        playerMarks(recorder?.events() ?? events, buffers.clickTrail(), baseline, total),
+        total,
+      );
       if (next.length === marks.length) return;
       const wasEmpty = marks.length === 0;
       marks = next;
@@ -475,7 +421,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     pausePlayer = () => auto.stop();
     destroyPlayer = () => {
       auto.dispose();
-      window.clearTimeout(glideTimer);
       try {
         replayer.pause();
       } catch {

@@ -10,9 +10,12 @@ import {
   extractStepMarks,
   markForStep,
   playerMarks,
+  settledOffset,
   trailMarks,
+  withResultMark,
   QA_STEP_TAG,
   type MarkableEvent,
+  type PlayerMark,
 } from '../src/marks';
 import { startReplay } from '../src/replay';
 import { stepKind, stepLabel, stepView } from '../src/trail-list';
@@ -250,5 +253,49 @@ describe('stepAriaLabel — the tick rail is the position indicator', () => {
   it('clamps out-of-range indexes and is empty with no marks', () => {
     expect(stepAriaLabel(marks, 9)).toBe('Step 2 of 2 · Save');
     expect(stepAriaLabel([], 0)).toBe('');
+  });
+});
+
+describe('settledOffset — the frame shows the step EFFECT, not the instant', () => {
+  const m = (offset: number, i: number): PlayerMark => ({ offset, i, label: `s${i}` });
+
+  it('adds the settle beat when the next step is far away', () => {
+    expect(settledOffset([m(300, 1), m(5_000, 2)], 0, 10_000)).toBe(1_000);
+  });
+
+  it('stops 50ms short of the next step when they are close', () => {
+    // 300 + 700 would cross into step 2 at 600 — clamp to 550.
+    expect(settledOffset([m(300, 1), m(600, 2)], 0, 10_000)).toBe(550);
+  });
+
+  it('never moves backwards, even with a next step almost on top of it', () => {
+    expect(settledOffset([m(300, 1), m(310, 2)], 0, 10_000)).toBe(300);
+  });
+
+  it('clamps to the end of the recording on the last step', () => {
+    expect(settledOffset([m(300, 1), m(900, 2)], 1, 1_200)).toBe(1_200);
+  });
+
+  it('is 0 for an index with no mark', () => {
+    expect(settledOffset([], 0, 5_000)).toBe(0);
+  });
+});
+
+describe('withResultMark — the closing outcome frame', () => {
+  const m = (offset: number, i: number): PlayerMark => ({ offset, i, label: `s${i}` });
+
+  it('appends a synthetic "result" mark when the recording outlives the last step', () => {
+    const out = withResultMark([m(300, 1), m(900, 2)], 10_000);
+    expect(out).toHaveLength(3);
+    expect(out[2]).toEqual({ offset: 9_950, i: 3, label: 'result', synthetic: true });
+  });
+
+  it('adds nothing when the recording ends right after the last step', () => {
+    expect(withResultMark([m(300, 1), m(900, 2)], 1_100)).toHaveLength(2);
+  });
+
+  it('adds nothing to an empty mark list, and tolerates a bad totalTime', () => {
+    expect(withResultMark([], 10_000)).toHaveLength(0);
+    expect(withResultMark([m(300, 1)], Number.NaN)).toHaveLength(1);
   });
 });

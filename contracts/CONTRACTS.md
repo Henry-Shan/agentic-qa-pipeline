@@ -275,9 +275,11 @@ pathname. Reporter identity = the verified session email, as on web.
 - The widget records the session with rrweb from page load, alongside the other buffers:
   `record({...})` with checkoutEveryNms = 60_000 keeping the last TWO checkout windows (≈ the
   final 1-2 minutes, memory-bounded), `blockSelector: '[data-qa-pipeline]'` (never records its
-  own UI), `maskAllInputs: true` with an unmask override ONLY for obviously-safe fields — i.e.
-  keep every input masked unless type is search; password/cc/otp stay masked unconditionally.
-  Recording only when the widget is active (same env/handshake gates as everything else).
+  own UI). **Input masking mirrors the click-trail rules exactly — no stricter, no looser**:
+  typed values ARE recorded (the replay must show what the tester actually typed), EXCEPT
+  `type=password` and fields whose autocomplete matches `password|cc-|card|otp`, which are
+  masked unconditionally. (A stricter mask made replays useless — the video showed an empty
+  field for a step captioned `typed "…"`.) Recording only when the widget is active.
 - Submit: `IngestBody.replayEvents?: string` — JSON.stringify of the buffered rrweb events,
   client-capped at 8_000_000 chars (drop the field entirely when over). Server: validate size,
   upload VERBATIM to bucket `qa-screenshots` as `report-<id>/replay.json`, store the path in
@@ -288,13 +290,18 @@ pathname. Reporter identity = the verified session email, as on web.
   carries its own step index inside the event stream. Players read them back
   (`{type:5, data:{tag:'qa-step', payload}}`) as marks at `ev.timestamp - events[0].timestamp`.
 - **Player UX (both the widget drawer and the task page): a KEYFRAME slideshow, not a video.**
-  The player shows only the frames AT the steps — `pause(mark.offset)` on the rrweb Replayer —
-  never continuous playback of the footage between them. Moving between steps animates a
-  synthetic cursor across the stage (~450ms ease) from the previous step's target to the new
-  one's, landing with a small pulse on the target; the frame swaps to the new step as the glide
-  begins. Target position is resolved inside the replayed iframe by the step's
-  selector → testid → component attr → visible text, mapped through the stage's scale; when it
-  can't be resolved the frame simply changes with no cursor.
+  The player shows only the frames at the steps — never continuous playback of the footage
+  between them. **There is NO synthetic cursor overlay** (an unresolvable target left a stray
+  dot sliding across the stage; the step list is the narration instead).
+  - **Each keyframe is the SETTLED frame, not the instant of the event**: seek to
+    `mark.offset + 700ms`, clamped to `nextMark.offset - 50ms` and to the recording length, so
+    the frame shows the step's EFFECT — the typed value in the field, the panel that opened, the
+    validation that appeared.
+  - **Final outcome frame**: when the recording continues ≥500ms past the last step, append a
+    synthetic trailing mark near the end labelled "result" so the outcome of the last action
+    (an error banner, a success toast) is always the closing frame. It behaves like any other
+    mark — rail tick, autoplay stop, keys, side-click — and renders as the closing row of the
+    numbered list.
   - **Autoplay by default**: on load it starts at step 1 and advances every ~1.8s (glide +
     dwell) to the end, then stops on the last step (a ⟲ restart replays it). Any manual
     navigation pauses autoplay; ▶/⏸ toggles it.

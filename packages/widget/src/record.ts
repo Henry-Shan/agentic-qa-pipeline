@@ -25,6 +25,37 @@ export const REPLAY_MAX_CHARS = 8_000_000;
 // Mirrors buffers.ts HARD PRIVACY RULE — password/cc/otp stay masked unconditionally.
 const SENSITIVE_AUTOCOMPLETE_RE = /password|cc-|card|otp/i;
 
+/**
+ * The input types rrweb routes through `maskInputFn` (contract §Session replay:
+ * masking mirrors the click-trail rules EXACTLY). rrweb only consults
+ * `maskInputFn` for the types/tags flagged here — everything else is recorded
+ * verbatim and never reaches our function — so the flag list must cover every
+ * text-entry surface, and `maskInputValue` below decides per element.
+ *
+ * `select` is deliberately FALSE: rrweb keys `option[selected]` off
+ * `maskInputOptions.select` (rrweb-snapshot serializeNode), so turning it on
+ * blanks the chosen option of EVERY dropdown in the replay. A `<select>` has no
+ * typed value, so the typed-value rule has nothing to protect there.
+ */
+export const MASK_INPUT_OPTIONS: Record<string, boolean> = {
+  color: true,
+  date: true,
+  'datetime-local': true,
+  email: true,
+  month: true,
+  number: true,
+  range: true,
+  search: true,
+  tel: true,
+  text: true,
+  time: true,
+  url: true,
+  week: true,
+  textarea: true,
+  password: true,
+  select: false,
+};
+
 export interface Recorder {
   /** Concatenated buffered events: previous checkout window + current one. */
   events(): eventWithTime[];
@@ -50,23 +81,29 @@ export type RecordFn = (options: {
   checkoutEveryNms?: number;
   blockSelector?: string;
   maskAllInputs?: boolean;
+  maskInputOptions?: Record<string, boolean>;
   maskInputFn?: (text: string, element: HTMLElement) => string;
 }) => (() => void) | undefined;
 
+/** The click trail's rule (buffers.ts `isSensitiveField`), applied to an rrweb element. */
+function isSensitive(element: HTMLElement): boolean {
+  const attrType = (element.getAttribute('type') ?? '').toLowerCase();
+  const liveType = typeof (element as HTMLInputElement).type === 'string'
+    ? (element as HTMLInputElement).type.toLowerCase()
+    : '';
+  if (element.tagName === 'INPUT' && (attrType === 'password' || liveType === 'password')) return true;
+  return SENSITIVE_AUTOCOMPLETE_RE.test(element.getAttribute('autocomplete') ?? '');
+}
+
 /**
- * maskInputFn (contract §Session replay): with maskAllInputs:true every input
- * value arrives here; keep everything masked UNLESS the field is an
- * `<input type=search>` — and even then never when autocomplete marks it
- * sensitive. type=password is never type=search, so password/cc/otp can never
- * reach the unmasked branch.
+ * maskInputFn (contract §Session replay): the replay MUST show what the tester
+ * actually typed — a step captioned `typed "…"` over an empty field is useless —
+ * so typed values pass through UNMASKED, mirroring the click-trail rules exactly:
+ * only `type=password` and fields whose autocomplete matches
+ * `password|cc-|card|otp` are masked, and those unconditionally.
  */
 export function maskInputValue(text: string, element: HTMLElement): string {
-  const type = (element.getAttribute('type') ?? '').toLowerCase();
-  const autocomplete = element.getAttribute('autocomplete') ?? '';
-  if (element.tagName === 'INPUT' && type === 'search' && !SENSITIVE_AUTOCOMPLETE_RE.test(autocomplete)) {
-    return text;
-  }
-  return '*'.repeat(text.length);
+  return isSensitive(element) ? '*'.repeat(text.length) : text;
 }
 
 export function startRecorder(
@@ -101,7 +138,14 @@ export function startRecorder(
       },
       checkoutEveryNms: CHECKOUT_EVERY_MS,
       blockSelector: '[data-qa-pipeline]', // never records the widget's own UI
-      maskAllInputs: true,
+      // rrweb 2.1.1 (record(): `maskAllInputs === true ? {…everything…} :
+      // maskInputOptions ?? {password:true}`) — maskAllInputs:true would REPLACE
+      // our map, so it stays false and the explicit map decides which fields
+      // reach maskInputFn. Verified against node_modules/rrweb typings +
+      // rrweb-snapshot `maskInputValue`, which only calls maskInputFn for a
+      // flagged tag/type.
+      maskAllInputs: false,
+      maskInputOptions: MASK_INPUT_OPTIONS,
       maskInputFn: maskInputValue,
     });
   } catch {

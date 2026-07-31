@@ -144,7 +144,8 @@ afterEach(() => {
 describe('mini player — the slideshow chrome', () => {
   it('has a stage, a tick rail and ▶/⏸ ⟲ ↻ — and no Prev/Next, caption or speed control', () => {
     expect(q('.rr-stage')).not.toBeNull();
-    expect(shadow().querySelectorAll('.rr-tick').length).toBe(3);
+    // 3 steps + the closing synthetic "result" frame.
+    expect(shadow().querySelectorAll('.rr-tick').length).toBe(4);
     expect(Array.from(shadow().querySelectorAll('.rr-foot .rr-btn')).map((b) => b.textContent)).toEqual([
       '⏸',
       '⟲',
@@ -159,16 +160,18 @@ describe('mini player — the slideshow chrome', () => {
     expect(Array.from(shadow().querySelectorAll('button')).map((b) => b.textContent)).not.toContain('Next ▶');
   });
 
-  it('mounts a cursor overlay above the stage and three side-click zones', () => {
+  it('mounts three side-click zones and no cursor overlay', () => {
     const stage = q<HTMLElement>('.rr-stage');
-    expect(stage?.querySelector('.rr-cursor-layer .rr-cursor')).not.toBeNull();
     expect(stage?.querySelectorAll('.rr-edge').length).toBe(3);
+    // The synthetic cursor is gone: an unresolvable target stranded a dot
+    // sliding across the stage (contract § Player UX).
+    expect(stage?.querySelector('.rr-cursor-layer, .rr-cursor')).toBeNull();
   });
 
-  it('opens on step 1 — pause(offset) at the first mark — and autoplays', () => {
-    // pause(0) applies the Meta/first frame; then step 1 = the first qa-step
-    // marker's offset, relative to the recording.
-    expect(player().seeks).toEqual([0, 300]);
+  it('opens on step 1 — its SETTLED frame — and autoplays', () => {
+    // pause(0) applies the Meta/first frame; then step 1 seeks to its settled
+    // frame: 300 + 700 clamped to 50ms short of step 2 (600) → 550.
+    expect(player().seeks).toEqual([0, 550]);
     expect(activeTick()).toBe(0);
     expect(playBtn().textContent).toBe('⏸'); // autoplay by default
   });
@@ -178,12 +181,12 @@ describe('mini player — navigation pauses autoplay', () => {
   it('steps forward on a right-third click and back on a left-third one', () => {
     clickStage('right');
     expect(activeTick()).toBe(1);
-    expect(player().seeks.at(-1)).toBe(600);
+    expect(player().seeks.at(-1)).toBe(850); // 600 + settle, clamped short of 900
     expect(playBtn().textContent).toBe('▶'); // manual navigation paused autoplay
 
     clickStage('left');
     expect(activeTick()).toBe(0);
-    expect(player().seeks.at(-1)).toBe(300);
+    expect(player().seeks.at(-1)).toBe(550);
   });
 
   it('ignores the inert middle third', () => {
@@ -200,7 +203,8 @@ describe('mini player — navigation pauses autoplay', () => {
     clickStage('right');
     clickStage('right');
     clickStage('right');
-    expect(activeTick()).toBe(2); // the last of three steps
+    // 3 steps + the closing "result" frame = index 3 is the end.
+    expect(activeTick()).toBe(3);
   });
 
   it('← / → step the slideshow, but not while a text field has focus', () => {
@@ -220,7 +224,7 @@ describe('mini player — navigation pauses autoplay', () => {
     const ticks = Array.from(shadow().querySelectorAll<HTMLButtonElement>('.rr-tick'));
     ticks[2]?.click();
     expect(activeTick()).toBe(2);
-    expect(player().seeks.at(-1)).toBe(900);
+    expect(player().seeks.at(-1)).toBe(1600); // 900 + the full settle beat
     expect(playBtn().textContent).toBe('▶');
   });
 
@@ -241,7 +245,7 @@ describe('mini player — navigation pauses autoplay', () => {
     );
     restart?.click();
     expect(activeTick()).toBe(0);
-    expect(player().seeks.at(-1)).toBe(300);
+    expect(player().seeks.at(-1)).toBe(550);
     expect(playBtn().textContent).toBe('⏸');
   });
 });
@@ -257,7 +261,7 @@ describe('mini player — two-way sync with the numbered trail list', () => {
   it('seeks the player when a trail row is clicked', () => {
     const rows = Array.from(shadow().querySelectorAll<HTMLElement>('.replay-list li.replay-step'));
     rows[3]?.click(); // trail step 4 → the third marker
-    expect(player().seeks.at(-1)).toBe(900);
+    expect(player().seeks.at(-1)).toBe(1600);
     expect(activeTick()).toBe(2);
     expect(playBtn().textContent).toBe('▶'); // a row click is manual navigation
   });

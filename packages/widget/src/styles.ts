@@ -160,18 +160,6 @@ button { font-family: inherit; }
 .rr-edge-r::after { content: '›'; right: 6px; }
 .rr-edge-l:hover::after, .rr-edge-r:hover::after { opacity: .75; }
 /* synthetic cursor — its own layer ABOVE the stage, never interactive */
-.rr-cursor-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
-.rr-cursor {
-  position: absolute; left: -6px; top: -6px; width: 12px; height: 12px; border-radius: 50%;
-  background: var(--qa-bright); box-shadow: 0 0 0 5px var(--qa-ring), 0 1px 4px rgba(0,0,0,.18);
-  opacity: 0; transition: transform 450ms cubic-bezier(.22,.61,.36,1), opacity 140ms ease;
-  will-change: transform;
-}
-.rr-cursor.on { opacity: 1; }
-.rr-cursor-pulse {
-  position: absolute; left: -13px; top: -13px; width: 26px; height: 26px; border-radius: 50%;
-  border: 2px solid var(--qa-bright); animation: rr-land 700ms ease-out forwards;
-}
 @keyframes rr-land {
   0% { opacity: .9; scale: .35; }
   100% { opacity: 0; scale: 1.25; }
@@ -225,8 +213,6 @@ button { font-family: inherit; }
   .replay-step { transition: none; }
   .replay-step.fresh { animation: none; }
   .rr-tick, .rr-edge-l, .rr-edge-r { transition: none; }
-  .rr-cursor { transition: opacity 140ms ease; }
-  .rr-cursor-pulse { animation: none; opacity: 0; }
 }
 
 /* ---- lightbox (thumbnail enlarge) ---- */

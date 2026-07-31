@@ -60,14 +60,23 @@ function checkoutBurst(emit: (e: AnyEvent, c?: boolean) => void): AnyEvent[] {
 }
 
 describe('startRecorder — record() options (contract §Session replay)', () => {
-  it('passes checkoutEveryNms 60_000, blockSelector, maskAllInputs and a maskInputFn', () => {
+  it('passes checkoutEveryNms 60_000, blockSelector and the per-element maskInputFn', () => {
     const mock = mockRecord();
     startRecorder(mock.fn);
     const opts = mock.options();
     expect(opts.checkoutEveryNms).toBe(60_000);
     expect(opts.blockSelector).toBe('[data-qa-pipeline]');
-    expect(opts.maskAllInputs).toBe(true);
     expect(opts.maskInputFn).toBe(maskInputValue);
+    // Typed values must reach the replay (contract: masking mirrors the trail
+    // rules) — the blanket mask is off; maskInputValue decides per element.
+    expect(opts.maskAllInputs).toBe(false);
+    // Text-entry surfaces are routed through maskInputFn…
+    expect(opts.maskInputOptions?.text).toBe(true);
+    expect(opts.maskInputOptions?.textarea).toBe(true);
+    expect(opts.maskInputOptions?.password).toBe(true);
+    // …but never <select>: rrweb keys option[selected] off this flag, which
+    // would blank every dropdown's chosen value in the replay.
+    expect(opts.maskInputOptions?.select).toBe(false);
   });
 
   it('survives a record() that throws — empty recorder, no crash', () => {
@@ -204,20 +213,20 @@ describe('Recorder.mark — qa-step custom events', () => {
   });
 });
 
-describe('maskInputValue — unmask override (contract: only type=search)', () => {
+describe('maskInputValue — mirrors the click-trail privacy rules', () => {
   const input = (attrs: Record<string, string>): HTMLInputElement => {
     const el = document.createElement('input');
     for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
     return el;
   };
 
-  it('unmasks type=search', () => {
+  it('records what the tester typed — a replay must show it', () => {
     expect(maskInputValue('laser kit', input({ type: 'search' }))).toBe('laser kit');
-  });
-
-  it('masks plain text inputs (maskAllInputs default holds)', () => {
-    expect(maskInputValue('hello', input({ type: 'text' }))).toBe('*****');
-    expect(maskInputValue('hello', input({}))).toBe('*****');
+    expect(maskInputValue('someone@example.com', input({ type: 'email' }))).toBe(
+      'someone@example.com',
+    );
+    expect(maskInputValue('hello', input({ type: 'text' }))).toBe('hello');
+    expect(maskInputValue('hello', input({}))).toBe('hello');
   });
 
   it('always masks password / cc / otp fields', () => {
@@ -230,9 +239,9 @@ describe('maskInputValue — unmask override (contract: only type=search)', () =
     expect(maskInputValue('secret', input({ type: 'search', autocomplete: 'current-password' }))).toBe('******');
   });
 
-  it('masks textareas and selects', () => {
-    expect(maskInputValue('long note', document.createElement('textarea'))).toBe('*********');
-    expect(maskInputValue('Option A', document.createElement('select'))).toBe('********');
+  it('records textarea and select values like any other non-sensitive field', () => {
+    expect(maskInputValue('long note', document.createElement('textarea'))).toBe('long note');
+    expect(maskInputValue('Option A', document.createElement('select'))).toBe('Option A');
   });
 });
 

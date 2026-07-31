@@ -25,6 +25,57 @@ export interface PlayerMark {
   i: number;
   /** The short human string the numbered step list renders. */
   label: string;
+  /** The trailing "result" frame — no interaction of its own (see withResultMark). */
+  synthetic?: boolean;
+}
+
+/** How long the page gets to react before we consider a step's frame settled. */
+export const SETTLE_MS = 700;
+/** Stay clear of the next step so a settled frame never shows the following one. */
+const NEXT_GUARD_MS = 50;
+/** Only append a closing "result" frame when the recording really outlives the last step. */
+const RESULT_MIN_TAIL_MS = 500;
+/** How far back from the end the closing frame sits. */
+const RESULT_BACK_MS = 50;
+
+/**
+ * The time to actually SEEK to for a step — the SETTLED frame, not the instant
+ * of the event (contract §Player UX). Pausing exactly at `mark.offset` freezes
+ * the recording before the DOM reacted, so a step captioned `typed "…"` showed
+ * an empty field. Give the page `SETTLE_MS`, but never cross into the next step
+ * or past the end, and never move backwards from the step itself.
+ */
+export function settledOffset(
+  marks: readonly PlayerMark[],
+  index: number,
+  totalTime: number,
+): number {
+  const mark = marks[index];
+  if (!mark) return 0;
+  const next = marks[index + 1];
+  const ceiling = next ? Math.min(next.offset - NEXT_GUARD_MS, totalTime) : totalTime;
+  return Math.max(mark.offset, Math.min(mark.offset + SETTLE_MS, ceiling));
+}
+
+/**
+ * Final outcome frame (contract §Player UX): when the recording keeps running
+ * past the last step, append a synthetic mark near the very end so the result
+ * of that last action — an error banner, a success toast — is always the
+ * closing frame.
+ */
+export function withResultMark(marks: readonly PlayerMark[], totalTime: number): PlayerMark[] {
+  const last = marks[marks.length - 1];
+  if (!last || !Number.isFinite(totalTime)) return [...marks];
+  if (totalTime - last.offset < RESULT_MIN_TAIL_MS) return [...marks];
+  return [
+    ...marks,
+    {
+      offset: Math.max(last.offset, totalTime - RESULT_BACK_MS),
+      i: last.i + 1,
+      label: 'result',
+      synthetic: true,
+    },
+  ];
 }
 
 /** The bit of an rrweb event the mark reader touches. */
