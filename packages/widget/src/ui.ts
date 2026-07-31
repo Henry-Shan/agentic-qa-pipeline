@@ -5,6 +5,7 @@ import type { ClickTrailEntry, ConsoleEntry, IngestBody, NetworkEntry, WidgetCon
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
 import { pickElement } from './picker';
 import { captureShot } from './shot';
+import { startReplay, type ReplayHandle, type ReplayRequest } from './replay';
 import { widgetCss } from './styles';
 
 const SEND_LABEL = 'Send — Claude starts now ▸';
@@ -60,6 +61,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   let drawer: HTMLElement | null = null;
   let toastEl: HTMLElement | null = null;
   let picking = false;
+  let replay: ReplayHandle | null = null;
 
   // ---- fab -----------------------------------------------------------------
   const fab = h('button', 'qa-fab', '🐛');
@@ -85,7 +87,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       openDrawer(draft);
     } finally {
       picking = false;
-      if (!drawer) fab.hidden = false;
+      if (!drawer && !replay) fab.hidden = false;
     }
   }
 
@@ -226,7 +228,53 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   function closeDrawer(): void {
     drawer?.remove();
     drawer = null;
-    fab.hidden = false;
+    if (!replay) fab.hidden = false;
+  }
+
+  // ---- replay (contracts §Replay, messages 8-9) ----------------------------
+  // In framed+activated mode the task page (same origin that activated the
+  // widget = the configured endpoint's origin) can ask for a visual replay of
+  // the report's click trail. The fab hides for the duration; when the run
+  // finishes we post `qa-pipeline:replay-done {shown, skipped}` back to that
+  // origin. A second replay message cancels the current run and restarts.
+  if (window.self !== window.top) {
+    let activatingOrigin: string | null = null;
+    try {
+      activatingOrigin = new URL(cfg.endpoint).origin;
+    } catch {
+      activatingOrigin = null; // malformed endpoint — replay stays off
+    }
+    if (activatingOrigin) {
+      const origin = activatingOrigin;
+      window.addEventListener('message', (e: MessageEvent) => {
+        if (e.origin !== origin) return;
+        const d = e.data as
+          | { type?: unknown; route?: unknown; trail?: unknown; selector?: unknown; elementText?: unknown }
+          | null;
+        if (!d || d.type !== 'qa-pipeline:replay') return;
+        replay?.cancel(); // restart cleanly on a second replay message
+        const req: ReplayRequest = {
+          route: typeof d.route === 'string' && d.route ? d.route : location.pathname,
+          trail: Array.isArray(d.trail) ? (d.trail as ReplayRequest['trail']) : [],
+        };
+        if (typeof d.selector === 'string' && d.selector) req.selector = d.selector;
+        if (typeof d.elementText === 'string' && d.elementText) req.elementText = d.elementText;
+        fab.hidden = true;
+        const handle = startReplay(req, { container: root, ignore: host });
+        replay = handle;
+        void handle.done.then((result) => {
+          if (replay !== handle) return; // superseded by a restart
+          replay = null;
+          if (!drawer && !picking) fab.hidden = false;
+          if (result) {
+            window.parent.postMessage(
+              { type: 'qa-pipeline:replay-done', shown: result.shown, skipped: result.skipped },
+              origin,
+            );
+          }
+        });
+      });
+    }
   }
 
   /**

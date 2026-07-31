@@ -314,6 +314,18 @@ export class Db {
     if (r.error) log('db', `insertEvent failed (report ${fields.report_id}): ${r.error.message}`);
   }
 
+  /** Events of one type for a run (needs_human idempotency + selftest asserts). */
+  async eventsForRun(runId: number, type: string): Promise<QaEvent[]> {
+    const r = await this.c
+      .from('qa_events')
+      .select('*')
+      .eq('run_id', runId)
+      .eq('type', type)
+      .order('id', { ascending: true });
+    if (r.error) throw new Error(`eventsForRun ${runId}: ${r.error.message}`);
+    return (r.data as QaEvent[] | null) ?? [];
+  }
+
   // ---- qa_messages ---------------------------------------------------------
 
   async pendingMessages(onlyReportId: number | null): Promise<QaMessage[]> {

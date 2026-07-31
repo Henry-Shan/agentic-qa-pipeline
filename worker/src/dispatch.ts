@@ -10,6 +10,24 @@ import { log, nowIso, sleep, tailChars } from './util';
 const RATE_LIMIT_COOLDOWN_MS = 30 * 60_000;
 const LOG_FLUSH_MS = 2_000; // throttle: at most one log event / log_tail write per 2s
 const LOG_TAIL_CHARS = 200;
+const SUMMARIZER_TIMEOUT_MS = 120_000; // needs-human handoff: hard cap, killed on timeout
+const SUMMARY_MAX_CHARS = 1500;
+
+// Contract §Needs-a-human: the handoff structure is demanded EXACTLY.
+const HANDOFF_PROMPT = `You stopped BLOCKED and a human will take over this task. Write a concise handoff summary with EXACTLY this structure:
+
+**What went wrong** (1-2 sentences)
+**What I analyzed** (2-4 bullets)
+**What to do** (numbered steps a human can follow)
+
+Hard rules: at most 1500 characters total; plain text (the three bold headers above are the only markdown); do NOT create a PR; avoid tool use if possible — reply from what you already know from this session.`;
+
+// Canned summary used instead of `claude --resume` under QA_MOCK_DISPATCH.
+const MOCK_NEEDS_HUMAN_SUMMARY = [
+  '**What went wrong** Mock run stopped at a ship-task gate before opening a PR (selftest blocked leg).',
+  '**What I analyzed**\n- the task envelope\n- the mock pipeline state',
+  '**What to do**\n1. Review the branch named in the stop message.\n2. Resume the run with a steer note, or close the report.',
+].join('\n');
 
 /**
  * Per-boot shim auth token. Exported into every spawned run's env as
@@ -39,6 +57,10 @@ push -> open PR. Then STOP and HAND OFF — do NOT wait for CI and do NOT merge
   curl -s -X POST ${url}/api/runinfo -H 'Content-Type: application/json' \\
     -d '{"session_id":"${sessionId}","pr_url":"<PR url>","branch":"<branch name>","worktree":"<absolute worktree path>","test_plan":"<manual test guide>","files_changed":[{"file":"<path>","add":0,"del":0}],"grounding":[{"label":"<one-line trace step>","file":"<path>"}]}'
 Then finish with a one-line summary. Reaching a green PR = success.
+
+BLOCKED = NO PR. If you stop BLOCKED (any STOP-gate or needs-input outcome),
+do NOT create a PR. Instead report the branch name and the absolute worktree
+path in your stop message so a human can pick up exactly where you left off.
 
 THE TEST GUIDE (test_plan) is for a non-engineer tester to verify the fix by
 hand on the preview URL the worker will start: concise numbered steps, each
@@ -282,6 +304,78 @@ function trackChild(ctx: Ctx, h: RunHandle, child: ChildProcess): void {
   child.once('close', (code) => doSettle(code ?? -1));
 }
 
+/**
+ * Briefly resume the blocked session for a structured handoff summary
+ * (contract §Needs-a-human). Never throws: any failure — timeout, non-zero
+ * exit, unparseable output, empty result — resolves null so the caller falls
+ * back to the stopped_reason. Mocked under QA_MOCK_DISPATCH (no claude spawn).
+ */
+function needsHumanSummary(ctx: Ctx, sessionId: string): Promise<string | null> {
+  if (ctx.cfg.mockDispatch) return Promise.resolve(MOCK_NEEDS_HUMAN_SUMMARY);
+  return new Promise((resolve) => {
+    const child = spawn(
+      ctx.cfg.claudeBin,
+      ['--resume', sessionId, '-p', HANDOFF_PROMPT, '--output-format', 'json', '--dangerously-skip-permissions'],
+      { cwd: ctx.cfg.runnerRepo, env: { ...process.env }, detached: true, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    let out = '';
+    let done = false;
+    const finish = (v: string | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    // NOT detached-forever: hard cap; kill the whole group on timeout.
+    const timer = setTimeout(() => {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }
+      finish(null);
+    }, SUMMARIZER_TIMEOUT_MS);
+    child.stdout?.on('data', (d: Buffer) => {
+      out += d.toString();
+    });
+    child.once('error', () => finish(null));
+    child.once('close', (code) => {
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      try {
+        const o = JSON.parse(out) as { is_error?: boolean; result?: unknown };
+        const text = typeof o.result === 'string' ? o.result.trim() : '';
+        finish(!o.is_error && text ? text.slice(0, SUMMARY_MAX_CHARS) : null);
+      } catch {
+        finish(null);
+      }
+    });
+  });
+}
+
+/**
+ * Insert the needs_human qa_event for a run that settled blocked. Idempotent:
+ * skipped when the run already has one (e.g. a re-settle after restart).
+ */
+async function emitNeedsHuman(ctx: Ctx, run: QaRun, stoppedReason: string): Promise<void> {
+  try {
+    if ((await ctx.db.eventsForRun(run.id, 'needs_human')).length > 0) return;
+    const summary = await needsHumanSummary(ctx, run.session_id);
+    await ctx.db.insertEvent({
+      report_id: run.report_id,
+      run_id: run.id,
+      type: 'needs_human',
+      message: summary ?? stoppedReason,
+    });
+  } catch (e) {
+    log('dispatch', `needs_human handoff failed for run ${run.id}: ${(e as Error).message}`);
+  }
+}
+
 async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number): Promise<void> {
   ctx.state.removeRun(h);
   if (ctx.state.activeDispatches > 0) ctx.state.activeDispatches--;
@@ -301,6 +395,7 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
       await ctx.db.updateRun(run.id, { status: 'stopped', stopped_reason: reason, finished_at: finished });
       await ctx.db.updateReport(report.id, { status: 'blocked' });
       await ctx.db.insertEvent({ report_id: report.id, run_id: run.id, type: 'error', message: `run stopped: ${reason}` });
+      await emitNeedsHuman(ctx, run, reason);
     } else if (flags.limited && !(flags.ok && handedOff)) {
       ctx.state.cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
       await ctx.db.updateRun(run.id, {
@@ -332,6 +427,7 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
         type: 'error',
         message: 'run finished without posting runinfo (no PR reported) — press Send to steer',
       });
+      await emitNeedsHuman(ctx, run, 'finished without reporting a PR');
     } else {
       const reason = tailChars(flags.resultText, 400) || `claude exited with code ${exitCode}`;
       await ctx.db.updateRun(run.id, { status: 'failed', stopped_reason: reason, finished_at: finished });

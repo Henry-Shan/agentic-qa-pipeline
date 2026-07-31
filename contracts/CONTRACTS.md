@@ -152,6 +152,33 @@ Env — QA site: `NEXT_PUBLIC_CAPTURE_URL` (embedded the host app URL), `NEXT_PU
 feature fully dormant), `NEXT_PUBLIC_QA_SITE_ORIGINS` (parent origins allowed to activate,
 e.g. `https://qa-pipeline.vercel.app,http://localhost:3200`).
 
+### Replay (embedded preview on the task page)
+
+The task page embeds the run's `preview_url` in an iframe and answers the loader's hello with
+the SAME activate flow as /capture (shared logic). Additional messages:
+8. **replay** — task page → widget, once after activation:
+   `{type:'qa-pipeline:replay', route, trail: ClickTrailEntry[], selector?, elementText?}`.
+   The widget enters replay mode: navigates to `route`, then animates a synthetic cursor
+   through the trail (resolve each step by testid → `[data-component]` → visible text; skip
+   unresolvable steps), pulsing each target with a step caption chip ("2 · clicked Manage Lab
+   Access"), finishing with a sustained highlight on `selector`/`elementText` when present.
+   The fab stays hidden during replay.
+9. **replay-done** — widget → task page: `{type:'qa-pipeline:replay-done', shown, skipped}`.
+   The task page shows a small "replayed N steps" note and a ⟳ Replay button re-sends message 8.
+
+### Needs-a-human (blocked) flow
+
+When a run settles `blocked`, the worker: (1) never has a PR — the dispatch PREAMBLE forbids
+creating a PR when stopping blocked (report the branch/worktree instead); (2) generates a
+concise handoff via `claude --resume <session> -p` asking for EXACTLY this structure (≤1500
+chars): "**What went wrong** (1-2 sentences) / **What I analyzed** (2-4 bullets) / **What to
+do** (numbered steps a human can follow)"; (3) stores it as `qa_events`
+`{type:'needs_human', message: <summary>}` and keeps report status `blocked`.
+Site: the board shows a "Needs <displayName>" band pinned above the tabs listing blocked
+reports whose `reporter_email` = the signed-in user, each expandable to the needs_human
+summary; the task page renders the summary prominently. The top bar greets with the chosen
+display name (email only in the tooltip).
+
 Security property: activation requires a parent whose origin is in
 `NEXT_PUBLIC_QA_SITE_ORIGINS` — direct visitors to example.com never see the widget.
 Submission auth is unchanged: the embedded the host app session's JWT (via the `getToken` bridge)

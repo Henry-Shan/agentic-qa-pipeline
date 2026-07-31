@@ -1,19 +1,18 @@
 'use client';
 
 // Full-screen embedded example.com for filing reports without leaving the QA
-// site. Frame handshake (see contracts/CONTRACTS.md § Widget host integration):
-//   iframe → hello → we reply activate (endpoint + QA session email) → widget
-//   loads inside the frame → on submit the widget posts `filed` → we navigate
-//   to the task page.
+// site. The hello/activate/token handshake lives in the shared useFrameHost
+// hook (also used by the task page's embedded replay preview); this page adds
+// the capture-only bits: the 8s "widget hasn't loaded" note and navigation to
+// the task page when the widget posts `filed`.
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { getBrowserClient } from '@/lib/supabase/client';
+import { useFrameHost } from '@/lib/use-frame-host';
 
 // Next.js only inlines NEXT_PUBLIC_* env vars on direct property access.
 const CAPTURE_URL = process.env.NEXT_PUBLIC_CAPTURE_URL || 'https://example.com';
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL;
 
 const HELLO_TIMEOUT_MS = 8_000;
 
@@ -31,60 +30,21 @@ export default function CapturePage() {
   routerRef.current = router;
   const [noteVisible, setNoteVisible] = useState(false);
   const [noteDismissed, setNoteDismissed] = useState(false);
+  const helloSeenRef = useRef(false);
 
   useEffect(() => {
-    const allowedOrigin = captureOrigin();
-    if (!allowedOrigin) return;
-
-    // The QA session email, resolved once; hellos that arrive before it is
-    // known are simply not answered — the loader retries every second.
-    let email: string | null = null;
-    void (async () => {
-      const { data } = await getBrowserClient().auth.getSession();
-      email = data.session?.user.email ?? null;
-    })();
-
-    let helloSeen = false;
     const timer = window.setTimeout(() => {
-      if (!helloSeen) setNoteVisible(true);
+      if (!helloSeenRef.current) setNoteVisible(true);
     }, HELLO_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
-    const onMessage = (event: MessageEvent) => {
-      // Origin gate: only the embedded capture copy of the host app may talk to us.
-      if (event.origin !== allowedOrigin) return;
-      const data = event.data as { type?: unknown; url?: unknown } | null;
-      if (!data || typeof data !== 'object') return;
-
-      if (data.type === 'qa-pipeline:hello') {
-        helloSeen = true;
-        setNoteVisible(false);
-        if (!email || !event.source) return; // loader will retry
-        (event.source as WindowProxy).postMessage(
-          {
-            type: 'qa-pipeline:activate',
-            endpoint: SITE_URL || window.location.origin,
-            email,
-          },
-          event.origin,
-        );
-        return;
-      }
-
-      if (data.type === 'qa-pipeline:token' && event.source) {
-        // The widget authenticates submissions with the QA session's token —
-        // the tester is signed in HERE even when the embedded app is not.
-        const source = event.source as WindowProxy;
-        const targetOrigin = event.origin;
-        void (async () => {
-          const { data: sessionData } = await getBrowserClient().auth.getSession();
-          source.postMessage(
-            { type: 'qa-pipeline:token-result', token: sessionData.session?.access_token ?? null },
-            targetOrigin,
-          );
-        })();
-        return;
-      }
-
+  useFrameHost(captureOrigin(), {
+    onHello: () => {
+      helloSeenRef.current = true;
+      setNoteVisible(false);
+    },
+    onMessage: (data) => {
       if (data.type === 'qa-pipeline:filed' && typeof data.url === 'string') {
         try {
           const task = new URL(data.url, window.location.origin);
@@ -93,14 +53,8 @@ export default function CapturePage() {
           // Malformed url — stay on the capture page; the widget toast still links out.
         }
       }
-    };
-
-    window.addEventListener('message', onMessage);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('message', onMessage);
-    };
-  }, []);
+    },
+  });
 
   return (
     <div className="h-dvh bg-paper">

@@ -49,6 +49,34 @@ loader and the QA site's `/capture` page; message 4 is implemented here):
 5. QA `/capture` page: on `qa-pipeline:filed` (same origin check as hello),
    client-side navigates to the task page path parsed from `url`.
 
+### Replay (embedded preview on the task page — messages 8–9)
+
+When framed + activated, the widget also listens for
+`{type:'qa-pipeline:replay', route, trail, selector?, elementText?}` from the
+activating origin (= the configured endpoint's origin). On receipt it hides the
+fab and runs `src/replay.ts`:
+
+- **Navigate**: if `location.pathname !== route`, `history.pushState` + a
+  synthetic `popstate` (SPA path); if the app's DOM doesn't react within ~1.5s,
+  falls back to `location.assign(route)` (state loss acceptable — the reload
+  abandons the run).
+- **Steps**: each trail entry resolves via `[data-testid]` →
+  `[data-sentry-component]`/`[data-component]` → visible-text match (exact
+  before contains, buttons/links/tabs first, hidden elements excluded);
+  unresolved steps count as `skipped`. Each resolved step glides a synthetic
+  teal cursor (~450ms), pulses the target and shows a numbered caption chip
+  ("2 · clicked Manage Lab Access") for ~900ms. Steps run ~1.2s apart, whole
+  replay capped at ~20s; reduced-motion users get instant highlights, no glide.
+- **Finish**: sustained slow-pulse highlight on the report's `selector`
+  (`querySelector`, falling back to an `elementText` search) for 4s.
+- **Done**: posts `{type:'qa-pipeline:replay-done', shown, skipped}` back to
+  the activating origin and re-shows the fab. A second replay message cancels
+  the in-flight run and restarts.
+
+All replay visuals live in a `pointer-events: none` overlay inside the widget's
+ShadowRoot — the host page's DOM is never written to (no real clicks are
+dispatched; the replay is purely visual).
+
 Security property: activation requires a parent whose origin is allow-listed in
 `NEXT_PUBLIC_QA_SITE_ORIGINS`; direct visitors to example.com never see the
 widget. Submission auth is unchanged — the embedded session JWT verified

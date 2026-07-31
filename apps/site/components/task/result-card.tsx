@@ -1,20 +1,16 @@
-import type { QaRun } from '@/lib/types';
+import type { QaReport, QaRun } from '@/lib/types';
+import { PreviewEmbed } from '@/components/task/preview-embed';
 
-export function ResultCard({ run }: { run: QaRun | null }) {
+export function ResultCard({ run, report }: { run: QaRun | null; report: QaReport }) {
   const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
   const verdict = typeof run?.featuretest?.verdict === 'string' ? run.featuretest.verdict : null;
 
   return (
     <div className="rounded-[14px] border border-line bg-stage p-3.5 shadow-card">
       {previewUrl ? (
-        <a
-          href={previewUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block w-full rounded-lg bg-qa px-3 py-2.5 text-center text-[12.5px] font-bold text-on-accent transition-colors hover:bg-qa-bright"
-        >
-          Open the fixed app ↗
-        </a>
+        // Live preview → embedded replay window (contracts § Replay) instead of
+        // the plain open button; the chrome bar keeps an open-in-new-tab icon.
+        <PreviewEmbed key={previewUrl} previewUrl={previewUrl} report={report} />
       ) : (
         <button
           disabled

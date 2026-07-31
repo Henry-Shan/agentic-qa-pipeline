@@ -109,6 +109,40 @@ button { font-family: inherit; }
 .send-btn:disabled { opacity: .6; cursor: default; }
 .send-note { font-size: 11px; color: var(--ink-3); text-align: center; margin-top: 8px; }
 
+/* ---- replay (contracts §Replay) ---- */
+.qa-replay { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.qa-cursor {
+  position: absolute; left: 0; top: 0; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--qa-bright); box-shadow: 0 0 0 6px var(--qa-ring), 0 1px 4px rgba(0,0,0,.18);
+  transition: transform 450ms cubic-bezier(.22,.61,.36,1); will-change: transform;
+}
+.qa-replay.instant .qa-cursor { display: none; }
+.qa-pulse {
+  position: absolute; pointer-events: none;
+  border: 2px solid var(--qa-bright); border-radius: 9px;
+  background: rgba(20,184,166,.08); box-shadow: 0 0 0 4px var(--qa-ring);
+  animation: qa-flash 900ms ease-out;
+}
+@keyframes qa-flash {
+  0% { background: rgba(20,184,166,.26); box-shadow: 0 0 0 9px var(--qa-ring); }
+  100% { background: rgba(20,184,166,.08); box-shadow: 0 0 0 4px rgba(13,148,136,.12); }
+}
+.qa-step-chip {
+  position: absolute; pointer-events: none; white-space: nowrap;
+  background: var(--ink); color: var(--paper); font-size: 11.5px; font-weight: 600;
+  padding: 5px 11px; border-radius: 999px; box-shadow: var(--shadow);
+}
+.qa-final {
+  position: absolute; pointer-events: none;
+  border: 2px solid var(--qa); border-radius: 9px; background: rgba(20,184,166,.06);
+  animation: qa-slow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes qa-slow-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--qa-ring); }
+  50% { box-shadow: 0 0 0 10px rgba(13,148,136,.12); }
+}
+.qa-replay.instant .qa-pulse, .qa-replay.instant .qa-final { animation: none; }
+
 /* ---- toast ---- */
 .qa-toast {
   position: fixed; right: 22px; bottom: 84px; z-index: 50;

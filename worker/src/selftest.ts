@@ -2,8 +2,10 @@
 // with a MOCK dispatcher and MOCK preview server — no real claude spawn.
 // Asserts queued → running → pr_ready → preview(live) → verified, then a
 // destroy leg (message kind `destroy` → preview dead, worktree gone, report
-// row hard-deleted with runs/messages cascade-gone; gh mocked away), then
-// cleans up every row and tmp dir it created. Run: npm run selftest
+// row hard-deleted with runs/messages cascade-gone; gh mocked away), then a
+// blocked leg (QA_MOCK_MODE=blocked → run exits with the blocked sentinel,
+// report `blocked`, needs_human handoff event, no PR; summarizer mocked),
+// then cleans up every row and tmp dir it created. Run: npm run selftest
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const db = new Db(cfg);
   let report: QaReport | null = null;
+  let blockedReport: QaReport | null = null;
   let handle: WorkerHandle | null = null;
   let worktree: string | null = null;
 
@@ -150,6 +153,61 @@ async function main(): Promise<void> {
       'destroy: runs/<id> artifacts dir removed',
       !fs.existsSync(path.join(scratchHome, 'runs', String(id))),
     );
+
+    // ---- blocked leg: run exits with the blocked sentinel, no PR ----
+    // QA_MOCK_MODE is inherited by mock-run.mjs from the worker's env at spawn
+    // time; the needs-human summarizer is mocked in-process by QA_MOCK_DISPATCH
+    // (no `claude --resume` spawn).
+    process.env.QA_MOCK_MODE = 'blocked';
+    blockedReport = await db.insertReport({
+      title: '[selftest] fake blocked report — safe to delete',
+      description: 'inserted by worker selftest (blocked leg); will be deleted at the end of the run',
+      kind: 'bug',
+      status: 'queued',
+      reporter_email: 'selftest@example.com',
+      route: '/selftest',
+      page_title: 'Selftest (blocked)',
+      click_trail: [],
+      console_log: [],
+      network_log: [],
+      screenshots: [],
+    });
+    record('blocked: fake qa_report inserted', true, `id ${blockedReport.id}`);
+    const bid = blockedReport.id;
+    cfg.onlyReportId = bid;
+
+    await check(
+      'blocked: queued -> running',
+      async () => (await db.getReport(bid))?.status === 'running',
+      30_000,
+    );
+    await check(
+      'blocked: run settles -> report blocked',
+      async () => (await db.getReport(bid))?.status === 'blocked',
+      60_000,
+    );
+    await check(
+      'blocked: needs_human event with the three handoff sections',
+      async () => {
+        const run = await db.latestRunForReport(bid);
+        if (!run) return false;
+        const msg = (await db.eventsForRun(run.id, 'needs_human'))[0]?.message ?? '';
+        return (
+          msg.includes('**What went wrong**') &&
+          msg.includes('**What I analyzed**') &&
+          msg.includes('**What to do**')
+        );
+      },
+      30_000,
+    );
+    {
+      const run = await db.latestRunForReport(bid);
+      record(
+        'blocked: no pr_url on the run',
+        run !== null && run.pr_url === null,
+        run ? (run.pr_url ?? 'pr_url null') : 'no run row',
+      );
+    }
   } catch (e) {
     if (results.every((r) => r.ok)) record('selftest', false, (e as Error).message);
   } finally {
@@ -179,6 +237,12 @@ async function main(): Promise<void> {
     } catch (e) {
       record('cleanup: delete seeded report', false, (e as Error).message);
     }
+    try {
+      if (blockedReport) await db.deleteReport(blockedReport.id); // cascades runs/events/messages
+    } catch (e) {
+      record('cleanup: delete seeded blocked report', false, (e as Error).message);
+    }
+    delete process.env.QA_MOCK_MODE;
     fs.rmSync(scratchHome, { recursive: true, force: true });
   }
 

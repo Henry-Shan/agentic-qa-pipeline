@@ -12,6 +12,7 @@ import { Pipeline } from '@/components/pipeline';
 import { ConfirmDestroy, TrashIcon } from '@/components/confirm-delete';
 import { ReportContext } from '@/components/task/report-context';
 import { GroundingChips } from '@/components/task/grounding-chips';
+import { NeedsHumanCard } from '@/components/task/needs-human-card';
 import { EventLog } from '@/components/task/event-log';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
@@ -33,6 +34,19 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
   const [destroyError, setDestroyError] = useState<string | null>(null);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
+
+  // Blocked + a needs_human hand-off → prominent amber summary above the log
+  // (contracts § Needs-a-human). Latest such event wins (events are id-sorted).
+  let needsHuman: QaEvent | null = null;
+  if (report.status === 'blocked') {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event && event.type === 'needs_human') {
+        needsHuman = event;
+        break;
+      }
+    }
+  }
 
   // "Delete everything": queue a `destroy` message (the worker tears down the
   // run, PR, worktree, and row) and cancel the report. Supabase returns errors
@@ -130,6 +144,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
 
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
+          {needsHuman ? <NeedsHumanCard report={report} event={needsHuman} /> : null}
           {run?.grounding?.length ? (
             <>
               <div className="cap-label">How Claude located it — full-stack trace</div>
@@ -142,7 +157,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
 
         <div className="min-w-0">
           <div className="cap-label">Result</div>
-          <ResultCard run={run} />
+          <ResultCard run={run} report={report} />
           <div className="cap-label mt-4">Talk to Claude — anytime</div>
           <SteerBox reportId={report.id} status={report.status} userEmail={userEmail} />
 
