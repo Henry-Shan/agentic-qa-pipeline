@@ -6,15 +6,19 @@
 //
 // IMPORT CHOICE (measured, esbuild --bundle --minify, rrweb 2.1.1):
 //   record from 'rrweb'                 57.4KB gz | record from '@rrweb/record'   23.2KB gz
-//   record+Replayer from 'rrweb'        80.6KB gz | scoped @rrweb/record+replay   83.1KB gz
+// The drawer no longer replays video (only the task page does, in the site
+// bundle), so the widget needs the RECORDER only — the lighter scoped package.
 // The widget needs BOTH record (here) and Replayer (drawer mini player, ui.ts).
 // The two scoped packages each re-bundle the shared snapshot/mirror code, so
 // pulling both named imports from the single 'rrweb' package tree-shakes
 // lightest overall — that is the choice ('rrweb' has sideEffects:false and
 // __PURE__ annotations, so the unused exports drop cleanly).
 
-import { addCustomEvent, record } from 'rrweb';
-import type { eventWithTime } from 'rrweb';
+import { record } from '@rrweb/record';
+
+// The scoped record-only package hangs addCustomEvent off `record` itself.
+const addCustomEvent = record.addCustomEvent;
+import type { eventWithTime } from '@rrweb/types';
 import { QA_STEP_TAG } from './marks';
 import type { StepMark } from './types';
 

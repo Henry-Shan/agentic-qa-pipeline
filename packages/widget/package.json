@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@rrweb/record": "^2.1.1",
     "modern-screenshot": "^4.6.0",
     "rrweb": "^2.1.1"
   },

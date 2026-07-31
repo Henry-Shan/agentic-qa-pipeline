@@ -144,10 +144,15 @@ describe('ambient step markers', () => {
   });
 });
 
-describe('drawer — the numbered list drives the player', () => {
-  it('is pickable: rows are wired to seek the player', async () => {
+describe('drawer — steps only, no video', () => {
+  it('shows the numbered trail and mounts NO replay player', async () => {
     await openDrawer();
-    expect(shadow().querySelector('.replay-list')?.classList.contains('pickable')).toBe(true);
+    // The tester just performed these actions — the drawer narrates them as a
+    // list. The recording still ships with the report; the task page is where
+    // it is worth watching (Before / After the fix).
+    expect(shadow().querySelector('.replay-list')).not.toBeNull();
+    expect(shadow().querySelectorAll('.replay-step').length).toBeGreaterThan(0);
+    expect(shadow().querySelector('.rr-player, .rr-stage, .rr-rail, .rr-foot')).toBeNull();
   });
 });
 

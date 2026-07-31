@@ -116,65 +116,19 @@ button { font-family: inherit; }
 .add-shot:hover { border-color: var(--qa-bright); color: var(--qa); }
 .add-shot:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
 /* ---- session-replay mini player (drawer, above the trail list) ---- */
-.rr-player { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.rr-stage {
-  position: relative; overflow: hidden; width: 100%; aspect-ratio: 16 / 10;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
-}
-.rr-stage iframe { border: none; background: var(--stage); }
-.replayer-wrapper { position: absolute; left: 0; top: 0; }
 .replayer-mouse {
   position: absolute; width: 10px; height: 10px; border-radius: 50%;
   background: var(--qa-bright); box-shadow: 0 0 0 3px var(--qa-ring);
   transition: left .05s linear, top .05s linear; pointer-events: none;
 }
 .replayer-mouse-tail { position: absolute; pointer-events: none; }
-.rr-player:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; border-radius: 8px; }
-.rr-controls, .rr-foot { display: flex; align-items: center; gap: 6px; }
-.rr-btn {
-  border: 1px solid var(--line); border-radius: 6px; background: var(--stage);
-  color: var(--ink-2); cursor: pointer; font: inherit; font-size: 11px;
-  line-height: 1; padding: 4px 8px; flex: none;
-}
-.rr-btn:hover:not(:disabled) { border-color: var(--qa-bright); color: var(--qa); }
-.rr-btn:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
-.rr-btn:disabled { opacity: .4; cursor: default; }
-.rr-btn[hidden] { display: none; }
 /* side-click zones: left third = back, right third = forward, middle inert */
-.rr-edges { position: absolute; inset: 0; z-index: 2; display: flex; }
-.rr-edges[hidden] { display: none; }
-.rr-edge { flex: 1 1 33.333%; position: relative; }
-.rr-edge-m { pointer-events: none; }
-.rr-edge-l, .rr-edge-r {
-  cursor: pointer; transition: background 140ms ease;
-  background: linear-gradient(to right, rgba(13,148,136,0), rgba(13,148,136,0));
-}
-.rr-edge-l:hover { background: linear-gradient(to right, rgba(13,148,136,.10), rgba(13,148,136,0)); }
-.rr-edge-r:hover { background: linear-gradient(to left, rgba(13,148,136,.10), rgba(13,148,136,0)); }
-.rr-edge-l::after, .rr-edge-r::after {
-  content: '‹'; position: absolute; top: 50%; transform: translateY(-50%);
-  font-size: 22px; line-height: 1; font-weight: 700; color: var(--qa);
-  opacity: 0; transition: opacity 140ms ease;
-}
-.rr-edge-l::after { left: 6px; }
-.rr-edge-r::after { content: '›'; right: 6px; }
-.rr-edge-l:hover::after, .rr-edge-r:hover::after { opacity: .75; }
 /* synthetic cursor — its own layer ABOVE the stage, never interactive */
 @keyframes rr-land {
   0% { opacity: .9; scale: .35; }
   100% { opacity: 0; scale: 1.25; }
 }
 /* rail of tick marks — one per step, current one filled, all clickable */
-.rr-rail { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.rr-rail[hidden] { display: none; }
-.rr-tick {
-  flex: 1 1 4px; min-width: 4px; height: 10px; padding: 0; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 2px; background: var(--stage);
-  transition: background 120ms ease, border-color 120ms ease;
-}
-.rr-tick:hover { border-color: var(--qa-bright); }
-.rr-tick.on { background: var(--qa); border-color: var(--qa); }
-.rr-tick:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
 .rr-note {
   font-size: 11.5px; color: var(--ink-3); padding: 10px 12px;
   border: 1px dashed var(--line); border-radius: 8px; background: var(--paper);
@@ -212,7 +166,6 @@ button { font-family: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .replay-step { transition: none; }
   .replay-step.fresh { animation: none; }
-  .rr-tick, .rr-edge-l, .rr-edge-r { transition: none; }
 }
 
 /* ---- lightbox (thumbnail enlarge) ---- */

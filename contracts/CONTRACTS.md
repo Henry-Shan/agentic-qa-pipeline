@@ -264,11 +264,12 @@ pathname. Reporter identity = the verified session email, as on web.
   gone report the page swaps to "This report no longer exists — it was deleted." and returns to
   the board. The task page also treats a `qa_reports` DELETE (realtime) or an empty refetch the
   same way.
-- **Widget drawer, replay-first**: the drawer's primary context section is no longer the marked
-  screenshot — it is "Replay · what Claude will see": a real SESSION-REPLAY VIDEO (rrweb) at the
-  top — the recorded page visually replaying the tester's session in a mini player (play/pause,
-  progress bar, 1×/2× speed, starts paused on the first frame) — with the FULL numbered trail
-  list beneath it. Screenshots move to a compact thumbnail row below (＋ Add another unchanged).
+- **Widget drawer, steps only — NO video**: the drawer's primary context section is
+  "Replay · what Claude will see", the FULL numbered trail list (live-appending while the drawer
+  is open). It does NOT replay video: the tester just performed those actions, so the drawer
+  narrates rather than replays, and the widget ships the recorder ONLY (`@rrweb/record`, no
+  Replayer — half the bundle). Screenshots sit in a compact thumbnail row below.
+  The recording still travels with the report; the TASK PAGE is where it is watched.
 
 ### Session replay (rrweb)
 
@@ -289,7 +290,7 @@ pathname. Reporter identity = the verified session email, as on web.
   the tester acts, and from the dedicated recorder while a replay executes — so each recording
   carries its own step index inside the event stream. Players read them back
   (`{type:5, data:{tag:'qa-step', payload}}`) as marks at `ev.timestamp - events[0].timestamp`.
-- **Player UX (both the widget drawer and the task page): a KEYFRAME slideshow, not a video.**
+- **Player UX (task page only — the drawer has no player): a KEYFRAME slideshow, not a video.**
   The player shows only the frames at the steps — never continuous playback of the footage
   between them. **There is NO synthetic cursor overlay** (an unresolvable target left a stray
   dot sliding across the stage; the step list is the narration instead).
@@ -318,7 +319,7 @@ pathname. Reporter identity = the verified session email, as on web.
   The task page, when `replay_path` is set, shows a "Session replay" player card (rrweb-player
   or rrweb Replayer + minimal controls) in the hero area — above/tabbed with the live-preview
   embed for web reports; hidden for reports without a recording.
-- Bundle budget: widget ≤160KB gzipped (raised from 80 for the rrweb recorder+player).
+- Bundle budget: widget ≤80KB gzipped (recorder only — the player lives in the site bundle).
 - Task page "Talk to Claude" card includes **⧉ Copy Claude session** — copies
   `cd $NEXT_PUBLIC_RUNNER_REPO && claude --resume <latest run session_id>` to the clipboard so a
   developer can open the very session that produced the fix.
