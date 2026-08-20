@@ -21,6 +21,26 @@ import type { QaReport } from '@/lib/types';
 // widget a beat to attach its listener before the one automatic replay send.
 const REPLAY_DELAY_MS = 750;
 
+/**
+ * Auto-login URL for a preview: mint a one-time token for the signed-in tester
+ * (POST /api/preview-token) and point at the the host app app's /qa-session page,
+ * which signs them in and enters the app — no credentials in the iframe.
+ * Tokens are single-use, so every embed/tab mints its own. Null on any failure
+ * (caller falls back to the bare preview URL and its normal login page).
+ */
+async function autoLoginUrl(previewUrl: string, next: string): Promise<string | null> {
+  try {
+    const res = await fetch('/api/preview-token', { method: 'POST' });
+    if (!res.ok) return null;
+    const { token_hash: tokenHash } = (await res.json()) as { token_hash?: string };
+    if (!tokenHash) return null;
+    const base = previewUrl.replace(/\/$/, '');
+    return `${base}/qa-session#token_hash=${encodeURIComponent(tokenHash)}&next=${encodeURIComponent(next)}`;
+  } catch {
+    return null;
+  }
+}
+
 interface Props {
   previewUrl: string;
   report: QaReport;
@@ -53,6 +73,25 @@ export function PreviewEmbed({ previewUrl, report, runId, onAfterReplay }: Props
   const [phase, setPhase] = useState<'idle' | 'replaying' | 'done'>('idle');
   const [doneNote, setDoneNote] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  // Iframe src is the auto-login hand-off URL; bare preview URL on failure.
+  const [frameSrc, setFrameSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void autoLoginUrl(previewUrl, '/').then((url) => {
+      if (!cancelled) setFrameSrc(url ?? previewUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewUrl]);
+
+  const openInTab = () => {
+    // Tokens are single-use — mint a fresh one per tab.
+    void autoLoginUrl(previewUrl, '/').then((url) => {
+      window.open(url ?? previewUrl, '_blank', 'noopener,noreferrer');
+    });
+  };
 
   useEffect(
     () => () => {
@@ -137,10 +176,9 @@ export function PreviewEmbed({ previewUrl, report, runId, onAfterReplay }: Props
         >
           {previewUrl}
         </span>
-        <a
-          href={previewUrl}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={openInTab}
           title="Open the fixed app in a new tab"
           aria-label="Open the fixed app in a new tab"
           className="flex-none rounded-md p-1 text-ink-3 transition-colors hover:bg-line-soft hover:text-ink"
@@ -155,7 +193,7 @@ export function PreviewEmbed({ previewUrl, report, runId, onAfterReplay }: Props
               strokeLinejoin="round"
             />
           </svg>
-        </a>
+        </button>
         <button
           type="button"
           onClick={sendReplay}
@@ -169,11 +207,15 @@ export function PreviewEmbed({ previewUrl, report, runId, onAfterReplay }: Props
 
       {/* Hero sizing: ~16:9 at full content width, never shorter than ~460px
           on desktop (contracts § Site pages — the preview is the hero). */}
-      <iframe
-        src={previewUrl}
-        title="Fixed app preview"
-        className="block aspect-video w-full border-0 bg-paper md:min-h-[460px]"
-      />
+      {frameSrc ? (
+        <iframe
+          src={frameSrc}
+          title="Fixed app preview"
+          className="block aspect-video w-full border-0 bg-paper md:min-h-[460px]"
+        />
+      ) : (
+        <div className="block aspect-video w-full bg-paper md:min-h-[460px]" aria-hidden />
+      )}
 
       {phase !== 'idle' ? (
         <div

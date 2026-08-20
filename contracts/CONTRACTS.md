@@ -56,6 +56,19 @@ defaults; a missing table/row or out-of-range value (not an integer 0–50) fall
 
 Columns: `key text pk · value integer (0–50) · updated_at · updated_by text` (editor's email).
 
+## Preview auto-login (site ↔ the host app web)
+
+The task page's preview embed (and its open-in-tab button) never shows the the host app login
+form. Flow: embed POSTs `/api/preview-token` (middleware-gated to testers) → the site's
+service role mints `auth.admin.generateLink({type:'magiclink'})` and returns its
+`hashed_token` → the iframe/tab loads `<preview>/qa-session#token_hash=…&next=/` → that
+the host app-web page (`apps/web/app/(auth)/qa-session/page.tsx`) calls
+`verifyOtp({type:'email'})`, establishing a fresh independent session (single-use token;
+one minted per embed/tab; the QA site's own session is never shared). On preview hosts
+(`localhost`, `127.0.0.1`, `*.qa-preview.example.com`) the host app web writes its auth
+cookies `SameSite=None; Secure` so the cross-site iframe can send them; example.com
+keeps `Lax`.
+
 ## Status model (exact strings, used by all three)
 
 `qa_reports.status`: `queued | running | pr_ready | preview | rework | verified | shipped | failed | blocked | stopped | cancelled`

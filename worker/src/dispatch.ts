@@ -53,7 +53,9 @@ PROGRESS BEACONS. On every pipeline phase change, fire-and-forget:
     -d '{"session_id":"${sessionId}","phase":"<grounding|testing|implementing|verifying|feature_test|pr>"}'
 
 STOP LINE = PR-READY. Run the full ship-task pipeline up to: branch -> commit ->
-push -> open PR. Then STOP and HAND OFF — do NOT wait for CI and do NOT merge
+push -> open PR. The PR title MUST start with the literal prefix "(auto qa) "
+(e.g. "(auto qa) feat(notebook): …") so humans can spot worker-created PRs at a
+glance. Then STOP and HAND OFF — do NOT wait for CI and do NOT merge
 (the human merges from GitHub). As soon as the PR is open, report it:
   curl -s -X POST ${url}/api/runinfo -H 'Content-Type: application/json' \\
     -d '{"session_id":"${sessionId}","pr_url":"<PR url>","branch":"<branch name>","worktree":"<absolute worktree path>","test_plan":"<manual test guide>","files_changed":[{"file":"<path>","add":0,"del":0}],"grounding":[{"label":"<one-line trace step>","file":"<path>"}]}'
