@@ -217,6 +217,17 @@ export class Db {
     return (r.data as QaReport | null) ?? null;
   }
 
+  // ---- qa_settings ---------------------------------------------------------
+
+  /** Site-editable worker settings; callers treat a throw as "keep current". */
+  async getSettings(): Promise<Record<string, number>> {
+    const r = await this.c.from('qa_settings').select('key, value');
+    if (r.error) throw new Error(`getSettings: ${r.error.message}`);
+    const out: Record<string, number> = {};
+    for (const row of (r.data ?? []) as Array<{ key: string; value: number }>) out[row.key] = Number(row.value);
+    return out;
+  }
+
   // ---- qa_runs -------------------------------------------------------------
 
   async getRun(id: number): Promise<QaRun | null> {

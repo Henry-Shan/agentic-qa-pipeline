@@ -41,8 +41,20 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 - `WORKTREE_BASE=/Users/YOU/qa-pipeline-worktrees`
 - `CLAUDE_BIN=/opt/homebrew/bin/claude`
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
+  — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
 - `PREVIEW_MODE=local|tunnel` · `PREVIEW_DOMAIN=qa-preview.example.com` · `CF_TUNNEL_NAME=qa-pipeline`
 - `SITE_URL=https://qa.example.com`
+
+## Worker settings (`qa_settings`, migration 0008)
+
+Key/value rows editable from the site (gear menu in the top bar; tester RLS, any tester may
+change them). The worker polls the table every 10s and applies valid rows **over** its env
+defaults; a missing table/row or out-of-range value (not an integer 0–50) falls back to env.
+
+- `max_runs` — concurrent claude runs (claim-loop gate). `0` pauses claiming of new reports.
+- `max_previews` — live preview servers kept up (oldest evicted above the cap).
+
+Columns: `key text pk · value integer (0–50) · updated_at · updated_by text` (editor's email).
 
 ## Status model (exact strings, used by all three)
 

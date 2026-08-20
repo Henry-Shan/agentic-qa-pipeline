@@ -4,6 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { execa } from 'execa';
 import type { QaRun } from './db';
+import { maxPreviews } from './settings';
 import type { Ctx, PreviewHandle } from './state';
 import { log, sleep } from './util';
 
@@ -134,10 +135,10 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
 }
 
 async function enforcePreviewCap(ctx: Ctx): Promise<void> {
-  while (ctx.state.previews.size > ctx.cfg.maxPreviews) {
+  while (ctx.state.previews.size > maxPreviews(ctx)) {
     const oldest = [...ctx.state.previews.values()].sort((a, b) => a.startedAt - b.startedAt).at(0);
     if (!oldest) return;
-    await stopPreview(ctx, oldest, `evicted — MAX_PREVIEWS=${ctx.cfg.maxPreviews}`);
+    await stopPreview(ctx, oldest, `evicted — max previews=${maxPreviews(ctx)}`);
   }
 }
 

@@ -4,6 +4,7 @@ import { acquireLock, loadConfig, type WorkerConfig } from './config';
 import { Db } from './db';
 import { stopAllPreviews } from './preview';
 import { reconcile, startOrphanWatcher } from './reconcile';
+import { maxPreviews, maxRuns, refreshSettings, startSettingsLoop } from './settings';
 import { startShim } from './shim';
 import { startShipLoop } from './ship';
 import { WorkerState, type Ctx } from './state';
@@ -20,9 +21,11 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
   const releaseLock = acquireLock(cfg);
   try {
     await reconcile(ctx);
+    // Initial qa_settings fetch (site-editable limits); table missing → env values.
+    await refreshSettings(ctx).catch((e: Error) => log('settings', `initial fetch failed — using env limits: ${e.message}`));
     const shim = await startShim(ctx);
-    const timers = [startClaimLoop(ctx), startSteerLoop(ctx), startShipLoop(ctx), startOrphanWatcher(ctx)];
-    log('worker', `up — shim 127.0.0.1:${cfg.shimPort} · runner ${cfg.runnerRepo} · max ${cfg.maxRuns} runs / ${cfg.maxPreviews} previews / ${cfg.runsPerDay} runs-per-day · preview ${cfg.previewMode}`);
+    const timers = [startClaimLoop(ctx), startSteerLoop(ctx), startShipLoop(ctx), startOrphanWatcher(ctx), startSettingsLoop(ctx)];
+    log('worker', `up — shim 127.0.0.1:${cfg.shimPort} · runner ${cfg.runnerRepo} · max ${maxRuns(ctx)} runs / ${maxPreviews(ctx)} previews / ${cfg.runsPerDay} runs-per-day · preview ${cfg.previewMode}`);
     return {
       ctx,
       async stop(): Promise<void> {

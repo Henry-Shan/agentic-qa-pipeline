@@ -1,6 +1,7 @@
 import { isPaused } from './config';
 import { dispatchRun, resumeRun } from './dispatch';
 import { buildEnvelope } from './envelope';
+import { maxRuns } from './settings';
 import type { Ctx } from './state';
 import { log } from './util';
 
@@ -24,8 +25,8 @@ export function startClaimLoop(ctx: Ctx): NodeJS.Timeout {
 async function tick(ctx: Ctx): Promise<void> {
   if (isPaused(ctx.cfg)) return;
   if (Date.now() < ctx.state.cooldownUntil) return;
-  if (ctx.state.activeDispatches >= ctx.cfg.maxRuns) return;
-  if ((await ctx.db.countRunningRuns()) >= ctx.cfg.maxRuns) return;
+  if (ctx.state.activeDispatches >= maxRuns(ctx)) return;
+  if ((await ctx.db.countRunningRuns()) >= maxRuns(ctx)) return;
   if ((await ctx.db.countRunsToday()) >= ctx.cfg.runsPerDay) {
     if (Date.now() - lastBudgetLog > 10 * 60_000) {
       lastBudgetLog = Date.now();

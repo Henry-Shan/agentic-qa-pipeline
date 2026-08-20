@@ -38,6 +38,8 @@ export class WorkerState {
   private readonly askPendingReports = new Set<number>();
   /** Rate-limit cooldown: claim loop stays idle until this epoch-ms. */
   cooldownUntil = 0;
+  /** Live overrides from qa_settings (site-editable); null → use env value. */
+  settings: { maxRuns: number | null; maxPreviews: number | null } = { maxRuns: null, maxPreviews: null };
   /** Spawned-and-not-yet-settled runs (part of the MAX_RUNS gate). */
   activeDispatches = 0;
 

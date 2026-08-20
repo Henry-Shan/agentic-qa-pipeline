@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { SignOutButton } from '@/components/sign-out-button';
+import { WorkerSettings } from '@/components/worker-settings';
 import { useDisplayName } from '@/lib/display-names';
 
 export function TopBar({ email }: { email: string }) {
@@ -20,6 +21,7 @@ export function TopBar({ email }: { email: string }) {
           <span className="hidden sm:inline" title={email}>
             {name}
           </span>
+          <WorkerSettings email={email} />
           <SignOutButton />
         </div>
       </div>

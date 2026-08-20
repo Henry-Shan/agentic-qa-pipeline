@@ -38,6 +38,14 @@ export type RunPhase =
 
 export type EventType = 'log' | 'phase' | 'error' | 'question' | 'system';
 
+// qa_settings — site-editable worker limits (keys: max_runs, max_previews).
+export interface QaSetting {
+  key: string;
+  value: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 export interface ClickTrailEntry {
   ts: number;
   route: string;

@@ -81,6 +81,9 @@ Unset = widget fully dormant. Annotation attributes emitted by the build:
 
 - Pause dispatch: `touch ~/.qa-pipeline/PAUSED` (remove to resume)
 - Budget: `RUNS_PER_DAY` in `worker/.env` (default 25)
+- Concurrency: `max_runs` / `max_previews` live in the `qa_settings` table — edit from the
+  site's gear menu (top bar); the worker applies changes within ~10s. `worker/.env`
+  `MAX_RUNS`/`MAX_PREVIEWS` are only fallbacks when the table is missing.
 - Worktrees live in `~/qa-pipeline-worktrees`; merged reports tear down automatically; manual:
   `~/qa-pipeline-runner/the host app/.claude/skills/ship-task/teardown-worktree.sh <name>`
 - Logs: `~/.qa-pipeline/runs/<reportId>/`, worker log `~/.qa-pipeline/worker.log`
