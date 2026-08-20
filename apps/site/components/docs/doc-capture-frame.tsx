@@ -70,7 +70,11 @@ export function DocCaptureFrame({
       };
       if (draft.kind === 'bug' || draft.kind === 'feature') patch.kind = draft.kind;
       // The widget description fills an EMPTY section body, never overwrites one.
-      if (draft.description && !currentBody.trim()) patch.body = draft.description;
+      // Its first line doubles as the section's name (TOC + task title).
+      if (draft.description && !currentBody.trim()) {
+        patch.body = draft.description;
+        patch.title = draft.description.trim().split('\n')[0]?.trim().slice(0, 80) ?? '';
+      }
       const { error: patchErr } = await getBrowserClient()
         .from('qa_doc_sections')
         .update(patch)

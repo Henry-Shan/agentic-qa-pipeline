@@ -37,6 +37,19 @@ const dotFor = (report: QaReport | null | undefined, hasContext: boolean): strin
   }
 };
 
+/** A section's display name = the first line of its description. */
+const firstLine = (body: string): string => body.trim().split('\n')[0]?.trim().slice(0, 80) ?? '';
+
+/** Human label for a captured step — mirrors the widget's trail language. */
+const stepText = (e: { kind?: string; value?: string; text?: string; route?: string }): string => {
+  if (e.kind === 'input') {
+    const typed = `typed "${(e.value ?? '').slice(0, 32)}"`;
+    return e.text ? `${typed} · ${e.text.slice(0, 24)}` : typed;
+  }
+  if (e.text) return `clicked ${e.text.slice(0, 44)}`;
+  return `went to ${e.route ?? '?'}`;
+};
+
 export function DocView({ initialDoc, initialSections, initialReports }: Props) {
   const [doc, setDoc] = useState(initialDoc);
   const [sections, setSections] = useState(initialSections);
@@ -154,7 +167,7 @@ export function DocView({ initialDoc, initialSections, initialReports }: Props) 
                       Boolean(s.route || s.replay_path),
                     )}`}
                   />
-                  <span className="truncate">{s.title || 'untitled'}</span>
+                  <span className="truncate">{s.title || firstLine(s.body) || 'untitled'}</span>
                 </a>
               </li>
             ))}
@@ -270,94 +283,130 @@ function SectionCard({
     }
   };
 
+  const hasContext = Boolean(section.route || section.component || stepCount > 0 || section.screenshots.length > 0);
+
   return (
     <section id={`section-${section.id}`} className="mt-3.5 rounded-[9px] border border-line bg-stage">
-      <div className="flex items-center gap-2 px-3 py-2">
-        <span className="flex flex-none flex-col text-[9px] leading-[0.8] text-ink-3/60">
+      <div className="flex items-start gap-2 px-3 pt-2.5">
+        <span className="flex flex-none flex-col pt-1 text-[9px] leading-[0.8] text-ink-3/60">
           <button type="button" disabled={first} onClick={() => onMove(-1)} aria-label="Move section up" className="hover:text-qa disabled:opacity-30">▲</button>
           <button type="button" disabled={last} onClick={() => onMove(1)} aria-label="Move section down" className="hover:text-qa disabled:opacity-30">▼</button>
         </span>
-        <input
-          defaultValue={section.title}
-          onBlur={(e) => {
-            const v = e.target.value;
-            if (v !== section.title) onPatch({ title: v });
-          }}
-          placeholder="Section title…"
-          aria-label="Section title"
-          className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold placeholder:font-normal placeholder:text-ink-3 focus:outline-none"
-        />
-        {report ? (
-          <StatusPill status={report.status} />
-        ) : (
-          <button
-            type="button"
-            onClick={() => onPatch({ kind: section.kind === 'bug' ? 'feature' : 'bug' })}
-            title="Toggle bug / feature"
-            className="flex-none rounded-full bg-line-soft px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink"
-          >
-            {section.kind}
-          </button>
-        )}
-        {!dispatched &&
-          (confirmDelete ? (
-            <button type="button" onClick={onRemove} className="flex-none rounded px-1.5 text-[10.5px] font-semibold text-red">
-              delete?
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(true)}
-              onBlur={() => setConfirmDelete(false)}
-              aria-label="Delete section"
-              className="flex-none rounded px-1 text-[13px] text-ink-3/60 hover:text-red"
-            >
-              ×
-            </button>
-          ))}
-      </div>
-
-      <div className="px-3 pb-2.5 pl-8">
         <textarea
           defaultValue={section.body}
           onBlur={(e) => {
-            if (e.target.value !== section.body) onPatch({ body: e.target.value });
+            const v = e.target.value;
+            // First line doubles as the section's name (TOC + task title).
+            if (v !== section.body) onPatch({ body: v, title: firstLine(v) });
           }}
           placeholder="Describe the work — this text is exactly what Claude receives."
           aria-label="Section description"
-          rows={Math.max(2, Math.min(8, section.body.split('\n').length))}
-          className="mb-2 w-full resize-y bg-transparent text-[12px] leading-relaxed text-ink-2 placeholder:text-ink-3 focus:outline-none"
+          rows={Math.max(3, Math.min(10, section.body.split('\n').length + 1))}
+          className="min-w-0 flex-1 resize-y bg-transparent text-[12.5px] leading-relaxed text-ink placeholder:text-ink-3 focus:outline-none"
         />
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          {section.route ? (
-            <span className="rounded-md border border-line bg-paper px-1.5 py-0.5 font-mono text-[10.5px] text-ink-2">
-              <span className="text-ink-3">at </span>
-              {section.route}
-            </span>
-          ) : null}
-          {section.component ? (
-            <span className="rounded-md border border-line bg-paper px-1.5 py-0.5 font-mono text-[10.5px] text-ink-2">
-              {section.component}
-            </span>
-          ) : null}
-          {section.replay_path || stepCount > 0 ? (
+        <div className="flex flex-none items-center gap-1.5">
+          {report ? (
+            <StatusPill status={report.status} />
+          ) : (
             <button
               type="button"
-              onClick={() => setShowReplay((v) => !v)}
-              disabled={!section.replay_path}
-              className="rounded-md border border-line bg-paper px-1.5 py-0.5 text-[10.5px] text-ink-2 hover:border-qa-bright disabled:cursor-default"
+              onClick={() => onPatch({ kind: section.kind === 'bug' ? 'feature' : 'bug' })}
+              title="Toggle bug / feature"
+              className="rounded-full bg-line-soft px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink"
             >
-              ⏺ {stepCount} step{stepCount === 1 ? '' : 's'}
-              {section.replay_path ? (showReplay ? ' · hide' : ' · play') : ''}
+              {section.kind}
             </button>
-          ) : null}
+          )}
+          {!dispatched &&
+            (confirmDelete ? (
+              <button type="button" onClick={onRemove} className="rounded px-1.5 text-[10.5px] font-semibold text-red">
+                delete?
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                onBlur={() => setConfirmDelete(false)}
+                aria-label="Delete section"
+                className="rounded px-1 text-[13px] text-ink-3/60 hover:text-red"
+              >
+                ×
+              </button>
+            ))}
+        </div>
+      </div>
 
+      <div className="px-3 pb-2.5 pl-8">
+        {/* Everything Claude receives, verbatim — location and steps appear
+            here once context is attached; nothing hidden, nothing extra. */}
+        <div className="mb-2 rounded-md border border-line-soft bg-paper px-2.5 py-2">
+          <div className="mb-1 text-[9.5px] font-bold uppercase tracking-[0.07em] text-ink-3">
+            What Claude receives
+          </div>
+          {hasContext ? (
+            <div className="flex flex-col gap-1 text-[11px] text-ink-2">
+              {section.route ? (
+                <div>
+                  <span className="text-ink-3">location · </span>
+                  <span className="font-mono text-[10.5px]">{section.route}</span>
+                  {section.component ? <span className="font-mono text-[10.5px]"> · {section.component}</span> : null}
+                  {section.source_file ? <span className="font-mono text-[10.5px] text-ink-3"> · {section.source_file}</span> : null}
+                </div>
+              ) : null}
+              {section.selector || section.element_text ? (
+                <div>
+                  <span className="text-ink-3">element · </span>
+                  {section.element_text ? <span>“{section.element_text.slice(0, 40)}”</span> : null}
+                  {section.selector ? (
+                    <span className="font-mono text-[10px] text-ink-3"> {section.selector.slice(0, 60)}</span>
+                  ) : null}
+                </div>
+              ) : null}
+              {stepCount > 0 ? (
+                <div>
+                  <span className="text-ink-3">recorded steps · </span>
+                  <ol className="mt-0.5 list-none pl-3">
+                    {(section.click_trail ?? []).slice(0, 8).map((e, i) => (
+                      <li key={i} className="truncate">
+                        <span className="font-mono text-[10px] text-ink-3">{i + 1}.</span> {stepText(e)}
+                      </li>
+                    ))}
+                    {stepCount > 8 ? <li className="text-ink-3">… +{stepCount - 8} more</li> : null}
+                  </ol>
+                </div>
+              ) : null}
+              <div className="flex items-center gap-2 text-ink-3">
+                {section.screenshots.length > 0 ? (
+                  <span>{section.screenshots.length} screenshot{section.screenshots.length === 1 ? '' : 's'} (read as images)</span>
+                ) : null}
+                {section.replay_path ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowReplay((v) => !v)}
+                    className="rounded-md border border-line bg-paper px-1.5 py-0.5 text-[10.5px] text-ink-2 hover:border-qa-bright"
+                  >
+                    ⏺ recording · {showReplay ? 'hide' : 'play'}
+                  </button>
+                ) : null}
+              </div>
+              <div className="text-[10px] text-ink-3">
+                + your the host app role, added automatically at dispatch · sent verbatim with the description above
+              </div>
+            </div>
+          ) : (
+            <p className="m-0 text-[11px] text-ink-3">
+              Only the description above so far — the location in the website, the element, your recorded
+              steps and screenshots appear here after <b className="text-ink-2">⌖ Attach context</b>.
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
           <Link
             href={`/doc-capture/${section.id}`}
-            className="rounded-md border border-line bg-paper px-2 py-0.5 text-[10.5px] font-semibold text-ink-2 hover:border-qa-bright hover:text-qa"
+            className="rounded-md border border-line bg-paper px-2.5 py-1 text-[11px] font-semibold text-ink-2 hover:border-qa-bright hover:text-qa"
           >
-            ⌖ {section.route ? 'Re-capture context' : 'Attach context from the app'}
+            ⌖ {hasContext ? 'Re-capture context' : 'Attach context from the app'}
           </Link>
 
           {report ? (
@@ -371,7 +420,7 @@ function SectionCard({
             <button
               type="button"
               onClick={() => void dispatch()}
-              disabled={dispatching || !(section.title.trim() || section.body.trim())}
+              disabled={dispatching || !section.body.trim()}
               className="ml-auto rounded-md bg-qa px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-qa-bright disabled:opacity-40"
             >
               {dispatching ? 'Dispatching…' : 'Send to Claude ▸'}
