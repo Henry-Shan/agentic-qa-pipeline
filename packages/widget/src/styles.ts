@@ -86,6 +86,19 @@ button { font-family: inherit; }
   background: var(--qa-soft); color: var(--qa); border-radius: 999px; padding: 1px 7px;
   font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
 }
+.qa-record {
+  display: block; width: 100%; margin-top: 8px; padding: 8px 12px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--qa-soft); color: var(--qa); font: inherit; font-size: 12.5px; font-weight: 600;
+}
+.qa-record:hover { border-color: var(--qa-bright); }
+.qa-record:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 1px; }
+.qa-pill.rec { border-color: #ef4444; }
+.qa-pill.rec .pill-count { background: #fee2e2; color: #b91c1c; }
+.pill-tail { font-size: 12px; font-weight: 700; }
+.qa-pill.rec .pill-tail { color: #b91c1c; }
+@keyframes qa-rec-blink { 50% { opacity: .35; } }
+.qa-pill.rec > span:first-child { color: #ef4444; animation: qa-rec-blink 1.2s ease-in-out infinite; }
 .cap-label {
   font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--ink-3); margin: 14px 0 6px;

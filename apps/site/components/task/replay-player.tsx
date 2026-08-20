@@ -9,24 +9,21 @@
 // the preview embed; the recorded viewport is letterboxed and scaled to fit the
 // stage.
 //
-// A KEYFRAME SLIDESHOW, not a video (contracts § Player UX). The player only
-// ever shows the frames AT the steps and never plays the footage between them.
-// There is NO synthetic cursor overlay — the numbered step list is the
-// narration. Each keyframe is the SETTLED frame, not the instant of the event:
-// the seek is `settledOffset()` — `mark.offset + 700ms`, clamped to just before
-// the next mark and to the recording's length — so the frame shows the step's
-// EFFECT (the typed value in the field, the panel that opened, the validation
-// that appeared). When the recording keeps running past the last step, a
-// synthetic trailing "result" mark closes the slideshow on the outcome (an
-// error banner, a success toast); it rides the rail like any other mark but has
-// no row in the numbered list.
+// CONTINUOUS PLAYBACK (contracts § Player UX): the recording plays as real
+// footage — the actual site DOM with the cursor moving, clicks landing and
+// typing appearing — autoplaying from the top on load. Controls: ▶/⏸, a scrub
+// bar, 1×/2× speed and ⟲. The step marks ride a tick rail above the controls
+// and the numbered trail list beneath stays synced with the footage; clicking
+// either jumps the playback there. While PAUSED a step jump lands on the
+// SETTLED frame (`settledOffset()` — `mark.offset + 700ms`, clamped clear of
+// the next mark) so the static frame shows the step's EFFECT; while PLAYING it
+// seeks to the step's instant and the effect unfolds as footage. When the
+// recording outlives the last step, a synthetic trailing "result" mark keeps
+// the outcome reachable from the rail.
 //
-// It AUTOPLAYS on load: step 1, then one step every ~1.8s to the last, then it
-// stops (⟲ replays it). Any manual navigation pauses autoplay; ▶/⏸ toggles it.
 // Navigation: ← / → / Home / End while the card has focus, clicking the LEFT
 // third of the stage steps back and the RIGHT third forward (the middle third
-// is inert), the tick rail jumps to any step, and so does a row of the numbered
-// trail list beneath (list and player stay two-way synced).
+// is inert).
 //
 // Marks come from the recording's own `qa-step` custom events; recordings made
 // before markers existed fall back to marks derived from the report's
@@ -58,8 +55,6 @@ const TICK_MS = 100;
 const REACHED_EPS_MS = 1;
 // rrweb custom-event type.
 const EVENT_TYPE_CUSTOM = 5;
-// Dwell per step while autoplaying.
-const AUTOPLAY_MS = 1800;
 // How long after a step the DOM has had to react — the frame we actually show.
 const SETTLE_MS = 700;
 // Stay this far clear of the next step so its own frame never leaks in.
@@ -244,9 +239,8 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
   stepsRef.current = steps;
 
   const [phase, setPhase] = useState<Phase>('loading');
-  const [playing, setPlaying] = useState(false); // plain-timeline playback only
-  const [autoplay, setAutoplay] = useState(false); // the slideshow
-  const [speed, setSpeed] = useState<1 | 2>(1); // plain-timeline playback only
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<1 | 2>(1);
   const [total, setTotal] = useState(0);
   const [current, setCurrent] = useState(0);
   const [marks, setMarks] = useState<StepMark[]>([]);
@@ -328,13 +322,12 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
         marksRef.current = next;
         setMarks(next);
         setStepIndex(0);
-        const first = next[0];
-        if (first) {
-          const at = settledOffset(next, 0, totalTime);
-          replayer.pause(at); // opens on step 1's settled frame…
-          setCurrent(at);
-          setAutoplay(next.length > 1); // …and plays itself through to the end
-        }
+        // Autoplay as continuous footage from the very top — the actual site
+        // with the tester's cursor, clicks and typing unfolding in real time.
+        setCurrent(0);
+        replayer.play(0);
+        playingRef.current = true;
+        setPlaying(true);
 
         observer = new ResizeObserver(fit);
         if (stageRef.current) observer.observe(stageRef.current);
@@ -386,52 +379,32 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
   }, [stepIndex, marks]);
 
   /**
-   * Go to a step: pause on its SETTLED frame (the step's effect, not the
-   * instant of the event). Manual moves stop the slideshow.
+   * Jump to a step. While PLAYING: seek to the step's instant and keep playing
+   * — the effect unfolds as footage. While PAUSED: land on its SETTLED frame
+   * (the step's effect, not the instant of the event).
    */
-  const goToStep = (index: number, manual = true) => {
+  const goToStep = (index: number) => {
     const r = replayerRef.current;
     const list = marksRef.current;
     if (!r || list.length === 0) return;
     const clamped = Math.max(0, Math.min(index, list.length - 1));
     const mark = list[clamped];
     if (!mark) return;
-    if (manual) setAutoplay(false);
-    playingRef.current = false;
-    setPlaying(false);
     setStepIndex(clamped);
-    const at = settledOffset(list, clamped, r.getMetaData().totalTime);
-    setCurrent(at);
     try {
-      r.pause(at);
+      if (playingRef.current) {
+        setCurrent(mark.offset);
+        r.play(mark.offset);
+      } else {
+        const at = settledOffset(list, clamped, r.getMetaData().totalTime);
+        setCurrent(at);
+        r.pause(at);
+      }
     } catch {
       // a malformed event mid-recording — keep the last good frame
     }
   };
 
-  // The slideshow: one step every ~1.8s, stopping ON the last step. Never loops.
-  useEffect(() => {
-    if (!autoplay || phase !== 'ready' || marks.length === 0) return;
-    if (stepIndex >= marks.length - 1) {
-      setAutoplay(false);
-      return;
-    }
-    const id = window.setTimeout(() => goToStep(stepIndex + 1, false), AUTOPLAY_MS);
-    return () => window.clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- goToStep reads live refs
-  }, [autoplay, phase, stepIndex, marks.length]);
-
-  const toggleAutoplay = () => {
-    if (autoplay) {
-      setAutoplay(false);
-      return;
-    }
-    if (marks.length < 2) return;
-    if (stepIndex >= marks.length - 1) goToStep(0, false); // finished → from the top
-    setAutoplay(true);
-  };
-
-  // Plain-timeline fallback only (no marks): play/pause, scrub, speed.
   const togglePlay = () => {
     const r = replayerRef.current;
     if (!r) return;
@@ -454,6 +427,7 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
     const r = replayerRef.current;
     if (!r) return;
     setCurrent(t);
+    if (marksRef.current.length > 0) setStepIndex(stepAt(marksRef.current, t));
     if (playingRef.current) r.play(t);
     else r.pause(t);
   };
@@ -468,13 +442,9 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
   };
 
   const restart = () => {
-    if (stepped) {
-      goToStep(0, false); // back to step 1 and play it through again
-      setAutoplay(marks.length > 1);
-      return;
-    }
     const r = replayerRef.current;
     if (!r) return;
+    setStepIndex(0);
     setCurrent(0);
     r.play(0);
     playingRef.current = true;
@@ -627,22 +597,49 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
             <span className="sr-only" aria-live="polite">
               {currentMark ? `Step ${stepIndex + 1} of ${marks.length} — ${currentMark.label}` : ''}
             </span>
+          </div>
+
+          {/* Transport — the footage's own controls: play/pause, scrub, speed. */}
+          <div className="flex items-center gap-2 border-t border-line bg-surface px-2.5 py-1.5">
             <button
               type="button"
-              onClick={toggleAutoplay}
-              disabled={phase !== 'ready' || marks.length < 2}
-              title={autoplay ? 'Pause the slideshow' : 'Play the steps'}
-              aria-label={autoplay ? 'Pause the slideshow' : 'Play the steps'}
+              onClick={togglePlay}
+              disabled={phase !== 'ready'}
+              title={playing ? 'Pause' : 'Play'}
+              aria-label={playing ? 'Pause replay' : 'Play replay'}
               className={CONTROL_BTN}
             >
-              {autoplay ? '⏸' : '▶'}
+              {playing ? '⏸' : '▶'}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(total, 1)}
+              step={100}
+              value={Math.min(current, Math.max(total, 1))}
+              onChange={(event) => seek(Number(event.currentTarget.value))}
+              disabled={phase !== 'ready'}
+              aria-label="Replay progress"
+              className="min-w-0 flex-1 accent-qa"
+            />
+            <span className="flex-none font-mono text-[10.5px] tabular-nums text-ink-3">
+              {formatClock(current)} / {formatClock(total)}
+            </span>
+            <button
+              type="button"
+              onClick={toggleSpeed}
+              disabled={phase !== 'ready'}
+              aria-label={`Playback speed ${speed}x — click to switch`}
+              className={CONTROL_BTN}
+            >
+              {speed}×
             </button>
             <button
               type="button"
               onClick={restart}
               disabled={phase !== 'ready'}
-              title="Replay from step 1"
-              aria-label="Replay from step 1"
+              title="Replay from the top"
+              aria-label="Replay from the top"
               className={CONTROL_BTN}
             >
               ⟲

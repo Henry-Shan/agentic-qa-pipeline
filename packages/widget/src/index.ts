@@ -1,7 +1,6 @@
 // Entry point: read host-page config, arm buffers, mount UI, expose debug handle.
 
 import { startBuffers } from './buffers';
-import { startRecorder } from './record';
 import { createUI } from './ui';
 import type { WidgetConfig } from './types';
 
@@ -37,11 +36,11 @@ function readConfig(): WidgetConfig | null {
   }
 
   const buffers = startBuffers();
-  // Session replay records from the same moment, under the same activation
-  // gates, as the other buffers (contract §Session replay).
-  const recorder = startRecorder();
+  // Recording is EXPLICIT (contract §Session replay): a recorder exists only
+  // between the drawer's ⏺ Start and Finish — createUI owns its lifecycle.
+  // There is no ambient session recorder.
   const mount = (): void => {
-    const ui = createUI(cfg, buffers, recorder);
+    const ui = createUI(cfg, buffers);
     window.__qaPipeline = { open: ui.open, version: VERSION };
   };
   if (document.body) mount();

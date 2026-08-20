@@ -110,9 +110,21 @@ export function maskInputValue(text: string, element: HTMLElement): string {
   return isSensitive(element) ? '*'.repeat(text.length) : text;
 }
 
+export interface RecorderOptions {
+  /**
+   * Explicit Start→Finish capture (contract §Session replay): no checkout
+   * rotation at all — ONE continuous window from start to dispose, so a long
+   * recording never loses its beginning. The default (rolling) mode keeps the
+   * last two 60s checkout windows and is used by the after-the-fix replay
+   * recorder, whose length is bounded by the replay itself.
+   */
+  manual?: boolean;
+}
+
 export function startRecorder(
   recordFn: RecordFn = record as RecordFn,
   addCustom: AddCustomEventFn = addCustomEvent as AddCustomEventFn,
+  opts: RecorderOptions = {},
 ): Recorder {
   // Two checkout windows: `previous` + `current`. events() concatenates them.
   let previous: eventWithTime[] = [];
@@ -140,7 +152,7 @@ export function startRecorder(
         }
         current.push(event);
       },
-      checkoutEveryNms: CHECKOUT_EVERY_MS,
+      ...(opts.manual ? {} : { checkoutEveryNms: CHECKOUT_EVERY_MS }),
       blockSelector: '[data-qa-pipeline]', // never records the widget's own UI
       // rrweb 2.1.1 (record(): `maskAllInputs === true ? {…everything…} :
       // maskInputOptions ?? {password:true}`) — maskAllInputs:true would REPLACE

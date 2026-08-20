@@ -1,7 +1,7 @@
 // All widget UI, inside one ShadowRoot: fab → menu → picker → drawer → toast.
 
-import type { Buffers, StepSink } from './buffers';
-import type { ConsoleEntry, IngestBody, IngestUploadTargets, NetworkEntry, WidgetConfig } from './types';
+import type { Buffers } from './buffers';
+import type { ClickTrailEntry, ConsoleEntry, IngestBody, IngestUploadTargets, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
 import {
   clampStep,
@@ -30,6 +30,20 @@ export interface WidgetUI {
   open(): void;
 }
 
+/**
+ * A finished ⏺ Start→Finish capture (contract §Session replay): the window the
+ * report ships — its click/input steps are the trail entries inside [t0, t1],
+ * and `replayJson` is the stringified rrweb recording of exactly that window.
+ */
+interface RecordedSteps {
+  t0: number;
+  t1: number;
+  /** Route at ⏺ Start — where a replay of these steps must begin. */
+  route: string;
+  /** Undefined when the recording was empty or over the 8M-char cap. */
+  replayJson?: string;
+}
+
 interface Draft {
   kind: 'bug' | 'feature';
   meta: ElementMeta;
@@ -38,6 +52,8 @@ interface Draft {
   shot: string | null;
   /** "＋ Add another screenshot" captures (≤3) — submit as screenshotsDataUrls. */
   extraShots: string[];
+  /** Explicit capture — null/absent until the tester records. */
+  recording?: RecordedSteps | null;
 }
 
 function h<K extends keyof HTMLElementTagNameMap>(
@@ -55,7 +71,7 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder | null = null): WidgetUI {
+export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   const host = document.createElement('div');
   host.setAttribute('data-qa-pipeline', '');
   host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483000;';
@@ -81,17 +97,21 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
   /** Per-open teardown: trail subscription, list timers, pill, key handler. */
   const drawerCleanup: Array<() => void> = [];
 
-  // ---- ambient step markers (contract §Session replay "Step markers") ------
-  // Every trail step buffers pushes also lands in the recording as
-  // `addCustomEvent('qa-step', {i, kind, label})`. While a replay executes the
-  // sink stands down: the dedicated recorder is the one rrweb is emitting into,
-  // and the replay engine marks those steps itself with the index it is running.
-  if (recorder) {
-    const ambientSink: StepSink = (mark) => {
-      if (!replay) recorder.mark(mark);
-    };
-    buffers.setStepSink(ambientSink);
-  }
+  // ---- explicit recording (contract §Session replay) -----------------------
+  // There is NO ambient recorder: a Recorder exists only between the drawer's
+  // ⏺ Start and Finish. While it lives, the step sink forwards every trail
+  // step into the recording as `addCustomEvent('qa-step', {i, kind, label})`,
+  // re-sequenced so mark i === the step's 1-based index WITHIN the window
+  // (= the report's clickTrail index). During a replay execution the sink
+  // stands down: the replay engine marks its own dedicated recorder.
+  let activeRec: { recorder: Recorder; t0: number; route: string; seq: number } | null = null;
+
+  /** The trail entries a draft's finished recording window covers. */
+  const recordedTrail = (draft: Draft): ClickTrailEntry[] => {
+    const rec = draft.recording;
+    if (!rec) return [];
+    return buffers.clickTrail().filter((e) => e.ts >= rec.t0 && e.ts <= rec.t1);
+  };
 
   // ---- fab -----------------------------------------------------------------
   const fab = h('button', 'qa-fab', '🐛');
@@ -205,7 +225,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     head.appendChild(h('div', 'di', draft.kind === 'bug' ? '🐛' : '✦'));
     const headText = h('div');
     headText.appendChild(h('h3', undefined, title));
-    headText.appendChild(h('div', 'sub', 'Everything below was captured automatically'));
+    headText.appendChild(h('div', 'sub', 'Describe it, record the steps, send'));
     head.appendChild(headText);
     // Collapse (chevron) → compact pill at the right edge, so the drawer never
     // covers the UI being reproduced. The panel stays in the DOM: description
@@ -223,41 +243,64 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     head.appendChild(close);
     panel.appendChild(head);
 
-    // Primary context section (contract §Widget drawer replay-first): the
-    // session-replay mini player on top (initialized once the panel is in the
-    // DOM — the stage needs layout), then the FULL numbered trail — what
-    // Claude will replay — LIVE: steps the tester performs while the drawer is
-    // open append as they happen (buffers.onTrail), the header count tracks
-    // them, and the mini player can be refreshed with ↻.
+    // Primary context section (contract §Widget drawer): the recorded steps —
+    // clicks, typing and screen are captured ONLY between ⏺ Start and Finish,
+    // and the numbered list shows exactly that window (what Claude replays).
     const capRow = h('div', 'cap-label cap-row');
-    capRow.appendChild(h('span', undefined, 'Replay · what Claude will see'));
+    capRow.appendChild(h('span', undefined, 'Recorded steps · what Claude will replay'));
     const countEl = h('span', 'cap-count');
     capRow.appendChild(countEl);
     panel.appendChild(capRow);
-    // Just the numbered steps — the tester JUST performed them, so the drawer
-    // does not replay video. The recording still ships with the report; the
-    // task page is where it is worth watching (Before / After the fix).
-    const list: TrailList = createTrailList(buffers.clickTrail(), {
+
+    /** Steps inside the current window — the live one, else the finished one. */
+    const windowTrail = (): ClickTrailEntry[] => {
+      if (activeRec) {
+        const t0 = activeRec.t0;
+        return buffers.clickTrail().filter((e) => e.ts >= t0);
+      }
+      return recordedTrail(draft);
+    };
+
+    let list: TrailList = createTrailList(windowTrail(), {
       onPick: (index) => list.setActive(index),
     });
     drawerCleanup.push(() => list.dispose());
     panel.appendChild(list.el);
-    panel.appendChild(h('div', 'live-hint', 'Keep using the app — new steps keep recording.'));
+
+    const recBtn = h('button', 'qa-record', draft.recording ? '↻ Re-record the steps' : '⏺ Record the steps');
+    recBtn.type = 'button';
+    panel.appendChild(recBtn);
+    panel.appendChild(
+      h('div', 'live-hint', 'Recording captures your clicks, typing and screen until you press Finish.'),
+    );
 
     const pillCount = h('span', 'pill-count');
     function paintCount(): void {
       const n = list.count();
-      countEl.textContent = `${n} step${n === 1 ? '' : 's'}`;
+      countEl.textContent =
+        draft.recording || activeRec ? `${n} step${n === 1 ? '' : 's'}` : 'not recorded yet';
       pillCount.textContent = String(n);
     }
     paintCount();
 
+    /** Swap in a fresh list for the current window (sync() can only append). */
+    const resetList = (): void => {
+      const next: TrailList = createTrailList(windowTrail(), {
+        onPick: (index) => next.setActive(index),
+      });
+      list.el.replaceWith(next.el);
+      list.dispose();
+      list = next;
+      paintCount();
+    };
+
     // ONE subscription for the whole drawer, debounced inside buffers (~120ms):
-    // it appends only the new rows (never re-renders the list) and repaints the
-    // count, so steps taken while the drawer is open show up live.
+    // while a recording is live it appends the new rows and repaints the count,
+    // so steps land in the list (and the Finish pill) as they happen.
     drawerCleanup.push(
       buffers.onTrail(() => {
-        const result = list.sync(buffers.clickTrail());
+        if (!activeRec) return;
+        const result = list.sync(windowTrail());
         if (result.added > 0 || result.updated) paintCount();
       }),
     );
@@ -272,9 +315,17 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     pill.type = 'button';
     pill.title = 'Back to your report';
     pill.setAttribute('aria-label', 'Expand report panel');
-    pill.appendChild(h('span', undefined, '🐛'));
+    const pillIcon = h('span', undefined, '🐛');
+    const pillTail = h('span', 'pill-tail', '');
+    pill.appendChild(pillIcon);
     pill.appendChild(pillCount);
-    pill.addEventListener('click', () => setCollapsed(false));
+    pill.appendChild(pillTail);
+    // While recording, the pill IS the Finish button: it ends the capture and
+    // returns to the report in one click.
+    pill.addEventListener('click', () => {
+      finishRecording();
+      setCollapsed(false);
+    });
     drawerCleanup.push(() => pill.remove());
 
     function setCollapsed(next: boolean): void {
@@ -291,6 +342,67 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
       }
     }
     collapseBtn.setAttribute('aria-expanded', 'true');
+
+    // ---- ⏺ Start / Finish --------------------------------------------------
+    // Start: fresh single-window recorder (no checkout rotation — nothing is
+    // ever dropped), step sink re-sequencing marks to the window, drawer
+    // collapsed to the red Finish pill so the tester reproduces uncovered.
+    // Finish: freeze the window onto the draft and return to the report.
+    function startRecording(): void {
+      if (activeRec) return;
+      draft.recording = null; // re-record discards the previous take
+      const rec = {
+        recorder: startRecorder(undefined, undefined, { manual: true }),
+        t0: Date.now(),
+        route: location.pathname,
+        seq: 0,
+      };
+      activeRec = rec;
+      buffers.setStepSink((mark) => {
+        if (activeRec !== rec || replay) return;
+        rec.recorder.mark({ ...mark, i: ++rec.seq });
+      });
+      resetList();
+      recBtn.textContent = '⏺ Recording…';
+      pill.classList.add('rec');
+      pillIcon.textContent = '⏺';
+      pillTail.textContent = 'Finish';
+      pill.title = 'Finish recording and return to the report';
+      pill.setAttribute('aria-label', 'Finish recording');
+      setCollapsed(true);
+    }
+
+    function finishRecording(): void {
+      const rec = activeRec;
+      if (!rec) return;
+      activeRec = null;
+      buffers.setStepSink(null);
+      const replayJson = replayEventsField(rec.recorder);
+      rec.recorder.dispose();
+      draft.recording = {
+        t0: rec.t0,
+        t1: Date.now(),
+        route: rec.route,
+        ...(replayJson !== undefined ? { replayJson } : {}),
+      };
+      resetList();
+      recBtn.textContent = '↻ Re-record the steps';
+      pill.classList.remove('rec');
+      pillIcon.textContent = '🐛';
+      pillTail.textContent = '';
+      pill.title = 'Back to your report';
+      pill.setAttribute('aria-label', 'Expand report panel');
+    }
+
+    recBtn.addEventListener('click', () => startRecording());
+    // Closing the drawer mid-recording discards the live take with it.
+    drawerCleanup.push(() => {
+      if (activeRec) {
+        buffers.setStepSink(null);
+        activeRec.recorder.dispose();
+        activeRec = null;
+      }
+    });
 
     // Escape NEVER discards the report (contract: avoid data loss) — × stays
     // the one explicit discard. It collapses instead, which loses nothing.
@@ -588,9 +700,13 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     const body: IngestBody = {
       kind: draft.kind,
       description,
-      route: location.pathname,
+      // A recorded report replays from where the recording BEGAN, not from
+      // wherever the tester parked before hitting Send.
+      route: draft.recording?.route ?? location.pathname,
       pageTitle: document.title,
-      clickTrail: buffers.clickTrail(),
+      // ONLY the recorded window ships (contract §IngestBody clickTrail) —
+      // no recording, no trail.
+      clickTrail: recordedTrail(draft),
       consoleLog: buffers.consoleLog(),
       networkLog: buffers.networkLog(),
       viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
@@ -608,9 +724,9 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     const shots = [draft.shot, ...draft.extraShots]
       .filter((s): s is string => Boolean(s))
       .slice(0, 1 + MAX_EXTRA_SHOTS);
-    // Session replay (contract §Session replay): stringified rrweb events,
-    // omitted when empty or over the 8M-char cap (measured after stringify).
-    const replayJson = replayEventsField(recorder);
+    // Session replay (contract §Session replay): the ⏺ Start→Finish window's
+    // stringified rrweb events, frozen at Finish — absent without a recording.
+    const replayJson = draft.recording?.replayJson;
     // Blobs go to signed storage URLs AFTER filing (contract §Widget→Site) —
     // inlined base64 blew Vercel's ~4.5 MB request cap (413) on heavy reports.
     body.uploads = { shots: shots.length, replay: replayJson !== undefined };

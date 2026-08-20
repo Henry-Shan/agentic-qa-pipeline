@@ -257,9 +257,15 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
 
 ### Session replay (rrweb)
 
-- The widget records the session with rrweb from page load, alongside the other buffers:
-  `record({...})` with checkoutEveryNms = 60_000 keeping the last TWO checkout windows (≈ the
-  final 1-2 minutes, memory-bounded), `blockSelector: '[data-qa-pipeline]'` (never records its
+- **Recording is EXPLICIT — ⏺ Start / Finish, no ambient capture.** The drawer's
+  "⏺ Record the steps" button starts a FRESH single-window rrweb recorder (`manual` mode: no
+  checkout rotation, so a long take never loses its beginning) and collapses the drawer to a red
+  Finish pill; the pill (or closing the drawer, which discards the take) ends it. The report
+  ships ONLY that window: `clickTrail` = the trail entries inside [t0, t1] (empty array when
+  nothing was recorded), `replayEvents` = that window's recording, `route` = the route at
+  ⏺ Start. Console/network buffers stay rolling from page load as before. The after-the-fix
+  replay recorder keeps the rolling two-window mode (its length is bounded by the replay).
+  `blockSelector: '[data-qa-pipeline]'` (never records its
   own UI). **Input masking mirrors the click-trail rules exactly — no stricter, no looser**:
   typed values ARE recorded (the replay must show what the tester actually typed), EXCEPT
   `type=password` and fields whose autocomplete matches `password|cc-|card|otp`, which are
@@ -269,34 +275,25 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   client-capped at 8_000_000 chars (drop the field entirely when over). Server: validate size,
   upload VERBATIM to bucket `qa-screenshots` as `report-<id>/replay.json`, store the path in
   `qa_reports.replay_path` (db/0006). Events are display data — never parsed server-side.
-- **Step markers (replays are stepped, not scrubbed).** Every recorded trail step also emits an
-  rrweb custom event `addCustomEvent('qa-step', {i, kind, label})` — from the ambient recorder as
-  the tester acts, and from the dedicated recorder while a replay executes — so each recording
-  carries its own step index inside the event stream. Players read them back
+- **Step markers.** Every trail step captured during a ⏺ Start→Finish window also emits an
+  rrweb custom event `addCustomEvent('qa-step', {i, kind, label})` — `i` re-sequenced to the
+  step's 1-based index WITHIN the window (= its `clickTrail` index) — and the dedicated recorder
+  marks steps while a replay executes. Players read them back
   (`{type:5, data:{tag:'qa-step', payload}}`) as marks at `ev.timestamp - events[0].timestamp`.
-- **Player UX (task page only — the drawer has no player): a KEYFRAME slideshow, not a video.**
-  The player shows only the frames at the steps — never continuous playback of the footage
-  between them. **There is NO synthetic cursor overlay** (an unresolvable target left a stray
-  dot sliding across the stage; the step list is the narration instead).
-  - **Each keyframe is the SETTLED frame, not the instant of the event**: seek to
-    `mark.offset + 700ms`, clamped to `nextMark.offset - 50ms` and to the recording length, so
-    the frame shows the step's EFFECT — the typed value in the field, the panel that opened, the
-    validation that appeared.
-  - **Final outcome frame**: when the recording continues ≥500ms past the last step, append a
-    synthetic trailing mark near the end labelled "result" so the outcome of the last action
-    (an error banner, a success toast) is always the closing frame. It behaves like any other
-    mark — rail tick, autoplay stop, keys, side-click — and renders as the closing row of the
-    numbered list.
-  - **Autoplay by default**: on load it starts at step 1 and advances every ~1.8s (glide +
-    dwell) to the end, then stops on the last step (a ⟲ restart replays it). Any manual
-    navigation pauses autoplay; ▶/⏸ toggles it.
-  - **Navigation**: ← / → arrow keys (ignored while a text field has focus); clicking the LEFT
-    third of the stage steps back, the RIGHT third steps forward (a subtle hover affordance on
-    each side, and the middle third stays inert so it can't be clicked through by accident); the
-    tick rail below the stage jumps to any step; clicking a row of the numbered trail list does
-    the same (list and player stay two-way synced).
-  - **No Prev/Next buttons and no `N / M · label` caption row** — the tick rail is the position
-    indicator and the highlighted row in the trail list is the caption.
+- **Player UX (task page only — the drawer has no player): CONTINUOUS playback.** The recording
+  plays as real footage — the actual site DOM with the cursor moving, clicks landing and typing
+  appearing — autoplaying from the top on load. Transport: ▶/⏸, scrub bar with clock, 1×/2×
+  speed, ⟲. The step marks ride a tick rail above the transport and the numbered trail list
+  beneath stays synced with the footage (via the marks); clicking a tick or row jumps playback
+  there.
+  - **Step jumps while PAUSED land on the SETTLED frame**: `mark.offset + 700ms`, clamped to
+    `nextMark.offset - 50ms` and the recording length — the static frame shows the step's
+    EFFECT. While PLAYING a jump seeks to the step's instant and the effect unfolds as footage.
+  - **Final outcome mark**: when the recording continues ≥500ms past the last step, a synthetic
+    trailing mark labelled "result" keeps the outcome reachable from the rail/keys.
+  - **Navigation**: ← / → / Home / End while the card has focus (ignored while a text field has
+    focus); clicking the LEFT third of the stage steps back, the RIGHT third forward, the middle
+    third stays inert.
   Recordings without `qa-step` marks (pre-existing ones) fall back to marks derived from the
   report's `click_trail` timestamps, and failing that to a plain timeline.
 - Site: `GET /api/replay/[id]` — auth+allowlist gated like /api/shot, 302 to a 10-min signed URL.

@@ -1,7 +1,9 @@
-// Drawer behavior end-to-end in jsdom (the user-reported bug: the trail froze
-// the moment the drawer opened). The recorder is passed as null so the mini
-// player takes its "recording just started" path and no rrweb Replayer is
-// constructed — everything else is the real widget.
+// Drawer behavior end-to-end in jsdom. Recording is EXPLICIT (contract
+// §Session replay): clicks/typing/screen are captured only between the
+// drawer's ⏺ Start and Finish — these tests drive that window and assert the
+// trail list, the Finish pill and the sink lifecycle. rrweb's record() may or
+// may not arm under jsdom; the widget treats a failed arm as an empty
+// recording, so nothing here depends on rrweb emitting events.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startBuffers, type Buffers } from '../src/buffers';
@@ -31,6 +33,16 @@ const drawer = (): HTMLElement | null => shadow().querySelector('.qa-drawer');
 const steps = (): string[] =>
   Array.from(shadow().querySelectorAll('.replay-list li.replay-step .rs-lbl')).map((n) => n.textContent ?? '');
 const countLabel = (): string => shadow().querySelector('.cap-count')?.textContent ?? '';
+const recordBtn = (): HTMLButtonElement => {
+  const btn = shadow().querySelector<HTMLButtonElement>('.qa-record');
+  if (!btn) throw new Error('record button missing');
+  return btn;
+};
+const pillEl = (): HTMLButtonElement => {
+  const pill = shadow().querySelector<HTMLButtonElement>('.qa-pill');
+  if (!pill) throw new Error('pill missing');
+  return pill;
+};
 
 function clickPage(label: string): void {
   const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === label);
@@ -49,7 +61,7 @@ async function openDrawer(): Promise<void> {
 beforeEach(() => {
   document.body.innerHTML = '<button>Alpha</button><button>Beta</button><button>Gamma</button>';
   buffers = startBuffers();
-  ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers, null);
+  ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers);
 });
 
 afterEach(() => {
@@ -58,128 +70,103 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('drawer — live trail (the drawer no longer freezes the trail)', () => {
-  it('appends steps performed while the drawer is open, with a live count', async () => {
-    clickPage('Alpha');
-    await openDrawer();
-    const before = steps().length;
-    expect(countLabel()).toBe(`${before} steps`);
-
-    // The tester keeps reproducing with the drawer open.
-    clickPage('Beta');
-    clickPage('Gamma');
+describe('drawer — explicit recording (⏺ Start / Finish)', () => {
+  it('opens with no steps, "not recorded yet" and a Record button', async () => {
+    clickPage('Alpha'); // pre-recording activity never enters the report
     await settle();
-
-    expect(steps().length).toBe(before + 2);
-    expect(steps().slice(-2)).toEqual(['Beta', 'Gamma']);
-    expect(countLabel()).toBe(`${before + 2} steps`);
-  });
-
-  it('flashes the newly appended step', async () => {
     await openDrawer();
-    clickPage('Beta');
-    await settle();
-    const rows = Array.from(shadow().querySelectorAll('.replay-list li.replay-step'));
-    expect(rows[rows.length - 1]?.classList.contains('fresh')).toBe(true);
-  });
-
-  it('shows the "keep using the app" hint under the header', async () => {
-    await openDrawer();
+    expect(steps().length).toBe(0);
+    expect(countLabel()).toBe('not recorded yet');
+    expect(recordBtn().textContent).toBe('⏺ Record the steps');
     expect(shadow().querySelector('.live-hint')?.textContent).toBe(
-      'Keep using the app — new steps keep recording.',
+      'Recording captures your clicks, typing and screen until you press Finish.',
     );
   });
 
-  it('stops listening once the drawer is discarded', async () => {
+  it('captures only the steps between Start and Finish', async () => {
+    clickPage('Alpha'); // before Start — excluded
+    await settle();
     await openDrawer();
+
+    recordBtn().click(); // Start → collapses to the red Finish pill
+    expect((drawer() as HTMLElement).style.display).toBe('none');
+    expect(pillEl().classList.contains('rec')).toBe(true);
+    expect(pillEl().textContent).toContain('Finish');
+
+    clickPage('Beta');
+    clickPage('Gamma');
+    await settle();
+    expect(Number(shadow().querySelector('.pill-count')?.textContent)).toBe(2);
+
+    pillEl().click(); // Finish → back to the report
+    expect((drawer() as HTMLElement).style.display).toBe('');
+    expect(steps()).toEqual(['Beta', 'Gamma']);
+    expect(countLabel()).toBe('2 steps');
+    expect(recordBtn().textContent).toBe('↻ Re-record the steps');
+
+    clickPage('Alpha'); // after Finish — excluded
+    await settle();
+    expect(steps()).toEqual(['Beta', 'Gamma']);
+  });
+
+  it('re-record discards the previous take', async () => {
+    await openDrawer();
+    recordBtn().click();
     clickPage('Beta');
     await settle();
-    const rendered = steps().length;
+    pillEl().click(); // Finish take 1
+    expect(steps()).toEqual(['Beta']);
+
+    recordBtn().click(); // ↻ Re-record
+    clickPage('Gamma');
+    await settle();
+    pillEl().click(); // Finish take 2
+    expect(steps()).toEqual(['Gamma']);
+  });
+
+  it('installs the step sink at Start and clears it at Finish', async () => {
+    const spy = vi.spyOn(buffers, 'setStepSink');
+    await openDrawer();
+    recordBtn().click();
+    expect(spy).toHaveBeenLastCalledWith(expect.any(Function));
+    pillEl().click();
+    expect(spy).toHaveBeenLastCalledWith(null);
+  });
+
+  it('discards a live take when the drawer is closed', async () => {
+    const spy = vi.spyOn(buffers, 'setStepSink');
+    await openDrawer();
+    recordBtn().click();
     (shadow().querySelector('.drawer-close') as HTMLButtonElement).click();
     expect(drawer()).toBeNull();
-
-    clickPage('Gamma'); // still recorded into the buffer, nothing to render into
-    await settle();
-    expect(buffers.clickTrail().length).toBeGreaterThan(rendered);
-  });
-});
-
-// Step markers (contract §Session replay): createUI wires the ambient sink so
-// every trail step also lands in the recording as a `qa-step` custom event.
-describe('ambient step markers', () => {
-  it('marks every step the tester takes into the active recording', async () => {
-    ui.host.remove();
-    buffers.dispose();
-    buffers = startBuffers();
-    const mark = vi.fn();
-    const recorder = { events: () => [], byteEstimate: () => 2, mark, dispose: () => undefined };
-    ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers, recorder);
-
-    clickPage('Alpha');
-    clickPage('Beta');
-    await settle();
-
-    const trail = buffers.clickTrail();
-    expect(mark).toHaveBeenCalledTimes(2);
-    expect(mark).toHaveBeenNthCalledWith(1, { i: trail.length - 1, kind: 'click', label: 'Alpha' });
-    expect(mark).toHaveBeenNthCalledWith(2, { i: trail.length, kind: 'click', label: 'Beta' });
-  });
-
-  it('never marks the widget own UI (clicks inside the shadow root are not steps)', async () => {
-    ui.host.remove();
-    buffers.dispose();
-    buffers = startBuffers();
-    const mark = vi.fn();
-    ui = createUI({ endpoint: 'https://qa.example.test', token: 'x' }, buffers, {
-      events: () => [],
-      byteEstimate: () => 2,
-      mark,
-      dispose: () => undefined,
-    });
-    await openDrawer();
-    mark.mockClear();
-    (shadow().querySelector('.drawer-collapse') as HTMLButtonElement).click();
-    await settle();
-    expect(mark).not.toHaveBeenCalled();
+    expect(spy).toHaveBeenLastCalledWith(null);
   });
 });
 
 describe('drawer — steps only, no video', () => {
-  it('shows the numbered trail and mounts NO replay player', async () => {
+  it('shows the (empty) trail list and mounts NO replay player', async () => {
     await openDrawer();
-    // The tester just performed these actions — the drawer narrates them as a
-    // list. The recording still ships with the report; the task page is where
-    // it is worth watching (Before / After the fix).
     expect(shadow().querySelector('.replay-list')).not.toBeNull();
-    expect(shadow().querySelectorAll('.replay-step').length).toBeGreaterThan(0);
     expect(shadow().querySelector('.rr-player, .rr-stage, .rr-rail, .rr-foot')).toBeNull();
   });
 });
 
 describe('drawer — collapse to a pill', () => {
-  it('collapses to a pill with the live count and restores all form state', async () => {
+  it('collapses to a pill and restores all form state', async () => {
     await openDrawer();
     const desc = shadow().querySelector('.desc') as HTMLTextAreaElement;
     desc.value = 'the save button does nothing';
 
     (shadow().querySelector('.drawer-collapse') as HTMLButtonElement).click();
-    const pill = shadow().querySelector('.qa-pill') as HTMLButtonElement | null;
-    expect(pill).not.toBeNull();
+    expect(pillEl().classList.contains('rec')).toBe(false); // plain collapse, not recording
     expect((drawer() as HTMLElement).style.display).toBe('none');
 
-    // Steps keep landing while collapsed — the pill count tracks them.
-    const countBefore = Number(shadow().querySelector('.pill-count')?.textContent);
-    clickPage('Beta');
-    await settle();
-    expect(Number(shadow().querySelector('.pill-count')?.textContent)).toBe(countBefore + 1);
-
-    pill!.click();
+    pillEl().click();
     expect(shadow().querySelector('.qa-pill')).toBeNull();
     expect((drawer() as HTMLElement).style.display).toBe('');
     expect((shadow().querySelector('.desc') as HTMLTextAreaElement).value).toBe(
       'the save button does nothing',
     );
-    expect(steps().slice(-1)).toEqual(['Beta']); // recorded while collapsed
   });
 
   it('Escape never discards the report — it collapses instead', async () => {
@@ -192,7 +179,7 @@ describe('drawer — collapse to a pill', () => {
     expect((drawer() as HTMLElement).style.display).toBe('none');
     expect(shadow().querySelector('.qa-pill')).not.toBeNull();
 
-    (shadow().querySelector('.qa-pill') as HTMLButtonElement).click();
+    pillEl().click();
     expect((shadow().querySelector('.desc') as HTMLTextAreaElement).value).toBe('half-written report');
   });
 });
