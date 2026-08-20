@@ -27,20 +27,22 @@ export function NewDocButton() {
     if (!trimmed || busy) return;
     setBusy(true);
     setError(null);
-    const supabase = getBrowserClient();
-    const { data: userData } = await supabase.auth.getUser();
-    const slug = slugify(trimmed);
-    const { error: err } = await supabase.from('qa_docs').insert({
-      slug,
-      title: trimmed,
-      created_by: userData.user?.email ?? null,
-    });
-    if (err) {
+    try {
+      const supabase = getBrowserClient();
+      // getSession reads the local session — no network round-trip to hang on.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const slug = slugify(trimmed);
+      const { error: err } = await supabase.from('qa_docs').insert({
+        slug,
+        title: trimmed,
+        created_by: sessionData.session?.user.email ?? null,
+      });
+      if (err) throw new Error(err.message);
+      router.push(`/docs/${slug}`);
+    } catch (e) {
       setBusy(false);
-      setError('Could not create the doc — try again.');
-      return;
+      setError(`Could not create the doc: ${(e as Error).message}`);
     }
-    router.push(`/docs/${slug}`);
   };
 
   if (!open) {
