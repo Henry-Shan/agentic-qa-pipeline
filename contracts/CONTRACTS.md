@@ -69,6 +69,33 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## QA Docs (db/0009)
+
+Notion-style documents above the board: `qa_docs` (slug, emoji, title, description) and
+`qa_doc_sections` (ordered by `position`; title, body, `kind` bug|feature; captured context —
+route/component/source_file/selector/element_text/click_trail/viewport; evidence paths
+`doc-section-<id>/marked*.png` + `replay.json`; `report_id` once dispatched). `qa_reports`
+gains nullable `doc_section_id`. Tester RLS + realtime on both tables.
+
+- **Capture (doc mode).** `/doc-capture/<sectionId>` embeds the host app with the standard
+  hello/activate handshake, then posts `{type:'qa-pipeline:doc-mode'}` to the widget. In doc
+  mode the widget's Send becomes "Attach to doc ▸" and posts
+  `{type:'qa-pipeline:draft', draft:{kind, description, route, pageTitle, clickTrail, viewport,
+  component?, sourceFile?, selector?, testid?, elementText?, shots: dataUrl[], replayJson?}}`
+  to the parent instead of filing. The page stores light fields on the section (description
+  fills an EMPTY body only), then uploads blobs via `POST /api/docs/section-capture`
+  (signed-upload URLs, same pattern as ingest direct-upload) and returns to the doc.
+- **Dispatch.** `POST /api/docs/dispatch {sectionId}` inserts a `qa_reports` row (title/body →
+  title/description + a `[from doc …]` trailer, section context columns mapped 1:1, reporter =
+  the signed-in tester with the same role-snapshot enrichment as ingest, `doc_section_id` set),
+  COPIES the evidence into `report-<id>/…` (reports stay self-contained for destroy), links
+  `section.report_id`, and inserts a "filed from doc" event. 409 if already dispatched. The
+  worker pipeline is untouched — a dispatched section IS a report.
+- **Tracking.** Doc pages subscribe to `qa_doc_sections` + `qa_reports` realtime; sections show
+  the report's status pill + pipeline. A doc's progress = sections whose report reached
+  verified/shipped. `GET /api/doc-replay/[sectionId]` mirrors `/api/replay/[id]` for section
+  recordings. Task pages show a "part of <doc> § <section>" backlink.
+
 ## Preview auto-login (site ↔ the host app web)
 
 The task page's preview embed (and its open-in-tab button) never shows the the host app login

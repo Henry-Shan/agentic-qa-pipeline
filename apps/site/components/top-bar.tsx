@@ -18,6 +18,9 @@ export function TopBar({ email }: { email: string }) {
           QA Pipeline
         </Link>
         <div className="flex items-center gap-3 text-[12.5px] text-ink-3">
+          <Link href="/docs" className="font-semibold text-ink-2 hover:text-qa">
+            Docs
+          </Link>
           <span className="hidden sm:inline" title={email}>
             {name}
           </span>

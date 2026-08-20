@@ -94,6 +94,8 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   let toastEl: HTMLElement | null = null;
   let picking = false;
   let replay: ReplayHandle | null = null;
+  /** Parent is a doc-capture page — Send returns the draft via postMessage. */
+  let docMode = false;
   /** Per-open teardown: trail subscription, list timers, pill, key handler. */
   const drawerCleanup: Array<() => void> = [];
 
@@ -518,11 +520,19 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     desc.addEventListener('input', () => desc.classList.remove('invalid'));
     panel.appendChild(desc);
 
-    const send = h('button', 'send-btn', SEND_LABEL);
+    const send = h('button', 'send-btn', docMode ? 'Attach to doc ▸' : SEND_LABEL);
     send.type = 'button';
     send.addEventListener('click', () => void submit(draft, desc, send));
     panel.appendChild(send);
-    panel.appendChild(h('div', 'send-note', `Lands on ${endpointHost()} · fix fires automatically`));
+    panel.appendChild(
+      h(
+        'div',
+        'send-note',
+        docMode
+          ? 'Returns to your doc section — nothing files until you dispatch there'
+          : `Lands on ${endpointHost()} · fix fires automatically`,
+      ),
+    );
 
     root.appendChild(panel);
     drawer = panel;
@@ -564,6 +574,12 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
         const d = e.data as
           | { type?: unknown; route?: unknown; trail?: unknown; selector?: unknown; elementText?: unknown }
           | null;
+        // Doc mode (contracts §QA Docs): the parent is a doc-capture page —
+        // Send hands the draft back to it instead of filing a report.
+        if (d && d.type === 'qa-pipeline:doc-mode') {
+          docMode = true;
+          return;
+        }
         if (!d || d.type !== 'qa-pipeline:replay') return;
         replay?.cancel(); // restart cleanly on a second replay message
         const req: ReplayRequest = {
@@ -688,6 +704,40 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     }
     send.disabled = true;
     send.textContent = 'Sending…';
+
+    // Doc mode (contracts §QA Docs): hand the whole draft to the parent
+    // doc-capture page instead of filing — it stores everything on the section
+    // and dispatch happens later, from the doc.
+    if (docMode) {
+      const docShots = [draft.shot, ...draft.extraShots]
+        .filter((s): s is string => Boolean(s))
+        .slice(0, 1 + MAX_EXTRA_SHOTS);
+      const payload: Record<string, unknown> = {
+        kind: draft.kind,
+        description,
+        route: draft.recording?.route ?? location.pathname,
+        pageTitle: document.title,
+        clickTrail: recordedTrail(draft),
+        viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
+        shots: docShots,
+      };
+      if (draft.meta.component) payload.component = draft.meta.component;
+      if (draft.meta.sourceFile) payload.sourceFile = draft.meta.sourceFile;
+      if (draft.selector) payload.selector = draft.selector;
+      if (draft.meta.testid) payload.testid = draft.meta.testid;
+      if (draft.meta.text) payload.elementText = draft.meta.text;
+      if (draft.recording?.replayJson !== undefined) payload.replayJson = draft.recording.replayJson;
+      try {
+        window.parent.postMessage({ type: 'qa-pipeline:draft', draft: payload }, new URL(cfg.endpoint).origin);
+        closeDrawer();
+        toast('ok', 'Attached — back in your doc');
+      } catch {
+        send.disabled = false;
+        send.textContent = 'Attach to doc ▸';
+        toast('err', "Couldn't hand the draft back — try again.");
+      }
+      return;
+    }
 
     const auth = await resolveAuthHeader();
     if (!auth) {

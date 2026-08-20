@@ -215,6 +215,8 @@ const CONTROL_BTN =
 
 interface ReplayPlayerProps {
   reportId: number;
+  /** Override the recording endpoint (e.g. `/api/doc-replay/<sectionId>` for doc sections). */
+  fetchUrl?: string;
   /** Which recording to load: the report's own (default) or the run's after-the-fix capture. */
   src?: 'report' | 'after';
   /** Chrome-bar caption — keeps the hero tabs' window language consistent. */
@@ -226,7 +228,7 @@ interface ReplayPlayerProps {
   steps?: readonly ClickTrailEntry[];
 }
 
-export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayPlayerProps) {
+export function ReplayPlayer({ reportId, fetchUrl, src = 'report', label, steps }: ReplayPlayerProps) {
   const stageRef = useRef<HTMLDivElement | null>(null); // letterbox viewport
   const mountRef = useRef<HTMLDivElement | null>(null); // rrweb root, scaled to fit
   const listRef = useRef<HTMLOListElement | null>(null);
@@ -268,7 +270,7 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
 
     (async () => {
       try {
-        const res = await fetch(`/api/replay/${reportId}${src === 'after' ? '?src=after' : ''}`);
+        const res = await fetch(fetchUrl ?? `/api/replay/${reportId}${src === 'after' ? '?src=after' : ''}`);
         if (!res.ok) throw new Error(`replay fetch ${res.status}`);
         const events: unknown = await res.json(); // throws on malformed JSON
         if (cancelled) return;
@@ -359,7 +361,7 @@ export function ReplayPlayer({ reportId, src = 'report', label, steps }: ReplayP
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one load per recording
-  }, [reportId, src]);
+  }, [reportId, src, fetchUrl]);
 
   const stepped = marks.length > 0;
   const currentMark = marks[stepIndex];

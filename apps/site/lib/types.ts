@@ -38,6 +38,39 @@ export type RunPhase =
 
 export type EventType = 'log' | 'phase' | 'error' | 'question' | 'system';
 
+// qa_docs / qa_doc_sections — QA Docs (db/0009, contracts §QA Docs).
+export interface QaDoc {
+  id: number;
+  slug: string;
+  emoji: string | null;
+  title: string;
+  description: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QaDocSection {
+  id: number;
+  doc_id: number;
+  position: number;
+  title: string;
+  body: string;
+  kind: ReportKind;
+  route: string | null;
+  component: string | null;
+  source_file: string | null;
+  selector: string | null;
+  element_text: string | null;
+  click_trail: ClickTrailEntry[] | null;
+  viewport: { w: number; h: number; dpr: number } | null;
+  screenshots: string[];
+  replay_path: string | null;
+  report_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // qa_settings — site-editable worker limits (keys: max_runs, max_previews).
 export interface QaSetting {
   key: string;
@@ -98,6 +131,8 @@ export interface QaReport {
   description: string | null;
   kind: ReportKind;
   status: ReportStatus;
+  /** Set when the report was dispatched from a doc section (db/0009). */
+  doc_section_id?: number | null;
   reporter_email: string | null;
   route: string | null;
   page_title: string | null;
