@@ -79,6 +79,19 @@ export interface IngestBody {
    * report-<id>/replay.json.
    */
   replayEvents?: string;
+  /**
+   * Direct-upload mode (contract §Widget→Site): declares how many screenshots
+   * (+ whether a replay) the widget will PUT to the signed storage URLs the
+   * ingest response returns. Blobs never ride the ingest POST — inline base64
+   * blew Vercel's ~4.5 MB serverless request cap (413) on heavy reports.
+   */
+  uploads?: { shots: number; replay: boolean };
+}
+
+/** Signed storage-upload targets returned by /api/ingest in direct-upload mode. */
+export interface IngestUploadTargets {
+  shots: Array<{ path: string; signedUrl: string; token: string }>;
+  replay: { path: string; signedUrl: string; token: string } | null;
 }
 
 export interface WidgetConfig {

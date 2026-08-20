@@ -65,6 +65,16 @@ export const ingestSchema = z.object({
   // Additional captures (≤3), EACH under the same pre-decode length cap as the
   // primary; stored as report-<id>/marked-2.png … in order after the primary.
   screenshotsDataUrls: z.array(z.string().max(MAX_SCREENSHOT_DATA_URL_CHARS)).max(3).optional(),
+  // Direct-upload mode (contracts §Widget→Site): instead of inlining blobs the
+  // widget declares how many screenshots (+ whether a replay) it will PUT to
+  // signed storage URLs — the ingest POST stays far under Vercel's ~4.5 MB
+  // serverless body cap, which inline base64 screenshots routinely blew (413).
+  uploads: z
+    .object({
+      shots: z.number().int().min(0).max(4),
+      replay: z.boolean(),
+    })
+    .optional(),
   // rrweb session recording (contracts § Session replay): an OPAQUE JSON string,
   // stored VERBATIM in the bucket as report-<id>/replay.json — never parsed or
   // scrubbed server-side (display data only), and excluded from clampIngest.

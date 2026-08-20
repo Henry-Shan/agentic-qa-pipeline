@@ -1,7 +1,7 @@
 // All widget UI, inside one ShadowRoot: fab → menu → picker → drawer → toast.
 
 import type { Buffers, StepSink } from './buffers';
-import type { ConsoleEntry, IngestBody, NetworkEntry, WidgetConfig } from './types';
+import type { ConsoleEntry, IngestBody, IngestUploadTargets, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
 import {
   clampStep,
@@ -602,16 +602,18 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
     if (draft.meta.testid) body.testid = draft.meta.testid;
     if (draft.meta.text) body.elementText = draft.meta.text;
     if (cfg.appContext) body.appContext = cfg.appContext;
-    // First capture → screenshotDataUrl, the rest → screenshotsDataUrls (≤3).
-    // When the first capture failed, the earliest added shot is promoted.
-    const shots = [draft.shot, ...draft.extraShots].filter((s): s is string => Boolean(s));
-    const [firstShot, ...restShots] = shots;
-    if (firstShot) body.screenshotDataUrl = firstShot;
-    if (restShots.length > 0) body.screenshotsDataUrls = restShots.slice(0, MAX_EXTRA_SHOTS);
+    // First capture first, extras after (≤3) — same order the server names
+    // marked.png, marked-2.png…  When the first capture failed, the earliest
+    // added shot is promoted.
+    const shots = [draft.shot, ...draft.extraShots]
+      .filter((s): s is string => Boolean(s))
+      .slice(0, 1 + MAX_EXTRA_SHOTS);
     // Session replay (contract §Session replay): stringified rrweb events,
     // omitted when empty or over the 8M-char cap (measured after stringify).
     const replayJson = replayEventsField(recorder);
-    if (replayJson !== undefined) body.replayEvents = replayJson;
+    // Blobs go to signed storage URLs AFTER filing (contract §Widget→Site) —
+    // inlined base64 blew Vercel's ~4.5 MB request cap (413) on heavy reports.
+    body.uploads = { shots: shots.length, replay: replayJson !== undefined };
 
     try {
       const res = await buffers.rawFetch(`${cfg.endpoint}/api/ingest`, {
@@ -620,7 +622,43 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers, recorder: Recorder
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`ingest ${res.status}`);
-      const out = (await res.json()) as { id: number; url: string };
+      const out = (await res.json()) as { id: number; url: string; uploads?: IngestUploadTargets };
+      // Evidence uploads are best-effort: the report is already filed, and a
+      // failed PUT just means that shot/replay is missing from the task page.
+      try {
+        const targets = out.uploads;
+        if (targets) {
+          const puts: Array<Promise<unknown>> = [];
+          targets.shots.forEach((t, i) => {
+            const dataUrl = shots[i];
+            if (!dataUrl || !t?.signedUrl) return;
+            puts.push(
+              buffers
+                .rawFetch(dataUrl)
+                .then((r) => r.blob())
+                .then((blob) =>
+                  buffers.rawFetch(t.signedUrl, {
+                    method: 'PUT',
+                    headers: { 'content-type': 'image/png' },
+                    body: blob,
+                  }),
+                ),
+            );
+          });
+          if (targets.replay?.signedUrl && replayJson !== undefined) {
+            puts.push(
+              buffers.rawFetch(targets.replay.signedUrl, {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: replayJson,
+              }),
+            );
+          }
+          await Promise.all(puts);
+        }
+      } catch {
+        // report filed; missing evidence only
+      }
       closeDrawer();
       // ingest returns an absolute url when NEXT_PUBLIC_SITE_URL is set;
       // only a relative fallback ("/task/N") needs the endpoint prefix.

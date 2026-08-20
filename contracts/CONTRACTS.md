@@ -56,6 +56,19 @@ defaults; a missing table/row or out-of-range value (not an integer 0–50) fall
 
 Columns: `key text pk · value integer (0–50) · updated_at · updated_by text` (editor's email).
 
+## Ingest direct-upload mode (widget → site → storage)
+
+Vercel serverless functions cap request bodies at ~4.5 MB, so screenshots/replays must
+never ride the ingest POST (inline base64 blew it with 413s). The widget now sends
+`uploads: { shots: n, replay: bool }` instead of `screenshotDataUrl`/`screenshotsDataUrls`/
+`replayEvents`; ingest creates the report, pre-records the storage paths
+(`report-<id>/marked.png`, `marked-2.png`…, `replay.json` — identical to the inline flow),
+and returns `uploads: { shots: [{path,signedUrl,token}], replay: {…}|null }` (signed
+storage-upload URLs). The widget then PUTs each blob directly to Supabase storage
+(binary PNG / JSON — best-effort; a failed PUT means missing evidence, never a lost
+report). The inline fields remain accepted for backward compatibility (small payloads,
+old cached widget bundles).
+
 ## Preview auto-login (site ↔ the host app web)
 
 The task page's preview embed (and its open-in-tab button) never shows the the host app login

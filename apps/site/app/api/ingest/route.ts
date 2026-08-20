@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
   // The rrweb recording is pulled off FIRST: it is opaque display data (contracts
   // § Session replay) — never clamped, and excluded from the scrubSecrets walk
   // (an 8M-char string would dominate the regex pass for no benefit).
-  const { replayEvents, ...clampable } = parsed.data;
+  const { replayEvents, uploads, ...clampable } = parsed.data;
   const { screenshotDataUrl, screenshotsDataUrls, ...rest } = clampIngest(clampable);
   // Scrub everything except the screenshots (their base64 can coincidentally match the JWT pattern).
   const body = scrubSecrets(rest);
@@ -219,6 +219,46 @@ export async function POST(request: NextRequest) {
     message: `filed by ${body.reporterEmail ?? 'unknown'}`,
   });
 
+  // Direct-upload mode: mint signed storage-upload URLs for the declared blobs
+  // and pre-record their paths — the widget PUTs binary straight to Supabase,
+  // keeping this POST far under Vercel's ~4.5 MB serverless body cap. Paths
+  // mirror the inline flow exactly (marked.png, marked-2.png…, replay.json).
+  let uploadTargets: { shots: Array<{ path: string; signedUrl: string; token: string }>; replay: { path: string; signedUrl: string; token: string } | null } | undefined;
+  if (uploads && (uploads.shots > 0 || uploads.replay)) {
+    const sign = async (path: string) => {
+      // Re-filed drafts may retry after a partial attempt: clear any stale
+      // object first — createSignedUploadUrl rejects existing paths.
+      await admin.storage.from('qa-screenshots').remove([path]).catch(() => {});
+      const { data, error } = await admin.storage.from('qa-screenshots').createSignedUploadUrl(path);
+      if (error || !data) return null;
+      return { path, signedUrl: data.signedUrl, token: data.token };
+    };
+    const shotTargets: Array<{ path: string; signedUrl: string; token: string }> = [];
+    const shotPaths: string[] = [];
+    for (let i = 0; i < uploads.shots; i++) {
+      const path = i === 0 ? `report-${id}/marked.png` : `report-${id}/marked-${i + 1}.png`;
+      const target = await sign(path);
+      if (target) {
+        shotTargets.push(target);
+        shotPaths.push(path);
+      }
+    }
+    let replayTarget: { path: string; signedUrl: string; token: string } | null = null;
+    if (uploads.replay) {
+      replayTarget = await sign(`report-${id}/replay.json`);
+    }
+    const patch: Record<string, unknown> = {};
+    if (shotPaths.length > 0) patch.screenshots = shotPaths;
+    if (replayTarget) patch.replay_path = replayTarget.path;
+    if (Object.keys(patch).length > 0) {
+      await admin.from('qa_reports').update(patch).eq('id', id);
+    }
+    uploadTargets = { shots: shotTargets, replay: replayTarget };
+  }
+
   const site = process.env.NEXT_PUBLIC_SITE_URL ?? '';
-  return NextResponse.json({ id, url: `${site}/task/${id}` }, { headers });
+  return NextResponse.json(
+    { id, url: `${site}/task/${id}`, ...(uploadTargets ? { uploads: uploadTargets } : {}) },
+    { headers },
+  );
 }
