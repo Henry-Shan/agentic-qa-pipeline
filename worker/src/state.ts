@@ -35,6 +35,10 @@ export class WorkerState {
   private readonly bySession = new Map<string, RunHandle>();
   private readonly byReport = new Map<number, RunHandle>();
   readonly previews = new Map<number, PreviewHandle>();
+  /** Ports handed out by findFreePort but not yet bound/registered — concurrent
+   *  startPreview calls (reconcile restarts, simultaneous runinfo) must not
+   *  pick the same port before the first server binds it. */
+  readonly reservedPorts = new Set<number>();
   private readonly askPendingReports = new Set<number>();
   /** Rate-limit cooldown: claim loop stays idle until this epoch-ms. */
   cooldownUntil = 0;

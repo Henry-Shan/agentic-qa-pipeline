@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execa } from 'execa';
 import { autoAssignOnBlock } from './assign';
 import { pidAlive } from './config';
+import { startPreview } from './preview';
 import type { Ctx } from './state';
 import { log, nowIso } from './util';
 
@@ -69,6 +70,21 @@ export async function reconcile(ctx: Ctx): Promise<void> {
       await ctx.db.updateRun(run.id, { preview_status: 'down' });
       log('reconcile', `preview for run ${run.id} is dead — marked down`);
     }
+  }
+
+  // A graceful shutdown stops preview servers and down-marks their runs; a
+  // crash leaves them dead and the loop above down-marks them. Either way a
+  // report still awaiting a tester verdict needs its preview back — restart
+  // the latest run's preview whenever it isn't re-attached above.
+  for (const report of await ctx.db.reportsInStatuses(['pr_ready', 'preview'], ctx.cfg.onlyReportId)) {
+    const run = await ctx.db.latestRunForReport(report.id);
+    if (!run || ctx.state.previews.has(run.id)) continue;
+    if (!run.worktree || !fs.existsSync(run.worktree)) continue;
+    log('reconcile', `report ${report.id} awaits a verdict with no live preview — restarting run ${run.id}'s preview`);
+    // preview boot is slow (health wait ≤120s) — never block boot on it
+    void startPreview(ctx, run).catch((e: Error) =>
+      log('reconcile', `preview restart failed for run ${run.id}: ${e.message}`),
+    );
   }
 }
 

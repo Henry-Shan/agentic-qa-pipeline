@@ -27,11 +27,16 @@ function portFree(port: number): Promise<boolean> {
   });
 }
 
+/** Picks AND reserves a port — caller must releasePort() on every exit path. */
 async function findFreePort(ctx: Ctx): Promise<number | null> {
   const taken = new Set([...ctx.state.previews.values()].map((p) => p.port));
+  for (const p of ctx.state.reservedPorts) taken.add(p);
   for (let port = PORT_SCAN_START; port <= PORT_SCAN_END; port += PORT_SCAN_STEP) {
     if (taken.has(port)) continue;
-    if (await portFree(port)) return port;
+    if (await portFree(port)) {
+      ctx.state.reservedPorts.add(port);
+      return port;
+    }
   }
   return null;
 }
@@ -69,6 +74,9 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
     await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'error', message: 'no free preview port in 3300-3990' });
     return;
   }
+  const releasePort = (): void => {
+    ctx.state.reservedPorts.delete(port);
+  };
 
   const qaDir = path.join(run.worktree, '.qa');
   fs.mkdirSync(qaDir, { recursive: true });
@@ -86,6 +94,7 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
   child.unref();
   const pid = child.pid;
   if (!pid) {
+    releasePort();
     await ctx.db.updateRun(run.id, { preview_status: 'down' });
     await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'error', message: 'preview process failed to spawn' });
     return;
@@ -94,6 +103,7 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
   log('preview', `starting preview for run ${run.id} on port ${port} (pid ${pid})`);
 
   if (!(await waitHealthy(port, HEALTH_TIMEOUT_MS))) {
+    releasePort();
     try {
       process.kill(-pid, 'SIGTERM');
     } catch {
@@ -119,6 +129,7 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
     startedAt: Date.now(),
   };
   ctx.state.previews.set(run.id, handle);
+  releasePort(); // the previews map owns the port from here
 
   let url = `http://localhost:${port}`;
   if (ctx.cfg.previewMode === 'tunnel') {
