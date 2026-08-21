@@ -392,6 +392,12 @@ function SectionCard({
               <div className="text-[10px] text-ink-3">
                 + your the host app role, added automatically at dispatch · sent verbatim with the description above
               </div>
+              <div className="text-[10px] text-ink-3">
+                runs on {section.model ?? 'the default model'} ·{' '}
+                {section.base_session === ''
+                  ? 'cold start (no prior context)'
+                  : 'forked from the base-context session'}
+              </div>
             </div>
           ) : (
             <p className="m-0 text-[11px] text-ink-3">
@@ -400,6 +406,38 @@ function SectionCard({
             </p>
           )}
         </div>
+
+        {/* How this task runs (contracts §Base context): which model, and
+            whether it starts from the base-context session or cold. */}
+        {!dispatched ? (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-3">
+            <span>run on</span>
+            <span className="inline-flex overflow-hidden rounded-md border border-line">
+              {(['fable', 'opus', 'sonnet'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onPatch({ model: section.model === m ? null : m })}
+                  aria-pressed={section.model === m}
+                  className={`px-2 py-0.5 font-semibold transition-colors ${
+                    section.model === m ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </span>
+            <label className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={section.base_session !== ''}
+                onChange={(e) => onPatch({ base_session: e.target.checked ? null : '' })}
+                className="accent-qa"
+              />
+              start from base context
+            </label>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-1.5">
           <Link

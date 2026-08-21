@@ -69,6 +69,30 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Base context + per-task model (db/0011)
+
+A run can START from an existing Claude Code session instead of cold — the **base-context**
+session, which already holds an accumulated understanding of the the host app codebase.
+
+- **Fork, don't continue.** The spawn becomes
+  `claude --resume <base> --fork-session --session-id <new uuid> …`. Verified behavior: the
+  fork inherits the parent's context and **the parent transcript is never written to**, so
+  base-context stays pristine across any number of runs. The worker still controls the new
+  session id, so tracking (`pgrep` by id) and steer/rework (`--resume <id>`) are unchanged.
+- **Staging is required.** Claude Code scopes sessions to the project directory derived from
+  cwd (`~/.claude/projects/<abs-path-with-slashes-as-dashes>`). base-context lives under the
+  user's own checkout while runs execute from the runner clone, where `--resume` finds nothing.
+  `worker/src/base-session.ts` copies the transcript into the runner's project dir (re-copying
+  only when the source is newer). A failure to stage is never fatal — the run starts cold.
+- **Resolution order** per run: `qa_reports.base_session` (`''` = explicitly cold) → else
+  `QA_BASE_SESSION` → else cold. `qa_reports.model` (`fable|opus|sonnet`) overrides
+  `QA_CLAUDE_MODEL` for the dispatch AND every later resume of that task.
+- Doc sections carry the same two columns and hand them to the report at dispatch; the section
+  UI exposes a model segmented control and a "start from base context" checkbox, and the
+  "What Claude receives" panel states both. A fork is logged as a `system` event on the task.
+- **Cost note:** forking a large session prepends its whole context to every run. Leave it on
+  where that grounding pays for itself; uncheck it for trivial tasks.
+
 ## Examination — the closed loop (db/0010)
 
 When a fix's preview comes up, the worker re-runs the tester's OWN recorded steps against it

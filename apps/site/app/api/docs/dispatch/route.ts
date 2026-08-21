@@ -89,6 +89,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       viewport: section.viewport ?? { w: 0, h: 0, dpr: 1 },
       app_context: appContext,
       doc_section_id: section.id,
+      // Per-task base context + model (contracts §Base context) — null means
+      // "use the worker default", '' means an explicitly cold start.
+      base_session: section.base_session,
+      model: section.model,
     })
     .select('id')
     .single();

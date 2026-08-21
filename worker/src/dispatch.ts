@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import readline from 'node:readline';
 import { autoAssignOnBlock } from './assign';
+import { stageBaseSession } from './base-session';
 import { pidAlive, workerDir, type WorkerConfig } from './config';
 import type { QaReport, QaRun } from './db';
 import type { Ctx, RunHandle } from './state';
@@ -90,6 +91,10 @@ interface SpawnSpec {
   prompt: string;
   sessionId: string;
   envelopePath?: string;
+  /** Fork this run off an existing session (contracts §Base context). */
+  baseSession?: string;
+  /** Per-task model override (contracts §Base context); falls back to config. */
+  model?: string;
 }
 
 // Serialize sections that touch the runner checkout: ship-task's setup-worktree
@@ -131,8 +136,21 @@ function spawnGated(ctx: Ctx, spec: SpawnSpec): Promise<ChildProcess> {
  * opus / xhigh). Not applied to the QA_MOCK_DISPATCH runner — it is a node
  * script, not claude.
  */
-function claudeFlags(cfg: WorkerConfig): string[] {
-  return ['--model', cfg.claudeModel, '--effort', cfg.claudeEffort];
+function claudeFlags(cfg: WorkerConfig, model?: string): string[] {
+  return ['--model', model?.trim() || cfg.claudeModel, '--effort', cfg.claudeEffort];
+}
+
+/**
+ * Which session a fresh run forks from (contracts §Base context): the report's
+ * own choice wins, `''` means explicitly cold, `null` inherits the worker
+ * default. Returns '' when nothing is configured or the transcript can't be
+ * staged for the runner repo — a cold start is always valid.
+ */
+function baseSessionFor(ctx: Ctx, report: QaReport): string {
+  const chosen = report.base_session === null ? ctx.cfg.baseSession : report.base_session;
+  const id = (chosen ?? '').trim();
+  if (!id) return '';
+  return stageBaseSession(id, ctx.cfg.runnerRepo, ctx.cfg.baseSessionRepo) ? id : '';
 }
 
 function spawnClaude(ctx: Ctx, spec: SpawnSpec): ChildProcess {
@@ -155,8 +173,12 @@ function spawnClaude(ctx: Ctx, spec: SpawnSpec): ChildProcess {
   }
   const args =
     spec.kind === 'resume'
-      ? ['--resume', spec.sessionId, '-p', spec.prompt, ...claudeFlags(cfg), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-      : ['-p', spec.prompt, '--session-id', spec.sessionId, ...claudeFlags(cfg), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+      ? ['--resume', spec.sessionId, '-p', spec.prompt, ...claudeFlags(cfg, spec.model), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+      : spec.baseSession
+        ? // Fork off the base context: the new run inherits that session's
+          // understanding of the codebase, and the parent is never written to.
+          ['--resume', spec.baseSession, '--fork-session', '--session-id', spec.sessionId, '-p', spec.prompt, ...claudeFlags(cfg, spec.model), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+        : ['-p', spec.prompt, '--session-id', spec.sessionId, ...claudeFlags(cfg, spec.model), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
   return spawn(cfg.claudeBin, args, {
     cwd: cfg.runnerRepo,
     env,
@@ -175,7 +197,23 @@ export async function dispatchRun(ctx: Ctx, report: QaReport, envelopePath: stri
     phase: 'starting',
   });
   const prompt = `${preamble(ctx.cfg, sessionId)}\n/ship-task 'Read and execute the task envelope at ${envelopePath}'`;
-  await spawnAndTrack(ctx, run, { kind: 'fresh', prompt, sessionId, envelopePath });
+  const baseSession = baseSessionFor(ctx, report);
+  if (baseSession) {
+    await ctx.db.insertEvent({
+      report_id: report.id,
+      run_id: run.id,
+      type: 'system',
+      message: `forked from base context ${baseSession.slice(0, 8)}`,
+    });
+  }
+  await spawnAndTrack(ctx, run, {
+    kind: 'fresh',
+    prompt,
+    sessionId,
+    envelopePath,
+    ...(baseSession ? { baseSession } : {}),
+    ...(report.model ? { model: report.model } : {}),
+  });
   log('dispatch', `run ${run.id} started for report ${report.id} (session ${sessionId})`);
 }
 
@@ -205,7 +243,12 @@ export async function resumeRun(
   ctx.state.setAskPending(report.id, false);
   await ctx.db.updateReport(report.id, { status: reportStatus });
   const prompt = `Tester note:\n${note}\n\nContinue on the SAME branch and worktree you already created (${prevRun.branch ?? 'your branch'} at ${prevRun.worktree ?? 'your worktree'}) — do not start over. Investigate, fix, re-run the verify gate, push to the same PR, and re-report runinfo when done.\n\n${preamble(ctx.cfg, prevRun.session_id)}`;
-  await spawnAndTrack(ctx, run, { kind: 'resume', prompt, sessionId: prevRun.session_id });
+  await spawnAndTrack(ctx, run, {
+    kind: 'resume',
+    prompt,
+    sessionId: prevRun.session_id,
+    ...(report.model ? { model: report.model } : {}),
+  });
   log('dispatch', `resume run ${run.id} (attempt ${run.attempt}) for report ${report.id}`);
 }
 

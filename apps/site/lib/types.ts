@@ -82,6 +82,10 @@ export interface QaDocSection {
   screenshots: string[];
   replay_path: string | null;
   report_id: number | null;
+  /** Fork the run from this Claude session id; '' = cold; null = worker default (db/0011). */
+  base_session: string | null;
+  /** 'fable' | 'opus' | 'sonnet' — null = worker default (db/0011). */
+  model: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +152,9 @@ export interface QaReport {
   status: ReportStatus;
   /** Set when the report was dispatched from a doc section (db/0009). */
   doc_section_id?: number | null;
+  /** Base context to fork from / model to run on (db/0011). */
+  base_session?: string | null;
+  model?: string | null;
   reporter_email: string | null;
   route: string | null;
   page_title: string | null;

@@ -20,6 +20,13 @@ export interface WorkerConfig {
   examinerEffort: string;
   /** QA_EXAM=0 disables the examination loop entirely. */
   examEnabled: boolean;
+  /**
+   * QA_BASE_SESSION — Claude Code session id every fresh run FORKS from
+   * (contracts §Base context); '' runs cold. A report's own base_session wins.
+   */
+  baseSession: string;
+  /** QA_BASE_SESSION_REPO — checkout whose project dir holds that transcript. */
+  baseSessionRepo: string;
   shimPort: number;
   maxRuns: number;
   maxPreviews: number;
@@ -99,6 +106,8 @@ export function loadConfig(): WorkerConfig {
     examinerModel: process.env.QA_EXAMINER_MODEL?.trim() || 'opus',
     examinerEffort: process.env.QA_EXAMINER_EFFORT?.trim() || 'high',
     examEnabled: process.env.QA_EXAM !== '0',
+    baseSession: process.env.QA_BASE_SESSION?.trim() ?? '',
+    baseSessionRepo: process.env.QA_BASE_SESSION_REPO?.trim() || '/Users/YOU/the host app',
     shimPort: intEnv('SHIM_PORT', 4519),
     maxRuns: intEnv('MAX_RUNS', 2),
     maxPreviews: intEnv('MAX_PREVIEWS', 3),

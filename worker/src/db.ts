@@ -27,6 +27,10 @@ export interface QaReport {
   kind: 'bug' | 'feature';
   status: ReportStatus;
   reporter_email: string | null;
+  /** Fork the run from this Claude session id; '' = cold; null = worker default (db/0011). */
+  base_session: string | null;
+  /** 'fable' | 'opus' | 'sonnet' — null = worker default (db/0011). */
+  model: string | null;
   route: string | null;
   page_title: string | null;
   component: string | null;
