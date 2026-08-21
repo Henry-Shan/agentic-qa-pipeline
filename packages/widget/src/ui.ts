@@ -2,7 +2,7 @@
 
 import { currentRoute, type Buffers } from './buffers';
 import type { ClickTrailEntry, ConsoleEntry, IngestBody, IngestUploadTargets, NetworkEntry, WidgetConfig } from './types';
-import { buildSelector, elementMeta, type ElementMeta } from './selector';
+import type { ElementMeta } from './selector';
 import {
   clampStep,
   markForStep,
@@ -24,6 +24,9 @@ import { createTrailList, type TrailList } from './trail-list';
 const SEND_LABEL = 'Send — Claude starts now ▸';
 const GET_TOKEN_TIMEOUT_MS = 3_000;
 const MAX_EXTRA_SHOTS = 3;
+/** Models a tester may pick (contract §Base context); opus unless changed. */
+const MODELS = ['fable', 'opus', 'sonnet'] as const;
+const DEFAULT_MODEL = 'opus';
 
 export interface WidgetUI {
   host: HTMLElement;
@@ -54,6 +57,8 @@ interface Draft {
   extraShots: string[];
   /** Explicit capture — null/absent until the tester records. */
   recording?: RecordedSteps | null;
+  /** Which model runs the fix — 'fable' | 'opus' | 'sonnet'. */
+  model: string;
 }
 
 function h<K extends keyof HTMLElementTagNameMap>(
@@ -113,32 +118,115 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     return buffers.clickTrail().filter((e) => e.ts >= rec.t0 && e.ts <= rec.t1);
   };
 
-  // ---- fab -----------------------------------------------------------------
-  const fab = h('button', 'qa-fab', '🐛');
+  // ---- the record button (the only entry point) -----------------------------
+  // The button IS the recorder: press to start, use the app, press again to
+  // stop and describe what went wrong. There is no element picker — the
+  // recording already knows which elements were used, so the code location is
+  // derived from the steps instead of asked for.
+  const fabIcon = h('span', 'fab-icon', '⏺');
+  const fabLabel = h('span', 'fab-label', 'Record');
+  const fab = h('button', 'qa-fab');
   fab.type = 'button';
-  fab.setAttribute('aria-label', 'Report an issue');
-  fab.addEventListener('click', () => void startReport());
-
+  fab.append(fabIcon, fabLabel);
+  fab.addEventListener('click', () => void toggleRecording());
   root.append(fab);
 
-  // ---- report flow ---------------------------------------------------------
-  // One flow for everything: fab → element picker → form. Esc skips the picker
-  // (feature ideas have nothing to point at) — picked = bug, skipped = feature.
-  async function startReport(): Promise<void> {
-    if (picking || drawer) return;
-    picking = true;
-    fab.hidden = true;
-    try {
-      const element = await pickElement(root, { ignore: host });
-      const kind: 'bug' | 'feature' = element ? 'bug' : 'feature';
-      const shot = await captureShot(element, host);
-      const draft: Draft = { kind, meta: element ? elementMeta(element) : {}, shot, extraShots: [] };
-      if (element) draft.selector = buildSelector(element);
-      openDrawer(draft);
-    } finally {
-      picking = false;
-      if (!drawer && !replay) fab.hidden = false;
+  /** Live subscription that keeps the button's step count honest. */
+  let recSub: (() => void) | null = null;
+
+  function paintFab(): void {
+    const rec = activeRec;
+    fab.classList.toggle('rec', rec !== null);
+    fabIcon.textContent = rec ? '⏹' : '⏺';
+    if (rec) {
+      const n = buffers.clickTrail().filter((e) => e.ts >= rec.t0).length;
+      fabLabel.textContent = n > 0 ? `Stop · ${n} step${n === 1 ? '' : 's'}` : 'Stop recording';
+    } else {
+      fabLabel.textContent = 'Record';
     }
+    const label = rec ? 'Stop recording and describe the issue' : 'Start recording';
+    fab.setAttribute('aria-label', label);
+    fab.title = rec
+      ? 'Stop recording and describe what went wrong'
+      : 'Start recording — do the thing, then press stop';
+  }
+  paintFab();
+
+  async function toggleRecording(): Promise<void> {
+    if (drawer || picking) return;
+    if (activeRec) {
+      await stopRecording();
+      return;
+    }
+    startRecording();
+  }
+
+  /** Fresh single-window recorder (manual mode — nothing is ever dropped). */
+  function startRecording(): void {
+    if (activeRec) return;
+    const rec = {
+      recorder: startRecorder(undefined, undefined, { manual: true }),
+      t0: Date.now(),
+      route: currentRoute(),
+      seq: 0,
+    };
+    activeRec = rec;
+    // Every trail step lands in the recording, re-sequenced to this window.
+    buffers.setStepSink((mark) => {
+      if (activeRec !== rec || replay) return;
+      rec.recorder.mark({ ...mark, i: ++rec.seq });
+    });
+    recSub = buffers.onTrail(() => paintFab());
+    paintFab();
+  }
+
+  /** Stop, freeze the window, and open the form already filled with it. */
+  async function stopRecording(): Promise<void> {
+    const rec = activeRec;
+    if (!rec) return;
+    activeRec = null;
+    buffers.setStepSink(null);
+    recSub?.();
+    recSub = null;
+    const replayJson = replayEventsField(rec.recorder);
+    rec.recorder.dispose();
+    const recording: RecordedSteps = {
+      t0: rec.t0,
+      t1: Date.now(),
+      route: rec.route,
+      ...(replayJson !== undefined ? { replayJson } : {}),
+    };
+    paintFab();
+
+    const steps = buffers.clickTrail().filter((e) => e.ts >= recording.t0 && e.ts <= recording.t1);
+    const draft: Draft = {
+      kind: 'bug',
+      meta: metaFromSteps(steps),
+      shot: null,
+      extraShots: [],
+      recording,
+      model: DEFAULT_MODEL,
+    };
+    const lastSelector = [...steps].reverse().find((e) => e.selector)?.selector;
+    if (lastSelector) draft.selector = lastSelector;
+    fab.hidden = true;
+    openDrawer(draft);
+  }
+
+  /**
+   * Code location, derived from the recording: the most recent step that named
+   * a component/testid wins — that is the element the tester was working with
+   * when they stopped, which is what a picker used to capture.
+   */
+  function metaFromSteps(steps: ClickTrailEntry[]): ElementMeta {
+    const meta: ElementMeta = {};
+    for (const step of steps) {
+      if (step.component) meta.component = step.component;
+      if (step.sourceFile) meta.sourceFile = step.sourceFile;
+      if (step.testid) meta.testid = step.testid;
+      if (step.text && step.kind !== 'input') meta.text = step.text;
+    }
+    return meta;
   }
 
   function chip(key: string, value: string, isError = false): HTMLElement {
@@ -218,14 +306,15 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
   function openDrawer(draft: Draft): void {
     const panel = h('aside', 'qa-drawer');
     panel.setAttribute('role', 'dialog');
-    const title = 'Report an issue';
+    const title = 'What happened?';
     panel.setAttribute('aria-label', title);
 
     const head = h('div', 'drawer-head');
-    head.appendChild(h('div', 'di', draft.kind === 'bug' ? '🐛' : '✦'));
+    const di = h('div', 'di', draft.kind === 'bug' ? '🐛' : '✦');
+    head.appendChild(di);
     const headText = h('div');
     headText.appendChild(h('h3', undefined, title));
-    headText.appendChild(h('div', 'sub', 'Describe it, record the steps, send'));
+    headText.appendChild(h('div', 'sub', 'Your steps are recorded — describe it and send'));
     head.appendChild(headText);
     // Collapse (chevron) → compact pill at the right edge, so the drawer never
     // covers the UI being reproduced. The panel stays in the DOM: description
@@ -243,67 +332,29 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     head.appendChild(close);
     panel.appendChild(head);
 
-    // Primary context section (contract §Widget drawer): the recorded steps —
-    // clicks, typing and screen are captured ONLY between ⏺ Start and Finish,
-    // and the numbered list shows exactly that window (what Claude replays).
+    // The recording is already taken (the button did it), so this section is a
+    // read-only account of it: where it happened, then what was done there.
+    const steps = recordedTrail(draft);
+
+    panel.appendChild(h('div', 'cap-label', 'Where'));
+    const whereRow = h('div', 'chips');
+    whereRow.appendChild(chip('page', draft.recording?.route ?? currentRoute()));
+    panel.appendChild(whereRow);
+
     const capRow = h('div', 'cap-label cap-row');
-    capRow.appendChild(h('span', undefined, 'Recorded steps · what Claude will replay'));
-    const countEl = h('span', 'cap-count');
+    capRow.appendChild(h('span', undefined, 'Your actions · what Claude will replay'));
+    const countEl = h('span', 'cap-count', `${steps.length} step${steps.length === 1 ? '' : 's'}`);
     capRow.appendChild(countEl);
     panel.appendChild(capRow);
 
-    /** Steps inside the current window — the live one, else the finished one. */
-    const windowTrail = (): ClickTrailEntry[] => {
-      if (activeRec) {
-        const t0 = activeRec.t0;
-        return buffers.clickTrail().filter((e) => e.ts >= t0);
-      }
-      return recordedTrail(draft);
-    };
-
-    let list: TrailList = createTrailList(windowTrail(), {
-      onPick: (index) => list.setActive(index),
-    });
+    const list: TrailList = createTrailList(steps, { onPick: (index) => list.setActive(index) });
     drawerCleanup.push(() => list.dispose());
     panel.appendChild(list.el);
-
-    const recBtn = h('button', 'qa-record', draft.recording ? '↻ Re-record the steps' : '⏺ Record the steps');
-    recBtn.type = 'button';
-    panel.appendChild(recBtn);
-    panel.appendChild(
-      h('div', 'live-hint', 'Recording captures your clicks, typing and screen until you press Finish.'),
-    );
-
-    const pillCount = h('span', 'pill-count');
-    function paintCount(): void {
-      const n = list.count();
-      countEl.textContent =
-        draft.recording || activeRec ? `${n} step${n === 1 ? '' : 's'}` : 'not recorded yet';
-      pillCount.textContent = String(n);
+    if (steps.length === 0) {
+      panel.appendChild(
+        h('div', 'live-hint', 'No steps in this recording — send anyway, or record again from the ⏺ button.'),
+      );
     }
-    paintCount();
-
-    /** Swap in a fresh list for the current window (sync() can only append). */
-    const resetList = (): void => {
-      const next: TrailList = createTrailList(windowTrail(), {
-        onPick: (index) => next.setActive(index),
-      });
-      list.el.replaceWith(next.el);
-      list.dispose();
-      list = next;
-      paintCount();
-    };
-
-    // ONE subscription for the whole drawer, debounced inside buffers (~120ms):
-    // while a recording is live it appends the new rows and repaints the count,
-    // so steps land in the list (and the Finish pill) as they happen.
-    drawerCleanup.push(
-      buffers.onTrail(() => {
-        if (!activeRec) return;
-        const result = list.sync(windowTrail());
-        if (result.added > 0 || result.updated) paintCount();
-      }),
-    );
 
     // ---- collapse ↔ pill ---------------------------------------------------
     // Collapsed, the panel is only display:none — every bit of form state
@@ -315,17 +366,9 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     pill.type = 'button';
     pill.title = 'Back to your report';
     pill.setAttribute('aria-label', 'Expand report panel');
-    const pillIcon = h('span', undefined, '🐛');
-    const pillTail = h('span', 'pill-tail', '');
-    pill.appendChild(pillIcon);
-    pill.appendChild(pillCount);
-    pill.appendChild(pillTail);
-    // While recording, the pill IS the Finish button: it ends the capture and
-    // returns to the report in one click.
-    pill.addEventListener('click', () => {
-      finishRecording();
-      setCollapsed(false);
-    });
+    pill.appendChild(h('span', undefined, '✎'));
+    pill.appendChild(h('span', 'pill-tail', 'Your report'));
+    pill.addEventListener('click', () => setCollapsed(false));
     drawerCleanup.push(() => pill.remove());
 
     function setCollapsed(next: boolean): void {
@@ -343,67 +386,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     }
     collapseBtn.setAttribute('aria-expanded', 'true');
 
-    // ---- ⏺ Start / Finish --------------------------------------------------
-    // Start: fresh single-window recorder (no checkout rotation — nothing is
-    // ever dropped), step sink re-sequencing marks to the window, drawer
-    // collapsed to the red Finish pill so the tester reproduces uncovered.
-    // Finish: freeze the window onto the draft and return to the report.
-    function startRecording(): void {
-      if (activeRec) return;
-      draft.recording = null; // re-record discards the previous take
-      const rec = {
-        recorder: startRecorder(undefined, undefined, { manual: true }),
-        t0: Date.now(),
-        route: currentRoute(),
-        seq: 0,
-      };
-      activeRec = rec;
-      buffers.setStepSink((mark) => {
-        if (activeRec !== rec || replay) return;
-        rec.recorder.mark({ ...mark, i: ++rec.seq });
-      });
-      resetList();
-      recBtn.textContent = '⏺ Recording…';
-      pill.classList.add('rec');
-      pillIcon.textContent = '⏺';
-      pillTail.textContent = 'Finish';
-      pill.title = 'Finish recording and return to the report';
-      pill.setAttribute('aria-label', 'Finish recording');
-      setCollapsed(true);
-    }
-
-    function finishRecording(): void {
-      const rec = activeRec;
-      if (!rec) return;
-      activeRec = null;
-      buffers.setStepSink(null);
-      const replayJson = replayEventsField(rec.recorder);
-      rec.recorder.dispose();
-      draft.recording = {
-        t0: rec.t0,
-        t1: Date.now(),
-        route: rec.route,
-        ...(replayJson !== undefined ? { replayJson } : {}),
-      };
-      resetList();
-      recBtn.textContent = '↻ Re-record the steps';
-      pill.classList.remove('rec');
-      pillIcon.textContent = '🐛';
-      pillTail.textContent = '';
-      pill.title = 'Back to your report';
-      pill.setAttribute('aria-label', 'Expand report panel');
-    }
-
-    recBtn.addEventListener('click', () => startRecording());
-    // Closing the drawer mid-recording discards the live take with it.
-    drawerCleanup.push(() => {
-      if (activeRec) {
-        buffers.setStepSink(null);
-        activeRec.recorder.dispose();
-        activeRec = null;
-      }
-    });
-
     // Escape NEVER discards the report (contract: avoid data loss) — × stays
     // the one explicit discard. It collapses instead, which loses nothing.
     const onDrawerKey = (e: KeyboardEvent): void => {
@@ -419,7 +401,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
 
     // Screenshots: compact thumbnail row below the trail (capture unchanged;
     // each thumb enlarges via the lightbox).
-    panel.appendChild(h('div', 'cap-label', 'Screenshots'));
+    panel.appendChild(h('div', 'cap-label', 'Screenshots · optional'));
     const shotsWrap = h('div', 'shots');
     panel.appendChild(shotsWrap);
 
@@ -517,6 +499,41 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     desc.placeholder = 'One sentence: what happened — or what should this do?';
     desc.addEventListener('input', () => desc.classList.remove('invalid'));
     panel.appendChild(desc);
+
+    // How it is filed and what runs it. Both have a working default, so the
+    // routine report is still: press stop, write a sentence, send.
+    panel.appendChild(h('div', 'cap-label', 'This is a'));
+    const kindSeg = h('div', 'qa-seg');
+    for (const k of ['bug', 'feature'] as const) {
+      const b = h('button', undefined, k === 'bug' ? 'Bug' : 'New feature');
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(draft.kind === k));
+      b.addEventListener('click', () => {
+        draft.kind = k;
+        for (const other of Array.from(kindSeg.children)) {
+          other.setAttribute('aria-pressed', String(other === b));
+        }
+        di.textContent = k === 'bug' ? '🐛' : '✦';
+      });
+      kindSeg.appendChild(b);
+    }
+    panel.appendChild(kindSeg);
+
+    panel.appendChild(h('div', 'cap-label', 'Claude runs on'));
+    const modelSeg = h('div', 'qa-seg');
+    for (const m of MODELS) {
+      const b = h('button', undefined, m);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(draft.model === m));
+      b.addEventListener('click', () => {
+        draft.model = m;
+        for (const other of Array.from(modelSeg.children)) {
+          other.setAttribute('aria-pressed', String(other === b));
+        }
+      });
+      modelSeg.appendChild(b);
+    }
+    panel.appendChild(modelSeg);
 
     const send = h('button', 'send-btn', SEND_LABEL);
     send.type = 'button';
@@ -718,6 +735,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     if (draft.meta.testid) body.testid = draft.meta.testid;
     if (draft.meta.text) body.elementText = draft.meta.text;
     if (cfg.appContext) body.appContext = cfg.appContext;
+    body.model = draft.model;
     // First capture first, extras after (≤3) — same order the server names
     // marked.png, marked-2.png…  When the first capture failed, the earliest
     // added shot is promoted.
@@ -811,5 +829,6 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
     );
   }
 
-  return { host, open: () => void startReport() };
+  // `open()` is the programmatic equivalent of pressing the button.
+  return { host, open: () => void toggleRecording() };
 }

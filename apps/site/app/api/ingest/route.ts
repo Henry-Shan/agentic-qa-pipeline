@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
   // The rrweb recording is pulled off FIRST: it is opaque display data (contracts
   // § Session replay) — never clamped, and excluded from the scrubSecrets walk
   // (an 8M-char string would dominate the regex pass for no benefit).
-  const { replayEvents, uploads, ...clampable } = parsed.data;
+  const { replayEvents, uploads, model, ...clampable } = parsed.data;
   const { screenshotDataUrl, screenshotsDataUrls, ...rest } = clampIngest(clampable);
   // Scrub everything except the screenshots (their base64 can coincidentally match the JWT pattern).
   const body = scrubSecrets(rest);
@@ -168,6 +168,8 @@ export async function POST(request: NextRequest) {
       screenshots: [],
       viewport: body.viewport,
       app_context: Object.keys(appContext).length ? appContext : null,
+      // Which model runs the fix (contracts §Base context); null = worker default.
+      model: model ?? null,
     })
     .select('id')
     .single();

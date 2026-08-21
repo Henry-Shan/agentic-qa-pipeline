@@ -94,6 +94,24 @@ on the task page. `QA_ROUTER=0` sends everything down the full pipeline.
   `lane='complex'` — a wrong routing costs one cheap run, not a bad PR. A report that already
   has a lane is never re-routed on requeue.
 
+## Widget flow — the record button IS the entry point
+
+There is no element picker in the primary flow. The floating button is a two-state recorder:
+**⏺ Record** → recording, live step count (**⏹ Stop · N steps**) → stop opens the form already
+holding that window. Consequences:
+- `kind` is an explicit **Bug / New feature** toggle in the form (was: picked = bug, skipped =
+  feature), and `model` is a **fable / opus / sonnet** toggle defaulting to **opus** —
+  `IngestBody.model` → `qa_reports.model`, which the worker uses for the dispatch and every
+  later resume.
+- **Code location is derived from the recording**, not from a picker: the most recent step that
+  named a component/testid wins. Trail entries therefore carry `sourceFile` alongside
+  `component`/`testid`/`selector`.
+- **Where** shows `recording.route` — the FULL in-app route (pathname + query + hash) captured
+  at ⏺ Start, which is where a replay begins.
+- **Screenshots are optional**: none is taken automatically; "＋ Add screenshot" re-enters the
+  element picker for a targeted shot.
+- The collapse pill is now only a collapse affordance (recording no longer lives in the form).
+
 ## Task fields carried by a report (db/0012)
 
 Docs were removed (db/0014); the widget is the only entry point. These columns survive on

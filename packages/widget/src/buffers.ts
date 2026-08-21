@@ -424,8 +424,9 @@ export function startBuffers(): Buffers {
     }
     const testid = el.closest('[data-testid]')?.getAttribute('data-testid');
     if (testid) entry.testid = testid;
-    const { component } = annotationOf(el);
+    const { component, sourceFile } = annotationOf(el);
     if (component) entry.component = component;
+    if (sourceFile) entry.sourceFile = sourceFile;
   };
 
   const onClick = (e: MouseEvent): void => {

@@ -12,6 +12,8 @@ export interface ClickTrailEntry {
   text?: string;
   testid?: string;
   component?: string;
+  /** Source file of the component, when the build annotated it. */
+  sourceFile?: string;
   /** Stable CSS selector for replay targeting. */
   selector?: string;
   /**
@@ -69,6 +71,8 @@ export interface IngestBody {
   networkLog: NetworkEntry[];
   viewport: { w: number; h: number; dpr: number };
   appContext?: Record<string, string>;
+  /** 'fable' | 'opus' | 'sonnet' — which model runs the fix. */
+  model?: string;
   screenshotDataUrl?: string;
   /** Additional captures (≤3), same limits each — server stores marked-2.png … */
   screenshotsDataUrls?: string[];

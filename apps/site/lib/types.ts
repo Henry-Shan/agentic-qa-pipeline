@@ -69,6 +69,8 @@ export interface ClickTrailEntry {
   text?: string;
   testid?: string;
   component?: string;
+  /** Source file of the component, when the build annotated it. */
+  sourceFile?: string;
   /** Stable selector for replay targeting. */
   selector?: string;
   /** Final field value for 'input' steps (≤120 chars, scrubbed; never passwords). */

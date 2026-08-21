@@ -33,9 +33,16 @@ const drawer = (): HTMLElement | null => shadow().querySelector('.qa-drawer');
 const steps = (): string[] =>
   Array.from(shadow().querySelectorAll('.replay-list li.replay-step .rs-lbl')).map((n) => n.textContent ?? '');
 const countLabel = (): string => shadow().querySelector('.cap-count')?.textContent ?? '';
-const recordBtn = (): HTMLButtonElement => {
-  const btn = shadow().querySelector<HTMLButtonElement>('.qa-record');
+const fab = (): HTMLButtonElement => {
+  const btn = shadow().querySelector<HTMLButtonElement>('.qa-fab');
   if (!btn) throw new Error('record button missing');
+  return btn;
+};
+const seg = (label: string): HTMLButtonElement => {
+  const btn = Array.from(shadow().querySelectorAll<HTMLButtonElement>('.qa-seg > button')).find(
+    (b) => b.textContent === label,
+  );
+  if (!btn) throw new Error(`segment "${label}" missing`);
   return btn;
 };
 const pillEl = (): HTMLButtonElement => {
@@ -49,14 +56,19 @@ function clickPage(label: string): void {
   btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
 
-/** fab → picker (Esc skips it) → screenshot (null in jsdom) → drawer. */
-async function openDrawer(): Promise<void> {
-  ui.open();
+/** Press record, do `actions`, press stop — the drawer opens with that window. */
+async function record(actions: () => void = () => undefined): Promise<void> {
+  fab().click(); // start
   await sleep(0);
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  for (let i = 0; i < 10 && !drawer(); i++) await sleep(10);
+  actions();
+  await settle();
+  fab().click(); // stop → the form opens already holding the recording
+  for (let i = 0; i < 20 && !drawer(); i++) await sleep(10);
   if (!drawer()) throw new Error('drawer never opened');
 }
+
+/** Open the form with an empty recording (nothing done in between). */
+const openDrawer = (): Promise<void> => record();
 
 beforeEach(() => {
   document.body.innerHTML = '<button>Alpha</button><button>Beta</button><button>Gamma</button>';
@@ -70,76 +82,74 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('drawer — explicit recording (⏺ Start / Finish)', () => {
-  it('opens with no steps, "not recorded yet" and a Record button', async () => {
-    clickPage('Alpha'); // pre-recording activity never enters the report
-    await settle();
-    await openDrawer();
-    expect(steps().length).toBe(0);
-    expect(countLabel()).toBe('not recorded yet');
-    expect(recordBtn().textContent).toBe('⏺ Record the steps');
-    expect(shadow().querySelector('.live-hint')?.textContent).toBe(
-      'Recording captures your clicks, typing and screen until you press Finish.',
-    );
-  });
-
-  it('captures only the steps between Start and Finish', async () => {
-    clickPage('Alpha'); // before Start — excluded
-    await settle();
-    await openDrawer();
-
-    recordBtn().click(); // Start → collapses to the red Finish pill
-    expect((drawer() as HTMLElement).style.display).toBe('none');
-    expect(pillEl().classList.contains('rec')).toBe(true);
-    expect(pillEl().textContent).toContain('Finish');
+describe('the record button drives everything', () => {
+  it('starts idle, then counts steps live while recording', async () => {
+    expect(fab().textContent).toContain('Record');
+    fab().click();
+    await sleep(0);
+    expect(fab().classList.contains('rec')).toBe(true);
+    expect(fab().textContent).toContain('Stop');
 
     clickPage('Beta');
     clickPage('Gamma');
     await settle();
-    expect(Number(shadow().querySelector('.pill-count')?.textContent)).toBe(2);
+    expect(fab().textContent).toContain('2 steps');
+  });
 
-    pillEl().click(); // Finish → back to the report
-    expect((drawer() as HTMLElement).style.display).toBe('');
+  it('captures only what happened between start and stop', async () => {
+    clickPage('Alpha'); // before start — excluded
+    await settle();
+    await record(() => {
+      clickPage('Beta');
+      clickPage('Gamma');
+    });
     expect(steps()).toEqual(['Beta', 'Gamma']);
     expect(countLabel()).toBe('2 steps');
-    expect(recordBtn().textContent).toBe('↻ Re-record the steps');
 
-    clickPage('Alpha'); // after Finish — excluded
+    clickPage('Alpha'); // after stop — excluded
     await settle();
     expect(steps()).toEqual(['Beta', 'Gamma']);
   });
 
-  it('re-record discards the previous take', async () => {
-    await openDrawer();
-    recordBtn().click();
-    clickPage('Beta');
-    await settle();
-    pillEl().click(); // Finish take 1
-    expect(steps()).toEqual(['Beta']);
-
-    recordBtn().click(); // ↻ Re-record
-    clickPage('Gamma');
-    await settle();
-    pillEl().click(); // Finish take 2
-    expect(steps()).toEqual(['Gamma']);
-  });
-
-  it('installs the step sink at Start and clears it at Finish', async () => {
+  it('installs the step sink at start and clears it at stop', async () => {
     const spy = vi.spyOn(buffers, 'setStepSink');
-    await openDrawer();
-    recordBtn().click();
+    fab().click();
+    await sleep(0);
     expect(spy).toHaveBeenLastCalledWith(expect.any(Function));
-    pillEl().click();
+    fab().click();
+    for (let i = 0; i < 20 && !drawer(); i++) await sleep(10);
     expect(spy).toHaveBeenLastCalledWith(null);
   });
 
-  it('discards a live take when the drawer is closed', async () => {
-    const spy = vi.spyOn(buffers, 'setStepSink');
+  it('hides itself while the form is open and returns after discarding', async () => {
     await openDrawer();
-    recordBtn().click();
+    expect(fab().hidden).toBe(true);
     (shadow().querySelector('.drawer-close') as HTMLButtonElement).click();
     expect(drawer()).toBeNull();
-    expect(spy).toHaveBeenLastCalledWith(null);
+    expect(fab().hidden).toBe(false);
+    expect(fab().textContent).toContain('Record');
+  });
+});
+
+describe('drawer — how it is filed and what runs it', () => {
+  it('defaults to a bug on opus, and both are switchable', async () => {
+    await openDrawer();
+    expect(seg('Bug').getAttribute('aria-pressed')).toBe('true');
+    expect(seg('opus').getAttribute('aria-pressed')).toBe('true');
+
+    seg('New feature').click();
+    expect(seg('New feature').getAttribute('aria-pressed')).toBe('true');
+    expect(seg('Bug').getAttribute('aria-pressed')).toBe('false');
+
+    seg('sonnet').click();
+    expect(seg('sonnet').getAttribute('aria-pressed')).toBe('true');
+    expect(seg('opus').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('shows where the recording started', async () => {
+    await openDrawer();
+    const where = shadow().querySelector('.chips')?.textContent ?? '';
+    expect(where).toContain('page');
   });
 });
 
@@ -158,7 +168,6 @@ describe('drawer — collapse to a pill', () => {
     desc.value = 'the save button does nothing';
 
     (shadow().querySelector('.drawer-collapse') as HTMLButtonElement).click();
-    expect(pillEl().classList.contains('rec')).toBe(false); // plain collapse, not recording
     expect((drawer() as HTMLElement).style.display).toBe('none');
 
     pillEl().click();

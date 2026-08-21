@@ -21,15 +21,34 @@ export const widgetCss = `
 .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace; }
 button { font-family: inherit; }
 
-/* ---- fab + menu ---- */
+/* ---- record button ---- */
+/* A pill, not an icon: it has two states and must say which one it is in. */
 .qa-fab {
   position: fixed; right: 22px; bottom: 20px; z-index: 10;
-  width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
-  background: var(--qa); color: var(--qa-contrast); font-size: 20px;
-  display: grid; place-items: center; box-shadow: var(--shadow-big);
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  height: 40px; padding: 0 16px 0 13px; border-radius: 999px; border: none;
+  background: var(--qa); color: var(--qa-contrast);
+  font: inherit; font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em;
+  box-shadow: var(--shadow-big);
+  transition: background 130ms ease, transform 130ms ease;
 }
-.qa-fab:hover { transform: scale(1.06); }
+.qa-fab:hover { transform: translateY(-1px); }
 .qa-fab:focus-visible { outline: 2px solid var(--qa-bright); outline-offset: 2px; }
+.qa-fab .fab-icon { font-size: 11px; line-height: 1; }
+.qa-fab.rec { background: #c0392f; }
+.qa-fab.rec .fab-icon { animation: qa-rec-blink 1.2s ease-in-out infinite; }
+.qa-fab .fab-label { font-variant-numeric: tabular-nums; }
+
+/* ---- segmented control (bug|feature, model) ---- */
+.qa-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+.qa-seg > button {
+  padding: 5px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+  border: none; background: transparent; color: var(--ink-2);
+  transition: background 130ms ease, color 130ms ease;
+}
+.qa-seg > button + button { border-left: 1px solid var(--line); }
+.qa-seg > button:hover[aria-pressed="false"] { background: var(--qa-soft); color: var(--qa); }
+.qa-seg > button[aria-pressed="true"] { background: var(--qa); color: var(--qa-contrast); font-weight: 600; }
 
 /* ---- picker ---- */
 .qa-veil { position: fixed; inset: 0; z-index: 40; cursor: crosshair; background: rgba(30,30,30,.06); }

@@ -33,6 +33,7 @@ export const ingestSchema = z.object({
         text: z.string().optional(),
         testid: z.string().optional(),
         component: z.string().optional(),
+        sourceFile: z.string().optional(),
         selector: z.string().optional(),
         value: z.string().optional(),
       }),
@@ -61,6 +62,8 @@ export const ingestSchema = z.object({
     .max(MAX_ARRAY_ENTRIES),
   viewport: z.object({ w: z.number(), h: z.number(), dpr: z.number() }),
   appContext: z.record(z.string(), z.string()).optional(),
+  /** Which model runs the fix (contracts §Base context); anything else ignored. */
+  model: z.enum(['fable', 'opus', 'sonnet']).optional(),
   screenshotDataUrl: z.string().max(MAX_SCREENSHOT_DATA_URL_CHARS).optional(),
   // Additional captures (≤3), EACH under the same pre-decode length cap as the
   // primary; stored as report-<id>/marked-2.png … in order after the primary.
