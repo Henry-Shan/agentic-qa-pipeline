@@ -54,6 +54,14 @@ the real Supabase and the real API, so an unauthenticated hostname would put lab
 public internet. Zero Trust → Access → Applications → Self-hosted, domain
 `*.qa-preview.example.com`, policy Allow · Emails → the tester list, identity One-time PIN.
 
+**Certificate prerequisite (this is what blocks it today).** Cloudflare's Universal SSL covers
+`example.com` and `*.example.com` but NOT a second-level wildcard like
+`*.qa-preview.example.com` — so `preview-50.qa-preview.example.com` gets no certificate and
+TLS fails before Access is even consulted (verified: `sslv3 alert handshake failure`, while
+`qa.example.com` serves a cert normally). Enable **Advanced Certificate Manager** on the zone
+(~$10/mo) with a `*.qa-preview.example.com` cert, and everything else here already works — the
+tunnel connects, DNS records are created per run, and the Access policy is in place.
+
 Then run `./worker/setup-tunnel.sh`. It authenticates checks, creates the tunnel, refuses to
 switch modes until you confirm Access is in place, flips `PREVIEW_MODE=tunnel`, restarts the
 worker, and tells you how to verify (and how to revert). Until then previews stay

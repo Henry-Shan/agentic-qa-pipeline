@@ -203,6 +203,18 @@ export async function stopAllPreviews(ctx: Ctx): Promise<void> {
 let cfChild: ChildProcess | null = null;
 
 /** Regenerate the ingress yaml, route new hostnames once, restart cloudflared. */
+/**
+ * Re-publish every re-attached preview after a worker restart. Previews are
+ * detached processes that outlive the worker, but the cloudflared child does
+ * NOT — so without this, a restart in tunnel mode leaves live previews with
+ * hostnames that resolve to nothing.
+ */
+export async function republishTunnel(ctx: Ctx): Promise<void> {
+  if (ctx.cfg.previewMode !== 'tunnel') return;
+  if (ctx.state.previews.size === 0) return;
+  await syncTunnel(ctx);
+}
+
 async function syncTunnel(ctx: Ctx): Promise<void> {
   const yml = path.join(ctx.cfg.qaHome, 'cloudflared.yml');
   const entries = [...ctx.state.previews.values()].filter((p) => p.hostname !== null);

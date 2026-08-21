@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execa } from 'execa';
 import { autoAssignOnBlock } from './assign';
 import { pidAlive } from './config';
-import { startPreview } from './preview';
+import { republishTunnel, startPreview } from './preview';
 import type { Ctx } from './state';
 import { log, nowIso } from './util';
 
@@ -72,6 +72,10 @@ export async function reconcile(ctx: Ctx): Promise<void> {
       log('reconcile', `preview for run ${run.id} is dead — marked down`);
     }
   }
+
+  // Re-attached previews still have tunnel hostnames, but the cloudflared child
+  // died with the old worker — republish so those URLs resolve again.
+  await republishTunnel(ctx).catch((e: Error) => log('reconcile', `tunnel republish failed: ${e.message}`));
 
   // A graceful shutdown stops preview servers and down-marks their runs; a
   // crash leaves them dead and the loop above down-marks them. Either way a
