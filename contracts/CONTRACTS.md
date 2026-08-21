@@ -94,35 +94,20 @@ on the task page. `QA_ROUTER=0` sends everything down the full pipeline.
   `lane='complex'` — a wrong routing costs one cheap run, not a bad PR. A report that already
   has a lane is never re-routed on requeue.
 
-## Task input — the questionnaire (db/0012)
+## Task fields carried by a report (db/0012)
 
-A doc section IS the task form: one block, read top to bottom, three labelled groups —
-**you write** · **captured from the app** · **how it runs**. Every field the task carries is a
-row; the captured rows are rendered from the start in an EMPTY state ("not captured yet — the
-page and component you were on") so the form's own shape shows what is missing. One
-⌖ Capture button fills all four (location · what you did · what you saw · errors) in place.
+Docs were removed (db/0014); the widget is the only entry point. These columns survive on
+`qa_reports` because the PIPELINE reads them — they are simply empty for a widget-filed report
+until a UI sets them:
 
-Rows and their consumers:
-- **The problem** (required) — the task statement, verbatim. First line = section name + PR title.
-- **Done when** (required) — `done_when`. The examiner's PRIMARY oracle: when present it judges
-  against this sentence rather than inventing a bar (`worker/src/examine.ts`), and it is the
-  acceptance criterion the blind test agent encodes.
-- **Location / What you did / What you saw / Errors** — captured; `console_log`/`network_log`
-  now ride the doc-mode draft too, so a dispatched section carries the same diagnostics a
-  widget-filed report does.
-- **Files** — `files[]`, fixtures a recording cannot carry (a recording has no file bytes).
-  `POST /api/docs/section-files` (multipart, ≤5 files, ≤15MB each) → `doc-section-<id>/files/…`;
-  dispatch copies them to `report-<id>/files/…`; the envelope downloads them into the run dir
-  and the grounding instructions tell the run to reproduce WITH them.
-- **Reproduce as** — `reproduce_as`; null = the reporter's own roles.
-- **Must not do** — `constraints`; HARD boundaries. The envelope states that crossing one is a
-  STOP, not a judgment call.
-- **Model · Base context · Treat as** — see §Base context.
-
-**Send moves you in.** Dispatch navigates to `/task/<id>`; the form is not cleared and there is
-no confirmation screen — the answers become the task's record, and the section keeps tracking
-it from the doc. A dispatched section renders read-only with an "open task #N" link.
-**Priority is deliberately not a field** — order is the doc's order and the queue's arrival time.
+- `done_when` — the reporter's own definition of fixed. When present the examiner judges against
+  it instead of inventing a bar (`worker/src/examine.ts`); when empty it derives expectations
+  from the description, which is the current widget behavior.
+- `constraints` — hard boundaries stated in the envelope: crossing one is a STOP, not a
+  judgment call.
+- `reproduce_as` — role override; null means the reporter's own roles.
+- `files` — fixture paths (`report-<id>/files/…`) the envelope downloads into the run dir, for
+  bugs a recording cannot carry (a recording has no file bytes).
 
 ## Base context + per-task model (db/0011)
 
@@ -177,33 +162,6 @@ and an examiner model judges whether the expected result is there. No test is wr
 - Rows land in `qa_examinations` (realtime; tester RLS) and render on the task page with the
   frames the examiner read (`GET /api/exam-shot/[examId]?i=N`). Reports with no recorded steps
   are not examined. Boot-restarted previews are not re-examined. `QA_EXAM=0` disables the loop.
-
-## QA Docs (db/0009)
-
-Notion-style documents above the board: `qa_docs` (slug, emoji, title, description) and
-`qa_doc_sections` (ordered by `position`; title, body, `kind` bug|feature; captured context —
-route/component/source_file/selector/element_text/click_trail/viewport; evidence paths
-`doc-section-<id>/marked*.png` + `replay.json`; `report_id` once dispatched). `qa_reports`
-gains nullable `doc_section_id`. Tester RLS + realtime on both tables.
-
-- **Capture (doc mode).** `/doc-capture/<sectionId>` embeds the host app with the standard
-  hello/activate handshake, then posts `{type:'qa-pipeline:doc-mode'}` to the widget. In doc
-  mode the widget's Send becomes "Attach to doc ▸" and posts
-  `{type:'qa-pipeline:draft', draft:{kind, description, route, pageTitle, clickTrail, viewport,
-  component?, sourceFile?, selector?, testid?, elementText?, shots: dataUrl[], replayJson?}}`
-  to the parent instead of filing. The page stores light fields on the section (description
-  fills an EMPTY body only), then uploads blobs via `POST /api/docs/section-capture`
-  (signed-upload URLs, same pattern as ingest direct-upload) and returns to the doc.
-- **Dispatch.** `POST /api/docs/dispatch {sectionId}` inserts a `qa_reports` row (title/body →
-  title/description + a `[from doc …]` trailer, section context columns mapped 1:1, reporter =
-  the signed-in tester with the same role-snapshot enrichment as ingest, `doc_section_id` set),
-  COPIES the evidence into `report-<id>/…` (reports stay self-contained for destroy), links
-  `section.report_id`, and inserts a "filed from doc" event. 409 if already dispatched. The
-  worker pipeline is untouched — a dispatched section IS a report.
-- **Tracking.** Doc pages subscribe to `qa_doc_sections` + `qa_reports` realtime; sections show
-  the report's status pill + pipeline. A doc's progress = sections whose report reached
-  verified/shipped. `GET /api/doc-replay/[sectionId]` mirrors `/api/replay/[id]` for section
-  recordings. Task pages show a "part of <doc> § <section>" backlink.
 
 ## Preview auto-login (site ↔ the host app web)
 

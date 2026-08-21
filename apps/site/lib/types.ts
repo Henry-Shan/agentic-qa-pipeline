@@ -53,50 +53,6 @@ export interface QaExamination {
   created_at: string;
 }
 
-// qa_docs / qa_doc_sections — QA Docs (db/0009, contracts §QA Docs).
-export interface QaDoc {
-  id: number;
-  slug: string;
-  emoji: string | null;
-  title: string;
-  description: string;
-  created_by: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface QaDocSection {
-  id: number;
-  doc_id: number;
-  position: number;
-  title: string;
-  body: string;
-  kind: ReportKind;
-  route: string | null;
-  component: string | null;
-  source_file: string | null;
-  selector: string | null;
-  element_text: string | null;
-  click_trail: ClickTrailEntry[] | null;
-  viewport: { w: number; h: number; dpr: number } | null;
-  screenshots: string[];
-  replay_path: string | null;
-  report_id: number | null;
-  /** Fork the run from this Claude session id; '' = cold; null = worker default (db/0011). */
-  base_session: string | null;
-  /** 'fable' | 'opus' | 'sonnet' — null = worker default (db/0011). */
-  model: string | null;
-  /** The questionnaire's remaining answers (db/0012). */
-  done_when: string;
-  constraints: string;
-  reproduce_as: string | null;
-  files: string[];
-  console_log: ConsoleEntry[];
-  network_log: NetworkEntry[];
-  created_at: string;
-  updated_at: string;
-}
-
 // qa_settings — site-editable worker limits (keys: max_runs, max_previews).
 export interface QaSetting {
   key: string;
@@ -157,9 +113,7 @@ export interface QaReport {
   description: string | null;
   kind: ReportKind;
   status: ReportStatus;
-  /** Set when the report was dispatched from a doc section (db/0009). */
-  doc_section_id?: number | null;
-  /** Base context to fork from / model to run on (db/0011). */
+  /** Base context to fork from / model to run on (db/0011, contracts §Base context). */
   base_session?: string | null;
   model?: string | null;
   /** Router decision (db/0013). */
