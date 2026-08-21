@@ -554,8 +554,19 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `rework`. `verdict_fixed` → report `verified` + event.
 - **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree, build first
   (`PREVIEW_BUILD_CMD`, default `npx turbo run build --filter=web`) then
-  `npm --prefix apps/web run start -- --port <p>`, with `NEXT_PUBLIC_API_BASE_URL` set at
-  BOTH build and run time (`NEXT_PUBLIC_*` is inlined at build).
+  `npm --prefix apps/web run start -- --port <p>`.
+  **Backend URLs must be forced, three ways.** `apps/web/.env.local` is symlinked into every
+  worktree from the main checkout and points at a local dev stack (`localhost:8082` API,
+  `localhost:8080` OCR) — nothing listens there on a tester's machine, so an inherited value
+  means ERR_CONNECTION_REFUSED on every call. So the worker (a) writes
+  `apps/web/.env.production.local` (Next's highest-precedence env file, and gitignored, so it
+  never reaches the PR diff), (b) passes the values in the process env — which beats every
+  env file, but only survives turbo with `--env-mode=loose`, since turbo 2 filters variables
+  it was not told about, and (c) after building, greps the client bundle for the expected URL
+  and falls back to dev mode if it is absent. Both `NEXT_PUBLIC_API_BASE_URL` and
+  `NEXT_PUBLIC_OCR_BASE_URL` are set (production serves both from the API host).
+  The same check gates build REUSE on wake, so a bundle built with the wrong backend
+  self-heals instead of being handed back forever.
   **Not `next dev`.** Measured on this app: dev serves one page as 25.8 MB over 123 requests
   and holds ~1 GB per preview, because it compiles routes on demand and ships every module
   unbundled — so opening a new route took seconds. Built: 1.4 MB over 18 requests, 65 ms

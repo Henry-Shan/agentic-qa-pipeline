@@ -120,7 +120,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
   const child = spawn('bash', ['-c', cmd], {
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, NEXT_PUBLIC_API_BASE_URL: apiBase, PORT: String(port) },
+    env: { ...process.env, ...previewEnv(apiBase), PORT: String(port) },
   });
   fs.closeSync(out);
   child.unref();
@@ -221,9 +221,28 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   if (!ctx.cfg.previewBuild || ctx.cfg.previewCmd) return false;
   const buildId = path.join(worktree, 'apps/web/.next/BUILD_ID');
   // Waking an evicted preview re-serves code that has not changed since it was
-  // built, so reuse it — that is what makes wake-from-sleep quick.
-  if (waking && fs.existsSync(buildId)) return true;
+  // built, so reuse it — that is what makes wake-from-sleep quick. But only if
+  // that build points at the right backend: builds made before this check exists,
+  // or made while the env was wrong, must not be handed back.
+  if (waking && fs.existsSync(buildId) && bundleTargets(worktree, apiBase)) return true;
 
+  // Belt and braces on the env, because getting this wrong is silent: the build
+  // succeeds and the app calls the wrong backend.
+  //  1. `.env.production.local` — highest precedence of Next's env files, and
+  //     gitignored (apps/web/.gitignore), so it never reaches the PR diff.
+  //  2. the process env, which beats every env file — but only if it survives
+  //     turbo, hence `--env-mode=loose` in the default build command. Turbo 2
+  //     filters unknown variables by default, which is exactly how the dev
+  //     `.env.local` won and previews ended up calling localhost:8082.
+  const env = previewEnv(apiBase);
+  try {
+    fs.writeFileSync(
+      path.join(worktree, 'apps/web/.env.production.local'),
+      `${Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')}\n`,
+    );
+  } catch (e) {
+    log('preview', `run ${run.id}: could not pin preview env: ${(e as Error).message}`);
+  }
   log('preview', `run ${run.id}: building preview (${ctx.cfg.previewBuildCmd})`);
   await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: 'building preview…' });
   // Timed inside the queue: including the wait would report a 5-minute build for
@@ -233,7 +252,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
     started = Date.now();
     return execa('bash', ['-c', ctx.cfg.previewBuildCmd], {
       cwd: worktree,
-      env: { NEXT_PUBLIC_API_BASE_URL: apiBase, NEXT_TELEMETRY_DISABLED: '1' },
+      env: { ...env, NEXT_TELEMETRY_DISABLED: '1' },
       extendEnv: true,
       reject: false,
       timeout: 15 * 60_000,
@@ -241,7 +260,19 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   });
   const secs = Math.round((Date.now() - started) / 1000);
   if (r.exitCode === 0 && fs.existsSync(buildId)) {
-    log('preview', `run ${run.id}: built in ${secs}s`);
+    // A build that silently baked in the wrong backend is worse than no build:
+    // it looks fine and every request is refused. Prove the URL is in the bundle.
+    if (!bundleTargets(worktree, apiBase)) {
+      log('preview', `run ${run.id}: built in ${secs}s but the bundle does not point at ${apiBase} — serving dev mode`);
+      await ctx.db.insertEvent({
+        report_id: run.report_id,
+        run_id: run.id,
+        type: 'system',
+        message: `preview build did not pick up the API URL (expected ${apiBase}) — falling back to the dev server`,
+      });
+      return false;
+    }
+    log('preview', `run ${run.id}: built in ${secs}s → ${apiBase}`);
     return true;
   }
   try {
@@ -257,6 +288,27 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
     type: 'system',
     message: `preview build failed — falling back to the slower dev server. ${tail}`,
   });
+  return false;
+}
+
+/** Does the built client bundle actually call `apiBase`? */
+function bundleTargets(worktree: string, apiBase: string): boolean {
+  const dir = path.join(worktree, 'apps/web/.next/static/chunks');
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir, { recursive: true }) as string[];
+  } catch {
+    return false;
+  }
+  for (const f of files) {
+    const full = path.join(dir, f);
+    try {
+      if (!fs.statSync(full).isFile() || !full.endsWith('.js')) continue;
+      if (fs.readFileSync(full, 'utf8').includes(apiBase)) return true;
+    } catch {
+      // unreadable chunk — keep looking
+    }
+  }
   return false;
 }
 
@@ -351,6 +403,19 @@ function refusesToServe(ctx: Ctx, hostname: string): boolean {
 
 /** Same-origin path the preview's API calls go through; forwarded by the front door. */
 export const API_PREFIX = '/__api';
+
+/**
+ * Backend URLs a preview must NOT inherit from the developer's `.env.local`.
+ *
+ * `apps/web/.env.local` is symlinked into every worktree from the main checkout,
+ * where it points at a local dev stack (`localhost:8082` API, `localhost:8080`
+ * OCR). Nothing is listening on those ports on a tester's machine, so a preview
+ * that inherits them answers every call with ERR_CONNECTION_REFUSED. Production
+ * serves both from the same API host, so both point at the same place here.
+ */
+function previewEnv(apiBase: string): Record<string, string> {
+  return { NEXT_PUBLIC_API_BASE_URL: apiBase, NEXT_PUBLIC_OCR_BASE_URL: apiBase };
+}
 
 /**
  * A task's permanent preview address. Keyed by REPORT, not run: reworking a task

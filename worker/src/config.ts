@@ -144,7 +144,10 @@ export function loadConfig(): WorkerConfig {
     wakePort: intEnv('WAKE_PORT', 4521),
     previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
     previewBuild: process.env.PREVIEW_BUILD !== '0',
-    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npx turbo run build --filter=web',
+    // --env-mode=loose: turbo 2 filters environment variables it was not told
+    // about, which silently drops the preview's API URL and lets the developer's
+    // .env.local win.
+    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npx turbo run build --filter=web --env-mode=loose',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',
