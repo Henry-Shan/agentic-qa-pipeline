@@ -49,6 +49,8 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
   // same path (so the version bump is what forces the player to re-fetch).
   const [afterSavedRunId, setAfterSavedRunId] = useState<number | null>(null);
   const [afterVersion, setAfterVersion] = useState(0);
+  // Re-watch the steps execute live even though a recording already exists.
+  const [rerunLive, setRerunLive] = useState(false);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
   // The interactive preview embed exists only while the preview server is up —
@@ -140,6 +142,20 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
     if (eventsRes.data) setEvents((eventsRes.data as QaEvent[]).slice().reverse());
   }, [reportId]);
 
+  // Realtime carries most updates, but the moments that reveal the tabs — the
+  // preview coming up, the after-recording landing — are exactly when a missed
+  // event costs a manual refresh. While work is in flight, poll as a floor.
+  const inFlight =
+    report.status === 'running' ||
+    report.status === 'rework' ||
+    report.status === 'pr_ready' ||
+    report.status === 'preview';
+  useEffect(() => {
+    if (!inFlight) return;
+    const id = window.setInterval(() => void refetch(), 8_000);
+    return () => window.clearInterval(id);
+  }, [inFlight, refetch]);
+
   useLive(
     `qa-task-${reportId}`,
     [
@@ -192,13 +208,22 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
     );
   }
 
-  // Hero tabs, in contract order. Only tabs with real content are built, so the
-  // default is simply "Before, else After, else Live preview".
+  // Two tabs only: what the tester saw, and the same actions re-taken on the
+  // fixed build. The live preview is a LINK, not a tab — you go there to poke
+  // at the app yourself, which is a different job from watching the fix work.
+  //
+  // "After the fix" has two forms of the same thing. Before a recording exists
+  // it embeds the preview, which re-executes the tester's steps live (you watch
+  // the actions being taken and see the result) and records them as it goes;
+  // once that recording exists it plays back, with a link to run it again.
+  const canReplayLive = Boolean(previewUrl);
+  const showLiveRerun = canReplayLive && (!hasAfter || rerunLive);
+
   const heroTabs: HeroTab[] = [];
   if (hasBefore) {
     heroTabs.push({
       id: 'before',
-      label: 'Before (the report)',
+      label: 'Before',
       // `steps` is only a FALLBACK: recordings made before the qa-step markers
       // existed get their marks derived from the report's own click_trail.
       content: (
@@ -210,55 +235,70 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
       ),
     });
   }
-  if (hasAfter) {
+  if (hasAfter || canReplayLive) {
     heroTabs.push({
       id: 'after',
       label: 'After the fix',
-      content: (
-        // Keyed by run + upload version so a fresh capture re-fetches instead
-        // of showing the previous recording.
-        <ReplayPlayer
-          key={`after-${run?.id ?? 0}-${afterVersion}`}
-          reportId={reportId}
-          src="after"
-          label="after the fix · replayed on the preview build"
-        />
+      eager: showLiveRerun,
+      content: showLiveRerun ? (
+        <div className="flex flex-col gap-2">
+          <PreviewEmbed
+            key={previewUrl ?? 'preview'}
+            previewUrl={previewUrl ?? ''}
+            report={report}
+            runId={run?.id ?? null}
+            onAfterReplay={() => {
+              setAfterSavedRunId(run?.id ?? null);
+              setAfterVersion((v) => v + 1);
+              setRerunLive(false);
+            }}
+          />
+          <p className="px-1 text-[12px] text-ink-3">
+            Your steps are being re-taken on the fixed build — watch the result.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <ReplayPlayer
+            key={`after-${run?.id ?? 0}-${afterVersion}`}
+            reportId={reportId}
+            src="after"
+            label="after the fix · your steps, re-taken on the fixed build"
+          />
+          {canReplayLive ? (
+            <button
+              type="button"
+              onClick={() => setRerunLive(true)}
+              className="self-start px-1 text-[12px] font-medium text-qa hover:underline"
+            >
+              Run it again on the fixed build
+            </button>
+          ) : null}
+        </div>
       ),
     });
   }
-  if (previewUrl) {
-    heroTabs.push({
-      id: 'live',
-      label: 'Live preview',
-      eager: true,
-      content: (
-        <PreviewEmbed
-          key={previewUrl}
-          previewUrl={previewUrl}
-          report={report}
-          runId={run?.id ?? null}
-          onAfterReplay={() => {
-            setAfterSavedRunId(run?.id ?? null);
-            setAfterVersion((v) => v + 1);
-          }}
-        />
-      ),
-    });
-  }
-  const heroDefault = hasBefore
-    ? 'before'
-    : hasAfter
-      ? 'after'
-      : previewUrl
-        ? 'live'
-        : (heroTabs[0]?.id ?? '');
+  const heroDefault = hasBefore ? 'before' : (heroTabs[0]?.id ?? '');
 
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Link href="/" className="text-[13px] font-semibold text-qa">
-          ← All reports
-        </Link>
+        <span className="flex items-center gap-3">
+          <Link href="/" className="text-[13px] font-semibold text-qa">
+            ← All reports
+          </Link>
+          {previewUrl ? (
+            <a
+              href={previewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="The fixed build, running on the machine that produced it"
+              className="btn"
+            >
+              Open live preview ↗
+            </a>
+          ) : null}
+        </span>
         <span className="font-mono text-[11.5px] text-ink-3">
           task #{report.id}
           {report.reporter_email ? (
