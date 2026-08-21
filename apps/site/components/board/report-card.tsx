@@ -1,12 +1,12 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { initialOf, relativeAge } from '@/lib/format';
-import { useDisplayName } from '@/lib/display-names';
-import type { QaReport, QaRun } from '@/lib/types';
-import { StatusPill } from '@/components/status-pill';
-import { Pipeline } from '@/components/pipeline';
-import { firstLine } from '@/components/needs-human-text';
+import Link from "next/link";
+import { initialOf, relativeAge } from "@/lib/format";
+import { useDisplayName } from "@/lib/display-names";
+import type { QaReport, QaRun } from "@/lib/types";
+import { StatusPill } from "@/components/status-pill";
+import { Pipeline } from "@/components/pipeline";
+import { firstLine } from "@/components/needs-human-text";
 
 export function ReportCard({
   report,
@@ -18,7 +18,7 @@ export function ReportCard({
   /** Hand-off summary for a blocked report — its first line previews on the card. */
   needsHuman?: string;
 }) {
-  const fixing = report.status === 'running' || report.status === 'rework';
+  const fixing = report.status === "running" || report.status === "rework";
   const codeHint = report.source_file ?? report.component;
   const reporter = useDisplayName(report.reporter_email);
 
@@ -28,31 +28,55 @@ export function ReportCard({
       className="sheet mb-2 block px-4 py-3 transition-colors hover:bg-surface"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="truncate text-[14px] font-medium leading-snug">{report.title}</h3>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-ink-3">
-            <span className="flex items-center gap-1.5" title={report.reporter_email ?? undefined}>
-              <span className="avatar">{initialOf(reporter)}</span>
-              {reporter} ·{' '}
-              <span suppressHydrationWarning>{relativeAge(report.created_at)}</span>
-            </span>
-            <span
-              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                report.kind === 'feature' ? 'bg-qa-soft text-qa' : 'bg-line-soft text-ink-2'
-              }`}
-            >
-              {report.kind === 'feature' ? 'feature request' : 'bug'}
-            </span>
-            {report.assignee ? (
+        {/* The task number, leading. It is the same number as the task's preview
+            host (task 43 → qa-preview-43.example.com), so a card can be matched
+            to a preview URL at a glance. */}
+        <div className="flex min-w-0 gap-3">
+          <span
+            title={`Task #${report.id} · preview host qa-preview-${report.id}`}
+            className="mt-0.5 flex-none font-mono text-[13px] font-semibold tabular-nums text-ink-3"
+          >
+            {report.id}
+          </span>
+          <div className="min-w-0">
+            <h3 className="truncate text-[14px] font-medium leading-snug">
+              {report.title}
+            </h3>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-ink-3">
               <span
-                title={`Assigned to ${report.assignee}`}
-                className="rounded-full bg-qa-soft px-2 py-0.5 text-[11.5px] font-medium text-qa"
+                className="flex items-center gap-1.5"
+                title={report.reporter_email ?? undefined}
               >
-                assigned · {report.assignee}
+                <span className="avatar">{initialOf(reporter)}</span>
+                {reporter} ·{" "}
+                <span suppressHydrationWarning>
+                  {relativeAge(report.created_at)}
+                </span>
               </span>
-            ) : null}
-            {codeHint ? <span className="truncate font-mono">{codeHint}</span> : null}
-            {report.console_log.length > 0 ? <span>console error attached</span> : null}
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  report.kind === "feature"
+                    ? "bg-qa-soft text-qa"
+                    : "bg-line-soft text-ink-2"
+                }`}
+              >
+                {report.kind === "feature" ? "feature request" : "bug"}
+              </span>
+              {report.assignee ? (
+                <span
+                  title={`Assigned to ${report.assignee}`}
+                  className="rounded-full bg-qa-soft px-2 py-0.5 text-[11.5px] font-medium text-qa"
+                >
+                  assigned · {report.assignee}
+                </span>
+              ) : null}
+              {codeHint ? (
+                <span className="truncate font-mono">{codeHint}</span>
+              ) : null}
+              {report.console_log.length > 0 ? (
+                <span>console error attached</span>
+              ) : null}
+            </div>
           </div>
         </div>
         <StatusPill
@@ -71,7 +95,7 @@ export function ReportCard({
         </div>
       ) : null}
 
-      {report.status === 'blocked' && needsHuman ? (
+      {report.status === "blocked" && needsHuman ? (
         <div className="mt-2 truncate rounded-[7px] bg-amber-soft px-2.5 py-1.5 text-[12px] text-amber">
           {firstLine(needsHuman)}
         </div>
