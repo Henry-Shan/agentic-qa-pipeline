@@ -43,6 +43,7 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
 - `PREVIEW_MODE=local|tunnel` · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
+- `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
 - `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
   preview address is `<prefix><reportId>.<zone>`; ONE label deep so `*.<zone>` TLS covers it
 - `SITE_URL=https://qa.example.com`
@@ -590,6 +591,24 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   *Verified in a real browser: all `_next` chunks 200, HMR socket 101, clicking Sign In
   navigates to /login, typing lands in React state, zero console errors. Direct to the dev
   server with the public Origin still 403s — the rewrite is what fixes it.*
+- **Preview API access** (`/__api/*`): a preview's `NEXT_PUBLIC_API_BASE_URL` is set to
+  `https://<its own host>/__api`, and the front door forwards that prefix to
+  `PREVIEW_API_ORIGIN` (default `https://api.example.com`), stripping `origin`/`referer`
+  so it arrives as a plain server-to-server call.
+  **Why.** The API's CORS allowlist is `example.com` plus localhost (`main.go`
+  `isAllowedOrigin`). A preview hostname is neither, so calling the API directly fails
+  preflight — "No 'Access-Control-Allow-Origin' header is present" — and every request dies
+  as `ERR_FAILED`, which looks exactly like the backend being down. The alternative was
+  adding preview hosts to that allowlist, i.e. editing and redeploying the PRODUCTION API to
+  serve QA. Same-origin keeps production untouched and needs no deploy.
+  The browser's `Authorization` header rides along, so the API still authenticates the real
+  tester and lab scoping is unchanged — the hop adds no privilege (an unauthenticated caller
+  gets the API's own 401, exactly as it would calling the API directly).
+  `previewApiOrigin` must be https: these requests carry a bearer token.
+  *Verified from inside the page: `/__api/repository/my-labs` → 401 "Authorization header
+  required" (identical to production); with a bogus token → 401 "Invalid token" on both,
+  proving the header is forwarded; POST body forwarded (405 from the API itself); and the
+  old direct call still throws "Failed to fetch", which was the reported bug.*
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans

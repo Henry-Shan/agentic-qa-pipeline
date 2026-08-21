@@ -48,6 +48,8 @@ export interface WorkerConfig {
   previewZone: string;
   /** Serves qa-preview-*.<zone> whose dev server is asleep; wakes it. 127.0.0.1 only. */
   wakePort: number;
+  /** Real API a preview's `/__api/*` calls are forwarded to. https origin only. */
+  previewApiOrigin: string;
   cfTunnelName: string;
   siteUrl: string;
   /** QA_DEFAULT_ASSIGNEE — fallback tester display name for auto-assign-on-block. */
@@ -136,6 +138,7 @@ export function loadConfig(): WorkerConfig {
     previewHostPrefix: process.env.PREVIEW_HOST_PREFIX ?? 'qa-preview-',
     previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
     wakePort: intEnv('WAKE_PORT', 4521),
+    previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',

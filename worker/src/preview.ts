@@ -85,11 +85,19 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   const cmd = ctx.cfg.previewCmd
     ? `${ctx.cfg.previewCmd} ${port}`
     : `npm --prefix ${shq(path.join(run.worktree, 'apps/web'))} run dev -- --port ${port}`;
+  // The API is reached through the preview's OWN origin (`/__api`), which the
+  // front door forwards to the real API. Going straight to api.example.com is
+  // a cross-origin call the API rejects — its CORS allowlist is example.com and
+  // localhost, and a preview hostname is neither. Adding preview hosts to that
+  // allowlist would mean changing and redeploying the production API for the sake
+  // of QA, so instead we make the call same-origin and production stays untouched.
+  const publicHost = ctx.cfg.previewMode === 'tunnel' ? previewHostname(ctx, run.report_id) : null;
+  const apiBase = publicHost && !refusesToServe(ctx, publicHost) ? `https://${publicHost}${API_PREFIX}` : ctx.cfg.previewApiOrigin;
   const out = fs.openSync(logPath, 'a');
   const child = spawn('bash', ['-c', cmd], {
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, NEXT_PUBLIC_API_BASE_URL: 'https://api.example.com', PORT: String(port) },
+    env: { ...process.env, NEXT_PUBLIC_API_BASE_URL: apiBase, PORT: String(port) },
   });
   fs.closeSync(out);
   child.unref();
@@ -137,7 +145,7 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   // changes the URL — the wake service brings it back on the next request.
   let url = `http://localhost:${port}`;
   if (ctx.cfg.previewMode === 'tunnel') {
-    const host = previewHostname(ctx, run.report_id);
+    const host = publicHost ?? previewHostname(ctx, run.report_id);
     if (refusesToServe(ctx, host)) {
       log('preview', `REFUSING to serve ${host} — not a preview hostname`);
     } else {
@@ -254,6 +262,9 @@ function refusesToServe(ctx: Ctx, hostname: string): boolean {
   return PROTECTED_HOSTS.has(h) || !allowedHost(ctx).test(h);
 }
 
+/** Same-origin path the preview's API calls go through; forwarded by the front door. */
+export const API_PREFIX = '/__api';
+
 /**
  * A task's permanent preview address. Keyed by REPORT, not run: reworking a task
  * spawns a new run, and the tester must not have to hunt for a new link. The DNS
@@ -264,16 +275,16 @@ export function previewHostname(ctx: Ctx, reportId: number): string {
   return `${ctx.cfg.previewHostPrefix}${reportId}.${ctx.cfg.previewZone}`;
 }
 
-/** Regenerate the ingress yaml, route new hostnames once, restart cloudflared. */
 /**
- * Re-publish every re-attached preview after a worker restart. Previews are
- * detached processes that outlive the worker, but the cloudflared child does
- * NOT — so without this, a restart in tunnel mode leaves live previews with
- * hostnames that resolve to nothing.
+ * Bring the tunnel up at boot, before any preview exists.
+ *
+ * cloudflared dies with the worker while previews (detached) outlive it, so a
+ * restart must re-establish it. It must NOT wait for a preview to start: with
+ * the tunnel down every task URL answers 530 from Cloudflare instead of the wake
+ * page, which is exactly the "permanent link" promise breaking.
  */
 export async function republishTunnel(ctx: Ctx): Promise<void> {
   if (ctx.cfg.previewMode !== 'tunnel') return;
-  if (ctx.state.previews.size === 0) return;
   await syncTunnel(ctx);
 }
 

@@ -1,6 +1,7 @@
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
-import { previewHostname, startPreview } from './preview';
+import { API_PREFIX, previewHostname, startPreview } from './preview';
 import type { Ctx, PreviewHandle } from './state';
 import { log } from './util';
 
@@ -36,6 +37,13 @@ export function startFrontDoor(ctx: Ctx): http.Server | null {
     if (reportId === null) {
       res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
       res.end(page('Not a QA preview', 'This address does not belong to a QA task.', false));
+      return;
+    }
+
+    // `/__api/*` is the preview's same-origin door to the real API. It is served
+    // whether or not the dev server is up — it does not depend on one.
+    if (req.url?.startsWith(`${API_PREFIX}/`) || req.url === API_PREFIX) {
+      proxyApi(ctx, req, res);
       return;
     }
 
@@ -151,6 +159,63 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, handle: Prev
     }
     res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
     res.end(page('Preview unavailable', `The dev server stopped responding (${e.message}).`, false));
+  });
+  req.pipe(upstream);
+}
+
+/**
+ * Forward `/__api/*` to the real API, so the browser only ever talks to the
+ * preview's own origin.
+ *
+ * The API's CORS allowlist is example.com plus localhost — a preview hostname is
+ * neither, so calling it directly fails preflight with no
+ * Access-Control-Allow-Origin and every request dies as ERR_FAILED. The
+ * alternative was adding preview hosts to that allowlist, which means editing and
+ * redeploying the PRODUCTION API to serve QA. This keeps production untouched.
+ *
+ * The browser's Authorization header rides along, so the API still authenticates
+ * the real tester and multi-tenancy is unchanged; this hop adds no privilege.
+ */
+function proxyApi(ctx: Ctx, req: http.IncomingMessage, res: http.ServerResponse): void {
+  let target: URL;
+  try {
+    target = new URL(ctx.cfg.previewApiOrigin);
+  } catch {
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('PREVIEW_API_ORIGIN is not a URL');
+    return;
+  }
+  if (target.protocol !== 'https:') {
+    // The tester's bearer token is in these requests; never send them in the clear.
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('PREVIEW_API_ORIGIN must be https');
+    return;
+  }
+
+  const path = (req.url ?? '').slice(API_PREFIX.length) || '/';
+  const headers: http.IncomingHttpHeaders = { ...req.headers };
+  headers.host = target.host;
+  // Present it as the API's own origin: the request is now server-to-server, and a
+  // preview hostname in these headers is exactly what the API rejects.
+  delete headers.origin;
+  delete headers.referer;
+  delete headers['sec-fetch-mode'];
+  delete headers['sec-fetch-site'];
+
+  const upstream = https.request(
+    { host: target.hostname, port: target.port || 443, method: req.method, path, headers },
+    (pres) => {
+      res.writeHead(pres.statusCode ?? 502, pres.headers);
+      pres.pipe(res);
+    },
+  );
+  upstream.on('error', (e: Error) => {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `preview could not reach the API: ${e.message}` }));
   });
   req.pipe(upstream);
 }
