@@ -49,9 +49,15 @@ Then in `worker/.env` set `PREVIEW_MODE=tunnel`, `PREVIEW_DOMAIN=qa-preview.exam
 `CF_TUNNEL_NAME=qa-pipeline`. The worker maintains the ingress file and the cloudflared child
 process itself.
 
-**Cloudflare Access (strongly recommended):** Zero Trust → Access → add an application for
-`*.qa-preview.example.com` with a policy allowing the same tester emails (one-time PIN). Until
-this exists, keep `PREVIEW_MODE=local`.
+**Cloudflare Access is REQUIRED, not recommended.** A preview is an in-progress build wired to
+the real Supabase and the real API, so an unauthenticated hostname would put lab data on the
+public internet. Zero Trust → Access → Applications → Self-hosted, domain
+`*.qa-preview.example.com`, policy Allow · Emails → the tester list, identity One-time PIN.
+
+Then run `./worker/setup-tunnel.sh`. It authenticates checks, creates the tunnel, refuses to
+switch modes until you confirm Access is in place, flips `PREVIEW_MODE=tunnel`, restarts the
+worker, and tells you how to verify (and how to revert). Until then previews stay
+`PREVIEW_MODE=local` — visible only on this machine, which is the safe default.
 
 ## 4. Worker as a service (launchd)
 
