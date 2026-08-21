@@ -56,10 +56,23 @@ this exists, keep `PREVIEW_MODE=local`.
 ## 4. Worker as a service (launchd)
 
 ```bash
-cd ~/qa-pipeline && npm run build:worker
 cp worker/launchd/com.qa-pipeline.worker.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
+launchctl load -w ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
 tail -f ~/.qa-pipeline/worker.log
+```
+
+The agent runs the TypeScript source through tsx, so there is no build step and
+no risk of a stale `dist` serving old code. It starts at login and restarts on
+crash (verified: `kill -9` → back in seconds under a new pid). Sleep still
+pauses everything — a sleeping Mac runs nothing — but waking resumes the poll
+loop and queued reports are claimed within ~3s.
+
+Useful commands:
+
+```bash
+launchctl list | grep qa-worker                 # pid + last exit status
+launchctl kickstart -k gui/$UID/com.qa-pipeline.worker   # restart (after code changes)
+launchctl unload ~/Library/LaunchAgents/com.qa-pipeline.worker.plist  # stop for good
 ```
 
 Dev mode instead: `npm run dev:worker`.

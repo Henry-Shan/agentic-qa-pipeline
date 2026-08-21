@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keeps the QA worker alive (contracts §Worker behavior).
+
+  Install:
+    cp worker/launchd/com.qa-pipeline.worker.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
+
+  After that the worker starts at login and restarts if it crashes, so a queued
+  report is picked up whenever the Mac is awake — no terminal to remember.
+
+  It runs the TypeScript source through tsx (not a build artifact) on purpose:
+  the project is under active development, and a stale `dist` silently serving
+  old code is a worse failure than one second of startup transpile.
+
+  Sleep still pauses it — a sleeping Mac runs nothing. Waking resumes the poll
+  loop and it catches up within seconds.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qa-pipeline.worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/YOU/qa-pipeline/node_modules/tsx/dist/cli.mjs</string>
+    <string>src/index.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOU/qa-pipeline/worker</string>
+
+  <!-- launchd hands processes a minimal PATH; the worker shells out to claude,
+       git, gh and npm, so spell it out or dispatch fails with ENOENT. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart on crash. The worker's own lockfile is stale-pid aware, so a
+       relaunch after an unclean exit reclaims the lock instead of refusing. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <!-- Don't hammer relaunch if it is failing to boot (bad env, port in use). -->
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.qa-pipeline/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.qa-pipeline/worker.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
