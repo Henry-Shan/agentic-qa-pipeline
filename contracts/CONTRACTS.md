@@ -69,6 +69,31 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Router — lanes (db/0013)
+
+Before any expensive work, the claim loop asks a cheap model (`QA_ROUTER_MODEL`, default opus
+at low effort) to pick a lane from **the reporter's words alone** — no codebase, no
+screenshots, no recording. The decision + one-line reason land on `qa_reports.lane` /
+`lane_reason` (on the REPORT, so the infra lane, which spawns no run, is recorded too) and show
+on the task page. `QA_ROUTER=0` sends everything down the full pipeline.
+
+- **fast** — small, obvious, self-contained. `worker/src/dispatch.ts` `fastPreamble`: **no
+  grounding, no `/ship-task`** — reuse `setup-worktree.sh`, make the smallest edit, typecheck +
+  lint + existing tests (writes NO new tests), open the "(auto qa)" PR, report runinfo. Preview
+  and examination still happen, so the fix is still checked against the tester's own steps.
+- **complex** — the full ship-task pipeline, unchanged. **This is the fallback for everything
+  uncertain**: an unparseable/timed-out router answer, a disabled router, or any doubt in the
+  rubric routes here. Under-routing is expensive; over-routing only costs tokens.
+- **infra** — the cause lives outside the repo (cloud console, DNS, env vars, deploy, quota).
+  `worker/src/infra.ts` spawns **no code run**: it generates a runbook
+  (`{likely_cause, checks[], fix[], verify, risk}`) and posts it as the `needs_human` event,
+  then blocks + auto-assigns. Runs in the report's own run dir with an INLINE prompt — claude
+  only reads files inside its cwd, and this keeps the lane unable to touch the runner checkout.
+- **Route-up escape hatch.** A fast run that discovers the task is bigger must stop with
+  `ROUTE-UP: <why>` instead of improvising or opening a PR. The worker re-queues the report with
+  `lane='complex'` — a wrong routing costs one cheap run, not a bad PR. A report that already
+  has a lane is never re-routed on requeue.
+
 ## Task input — the questionnaire (db/0012)
 
 A doc section IS the task form: one block, read top to bottom, three labelled groups —

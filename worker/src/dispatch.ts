@@ -86,6 +86,57 @@ Every other ship-task invariant (blind test agent, verify gate) stays.
 ─────────────────────────────────────────────────────────────────────`;
 }
 
+/**
+ * FAST LANE (contracts §Router): no grounding, no skill — just fix it. The run
+ * still lands the same way (worktree → typecheck → PR → runinfo), because the
+ * landing rules are what make an unattended run safe; what the lane drops is
+ * the vertical-slice trace, the blind test agent and the feature-test gate.
+ *
+ * The escape hatch matters more than the speed: the moment the task turns out
+ * to be more than it looked, the run is REQUIRED to stop and say so, and the
+ * worker re-routes it to the full pipeline rather than letting a fast run
+ * improvise its way through a real feature.
+ */
+function fastPreamble(cfg: WorkerConfig, sessionId: string): string {
+  const url = `http://127.0.0.1:${cfg.shimPort}`;
+  return `─────────────────────────────────────────────────────────────────────
+QA-WORKER FAST LANE: small, obvious change — no skill, no grounding pass
+
+A router judged this task small and self-contained from the reporter's words.
+You are NOT running /ship-task. There is NO terminal, so never call
+AskUserQuestion.
+
+AUTH: every callback curl to ${url} MUST include -H "x-qa-shim: $QA_SHIM_TOKEN".
+
+STOP IMMEDIATELY IF IT IS NOT SMALL. If the fix needs a schema/API change,
+touches auth, permissions or tenancy, spans several layers, needs a design
+decision, or you simply cannot find the cause quickly — do NOT push through and
+do NOT open a PR. Stop with the single line:
+  ROUTE-UP: <one sentence on what makes this bigger than it looked>
+The worker will re-run it through the full pipeline. Stopping is correct here;
+improvising is not.
+
+OTHERWISE, do exactly this:
+1. Create the worktree (from the runner checkout):
+     slug="<short-kebab-slug>-$(date +%s)"
+     .claude/skills/ship-task/setup-worktree.sh "feature/$slug" "$slug"
+   Handle the exit code as the script documents; capture WORKTREE_PATH as $WT.
+   Every later command runs inside $WT.
+2. Make the smallest correct edit. Read the task envelope for the reporter's
+   words, their "done when", any constraints, and the screenshots.
+3. Prove it: typecheck and lint the affected workspace, plus any existing test
+   that already covers the touched file. Do not write new tests for this lane.
+4. Commit, push, open a PR to develop titled "(auto qa) <subject>".
+5. Report it (this is what makes the preview and the examination happen):
+   curl -s -X POST ${url}/api/runinfo -H 'Content-Type: application/json' \\
+     -d '{"session_id":"${sessionId}","pr_url":"<PR url>","branch":"<branch>","worktree":"<abs worktree path>","test_plan":"<3-6 line manual check>","files_changed":[{"file":"<path>","add":0,"del":0}],"grounding":[{"label":"<what you changed and why>","file":"<path>"}]}'
+   Then finish with one line.
+
+Do NOT start dev servers — the worker starts the tester preview itself, and an
+independent examiner will replay the reporter's recorded steps against it.
+─────────────────────────────────────────────────────────────────────`;
+}
+
 interface SpawnSpec {
   kind: 'fresh' | 'resume';
   prompt: string;
@@ -187,7 +238,12 @@ function spawnClaude(ctx: Ctx, spec: SpawnSpec): ChildProcess {
   });
 }
 
-export async function dispatchRun(ctx: Ctx, report: QaReport, envelopePath: string): Promise<void> {
+export async function dispatchRun(
+  ctx: Ctx,
+  report: QaReport,
+  envelopePath: string,
+  lane: 'fast' | 'complex' = 'complex',
+): Promise<void> {
   const sessionId = crypto.randomUUID();
   const run = await ctx.db.insertRun({
     report_id: report.id,
@@ -196,7 +252,10 @@ export async function dispatchRun(ctx: Ctx, report: QaReport, envelopePath: stri
     status: 'running',
     phase: 'starting',
   });
-  const prompt = `${preamble(ctx.cfg, sessionId)}\n/ship-task 'Read and execute the task envelope at ${envelopePath}'`;
+  const prompt =
+    lane === 'fast'
+      ? `${fastPreamble(ctx.cfg, sessionId)}\nThe task envelope is at ${envelopePath} — read it, then make the change.`
+      : `${preamble(ctx.cfg, sessionId)}\n/ship-task 'Read and execute the task envelope at ${envelopePath}'`;
   const baseSession = baseSessionFor(ctx, report);
   if (baseSession) {
     await ctx.db.insertEvent({
@@ -456,6 +515,31 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
     const handedOff =
       h.runinfoReceived || report.status === 'pr_ready' || report.status === 'preview' || report.status === 'verified';
     const finished = nowIso();
+
+    // Fast lane escape hatch (contracts §Router): the run judged the task
+    // bigger than the router did. Re-queue it on the full pipeline instead of
+    // blocking a human — the routing was wrong, the task is fine.
+    if (/ROUTE-UP:/i.test(flags.resultText) && report.lane === 'fast') {
+      const why = tailChars(flags.resultText.split(/ROUTE-UP:/i)[1] ?? '', 300).trim();
+      await ctx.db.updateRun(run.id, {
+        status: 'stopped',
+        stopped_reason: `routed up to the full pipeline: ${why}`,
+        finished_at: finished,
+      });
+      await ctx.db.updateReport(report.id, {
+        status: 'queued',
+        lane: 'complex',
+        lane_reason: `re-routed by the fast lane: ${why}`.slice(0, 200),
+      });
+      await ctx.db.insertEvent({
+        report_id: report.id,
+        run_id: run.id,
+        type: 'system',
+        message: `fast lane stopped — bigger than it looked, requeued on the full pipeline: ${why}`,
+      });
+      log('dispatch', `report ${report.id} routed up to complex`);
+      return;
+    }
 
     if (flags.stopped) {
       const reason = tailChars(flags.resultText, 400) || 'ship-task stopped at one of its gates';

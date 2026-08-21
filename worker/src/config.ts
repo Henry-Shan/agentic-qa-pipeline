@@ -27,6 +27,11 @@ export interface WorkerConfig {
   baseSession: string;
   /** QA_BASE_SESSION_REPO — checkout whose project dir holds that transcript. */
   baseSessionRepo: string;
+  /** QA_ROUTER=0 sends everything down the full pipeline (contracts §Router). */
+  routerEnabled: boolean;
+  /** QA_ROUTER_MODEL / _EFFORT — the lane decision (and the infra runbook). */
+  routerModel: string;
+  routerEffort: string;
   shimPort: number;
   maxRuns: number;
   maxPreviews: number;
@@ -108,6 +113,9 @@ export function loadConfig(): WorkerConfig {
     examEnabled: process.env.QA_EXAM !== '0',
     baseSession: process.env.QA_BASE_SESSION?.trim() ?? '',
     baseSessionRepo: process.env.QA_BASE_SESSION_REPO?.trim() || '/Users/YOU/the host app',
+    routerEnabled: process.env.QA_ROUTER !== '0',
+    routerModel: process.env.QA_ROUTER_MODEL?.trim() || 'opus',
+    routerEffort: process.env.QA_ROUTER_EFFORT?.trim() || 'low',
     shimPort: intEnv('SHIM_PORT', 4519),
     maxRuns: intEnv('MAX_RUNS', 2),
     maxPreviews: intEnv('MAX_PREVIEWS', 3),

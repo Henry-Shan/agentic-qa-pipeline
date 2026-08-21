@@ -1,6 +1,8 @@
 import { isPaused } from './config';
 import { dispatchRun, resumeRun } from './dispatch';
 import { buildEnvelope } from './envelope';
+import { handleInfra } from './infra';
+import { routeTask } from './route';
 import { maxRuns } from './settings';
 import type { Ctx } from './state';
 import { log } from './util';
@@ -44,6 +46,28 @@ async function tick(ctx: Ctx): Promise<void> {
   await ctx.db.insertEvent({ report_id: report.id, type: 'system', message: 'claimed by worker' });
 
   try {
+    // Route BEFORE any expensive work (contracts §Router): one cheap call on
+    // the reporter's words alone decides how much machinery this task gets.
+    // A re-queued report keeps the lane it already has (a fast run that routed
+    // itself up must not be routed back down).
+    let lane = report.lane ?? null;
+    if (!lane) {
+      const decision = await routeTask(ctx, report);
+      lane = decision.lane;
+      await ctx.db.updateReport(report.id, { lane: decision.lane, lane_reason: decision.reason });
+      await ctx.db.insertEvent({
+        report_id: report.id,
+        type: 'system',
+        message: `routed: ${decision.lane} — ${decision.reason}`,
+      });
+    }
+
+    // Infra never spawns a code run: it produces a runbook for a human.
+    if (lane === 'infra') {
+      await handleInfra(ctx, { ...report, lane }, report.lane_reason ?? 'needs a human harness');
+      return;
+    }
+
     const prev = await ctx.db.latestRunForReport(report.id);
     if (prev && prev.status === 'limited') {
       // requeued after a rate limit: continue the same session (worktree,
@@ -57,7 +81,7 @@ async function tick(ctx: Ctx): Promise<void> {
       );
     } else {
       const envelopePath = await buildEnvelope(ctx, report);
-      await dispatchRun(ctx, report, envelopePath);
+      await dispatchRun(ctx, report, envelopePath, lane === 'fast' ? 'fast' : 'complex');
     }
   } catch (e) {
     const msg = (e as Error).message;

@@ -162,6 +162,9 @@ export interface QaReport {
   /** Base context to fork from / model to run on (db/0011). */
   base_session?: string | null;
   model?: string | null;
+  /** Router decision (db/0013). */
+  lane?: 'fast' | 'complex' | 'infra' | null;
+  lane_reason?: string | null;
   /** Questionnaire answers (db/0012). */
   done_when?: string;
   constraints?: string;

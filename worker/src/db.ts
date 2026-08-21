@@ -31,6 +31,9 @@ export interface QaReport {
   base_session: string | null;
   /** 'fable' | 'opus' | 'sonnet' — null = worker default (db/0011). */
   model: string | null;
+  /** Router decision (db/0013, contracts §Router). */
+  lane: 'fast' | 'complex' | 'infra' | null;
+  lane_reason: string | null;
   /** Questionnaire answers (db/0012, contracts §Task input). */
   done_when: string;
   constraints: string;

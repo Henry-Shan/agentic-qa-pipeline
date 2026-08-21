@@ -60,15 +60,32 @@ export default async function TaskPage({ params }: { params: Promise<{ id: strin
 
   return (
     <main className="mx-auto w-full max-w-5xl px-5 py-6">
-      {docRef ? (
-        <p className="mb-2 text-[11.5px] text-ink-3">
-          part of{' '}
-          <a href={`/docs/${docRef.slug}`} className="font-semibold text-qa hover:underline">
-            {docRef.title}
-          </a>{' '}
-          § {docRef.section || 'untitled section'}
-        </p>
-      ) : null}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-3">
+        {docRef ? (
+          <span>
+            part of{' '}
+            <a href={`/docs/${docRef.slug}`} className="font-semibold text-qa hover:underline">
+              {docRef.title}
+            </a>{' '}
+            § {docRef.section || 'untitled section'}
+          </span>
+        ) : null}
+        {report.lane ? (
+          <span
+            title={report.lane_reason ?? undefined}
+            className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${
+              report.lane === 'fast'
+                ? 'bg-green-soft text-green'
+                : report.lane === 'infra'
+                  ? 'bg-amber-soft text-amber'
+                  : 'bg-line-soft text-ink-2'
+            }`}
+          >
+            {report.lane === 'fast' ? 'fast lane' : report.lane === 'infra' ? 'infra — needs a human' : 'full pipeline'}
+          </span>
+        ) : null}
+        {report.lane_reason ? <span className="min-w-0 truncate">{report.lane_reason}</span> : null}
+      </div>
       <TaskView
         initialReport={report}
         initialRun={run}
