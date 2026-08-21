@@ -306,7 +306,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
               }
               className="btn"
             >
-              Open live preview ↗
+              {previewLive ? 'Open live preview ↗' : 'Start preview ↗'}
             </a>
           ) : null}
         </span>
@@ -332,7 +332,12 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
 
       <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
         <h1 className="min-w-0 text-base font-semibold">{report.title}</h1>
-        <StatusPill status={report.status} runStatus={run?.status} />
+        <StatusPill
+          status={report.status}
+          runStatus={run?.status}
+          previewStatus={run?.preview_status}
+          previewUrl={run?.preview_url}
+        />
       </div>
       <Pipeline status={report.status} detail />
 

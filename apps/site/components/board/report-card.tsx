@@ -55,7 +55,12 @@ export function ReportCard({
             {report.console_log.length > 0 ? <span>console error attached</span> : null}
           </div>
         </div>
-        <StatusPill status={report.status} runStatus={run?.status} />
+        <StatusPill
+          status={report.status}
+          runStatus={run?.status}
+          previewStatus={run?.preview_status}
+          previewUrl={run?.preview_url}
+        />
       </div>
 
       <Pipeline status={report.status} />

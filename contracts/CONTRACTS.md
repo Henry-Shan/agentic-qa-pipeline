@@ -277,6 +277,22 @@ choice via `POST /api/enroll` (`{code?, name}`), and ingest copies it into
 
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
 
+The `preview` pill reads the RUN, not just the report: `qa_reports.status = 'preview'` only
+records that a preview was once built, and the dev server behind it is evicted whenever the
+machine needs the room — so the report status alone would claim "Preview live" for something
+that is not running, and send people hunting for a button that is not there.
+
+| run.preview_status | run.preview_url | pill | task page |
+|---|---|---|---|
+| `live` | https | **Preview live** | `Open live preview ↗` + Before/After tabs |
+| not live | https | **Preview waiting** | `Start preview ↗` (the wake service boots it, ~1 min) |
+| not live | localhost / none | **Preview not deployed** | no link — localhost is openable only on the worker's own machine |
+
+Before/After tabs are independent of all this: they are stored recordings, and they render
+whenever they exist. A task shows only the ones it has — a report filed without a recording
+has no Before, and a run whose preview was never opened has no After (the After capture is
+produced by the Live preview tab replaying the tester's steps).
+
 ## Widget → Site: `POST {SITE_URL}/api/ingest`
 
 Headers: `content-type: application/json` + ONE of two auth alternatives:
