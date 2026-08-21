@@ -69,6 +69,32 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Terminal — a real pty on the task page
+
+The task page can attach a REAL terminal running exactly what the operator would type:
+`cd <worktree|runner repo> && claude --resume <session id>`. Claude Code's own TUI renders
+(alt-screen, colours, ctrl-C, arrows, resize) — nothing is emulated.
+
+`worker/src/term.ts` hosts it with `node-pty` + `ws`; the page uses xterm.js and attaches only
+when the button is pressed. **Every one of these is load-bearing:**
+
+1. **Bound to `127.0.0.1`** (`QA_TERM_PORT`, default 4520) — never a public interface, never the
+   tunnel. It works on the machine running the worker and nowhere else.
+2. **Origin allowlist** — the QA site's own origins only. Browsers always send `Origin` on a WS
+   handshake; without this check any site you visit could open a socket to localhost and get a
+   shell. Checked before a byte is read. VERIFIED: a valid token from a foreign origin is
+   rejected 4403.
+3. **Single-use signed ticket**, 60s TTL, bound to one report id, minted by
+   `POST /api/term-token` (middleware gates it to signed-in testers). HMAC key =
+   SHA-256("qa-term-v1" + service-role key) — the same construction as the tester cookie, so no
+   new shared secret. Constant-time compare; the nonce is burned on use. VERIFIED: replay and
+   tampered signature both rejected 4401.
+4. **No session hijack** — while the worker has a live run on that session the terminal
+   `--fork-session`s instead of attaching; two clients on one session corrupt it.
+5. Bounded: one terminal per report, ≤4 total, 30-minute idle kill, killed on socket close.
+
+`QA_TERM=0` disables the host entirely.
+
 ## Router — lanes (db/0013)
 
 Before any expensive work, the claim loop asks a cheap model (`QA_ROUTER_MODEL`, default opus

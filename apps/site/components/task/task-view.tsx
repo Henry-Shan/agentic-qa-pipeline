@@ -21,6 +21,7 @@ import { PreviewEmbed } from '@/components/task/preview-embed';
 import { ReplayPlayer } from '@/components/task/replay-player';
 import { ResultCard } from '@/components/task/result-card';
 import { SteerBox } from '@/components/task/steer-box';
+import { TerminalPanel } from '@/components/task/terminal-panel';
 import { CopySession } from '@/components/task/copy-session';
 
 interface Props {
@@ -315,6 +316,9 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
         <div className="min-w-0">
           <div className="cap-label">Result</div>
           <ResultCard run={run} />
+          <div className="cap-label mt-4">Terminal</div>
+          <TerminalPanel reportId={reportId} />
+
           <div className="mb-1.5 mt-4 flex flex-wrap items-center justify-between gap-2">
             <div className="cap-label mb-0">Talk to Claude — anytime</div>
             {run ? <CopySession sessionId={run.session_id} /> : null}

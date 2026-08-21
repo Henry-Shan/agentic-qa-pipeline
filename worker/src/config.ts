@@ -32,6 +32,10 @@ export interface WorkerConfig {
   /** QA_ROUTER_MODEL / _EFFORT — the lane decision (and the infra runbook). */
   routerModel: string;
   routerEffort: string;
+  /** QA_TERM=0 disables the attached terminal (contracts §Terminal). */
+  termEnabled: boolean;
+  /** QA_TERM_PORT — bound to 127.0.0.1 ONLY; never exposed. */
+  termPort: number;
   shimPort: number;
   maxRuns: number;
   maxPreviews: number;
@@ -116,6 +120,8 @@ export function loadConfig(): WorkerConfig {
     routerEnabled: process.env.QA_ROUTER !== '0',
     routerModel: process.env.QA_ROUTER_MODEL?.trim() || 'opus',
     routerEffort: process.env.QA_ROUTER_EFFORT?.trim() || 'low',
+    termEnabled: process.env.QA_TERM !== '0',
+    termPort: intEnv('QA_TERM_PORT', 4520),
     shimPort: intEnv('SHIM_PORT', 4519),
     maxRuns: intEnv('MAX_RUNS', 2),
     maxPreviews: intEnv('MAX_PREVIEWS', 3),

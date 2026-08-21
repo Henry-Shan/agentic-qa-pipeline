@@ -7,6 +7,7 @@ import { reconcile, startOrphanWatcher } from './reconcile';
 import { maxPreviews, maxRuns, refreshSettings, startSettingsLoop } from './settings';
 import { startShim } from './shim';
 import { startShipLoop } from './ship';
+import { startTerminalHost } from './term';
 import { WorkerState, type Ctx } from './state';
 import { startSteerLoop } from './steer';
 import { log } from './util';
@@ -24,12 +25,14 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
     // Initial qa_settings fetch (site-editable limits); table missing → env values.
     await refreshSettings(ctx).catch((e: Error) => log('settings', `initial fetch failed — using env limits: ${e.message}`));
     const shim = await startShim(ctx);
+    const closeTerminals = startTerminalHost(ctx);
     const timers = [startClaimLoop(ctx), startSteerLoop(ctx), startShipLoop(ctx), startOrphanWatcher(ctx), startSettingsLoop(ctx)];
     log('worker', `up — shim 127.0.0.1:${cfg.shimPort} · runner ${cfg.runnerRepo} · max ${maxRuns(ctx)} runs / ${maxPreviews(ctx)} previews / ${cfg.runsPerDay} runs-per-day · preview ${cfg.previewMode}`);
     return {
       ctx,
       async stop(): Promise<void> {
         for (const t of timers) clearInterval(t);
+        closeTerminals();
         await new Promise<void>((resolve) => shim.close(() => resolve()));
         releaseLock();
       },
