@@ -20,6 +20,7 @@ import { HeroTabs, type HeroTab } from '@/components/task/hero-tabs';
 import { PreviewEmbed } from '@/components/task/preview-embed';
 import { ReplayPlayer } from '@/components/task/replay-player';
 import { ResultCard } from '@/components/task/result-card';
+import { SharePreview } from '@/components/task/share-preview';
 import { SteerBox } from '@/components/task/steer-box';
 import { TerminalPanel } from '@/components/task/terminal-panel';
 import { CopySession } from '@/components/task/copy-session';
@@ -338,6 +339,10 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
           <HeroTabs tabs={heroTabs} defaultTab={heroDefault} />
         </div>
       ) : null}
+
+      <div className="mt-3">
+        <SharePreview runId={run?.id ?? null} previewLive={run?.preview_status === 'live'} />
+      </div>
 
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">

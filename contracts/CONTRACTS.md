@@ -550,11 +550,26 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
 - **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree:
   `npm --prefix apps/web run dev -- --port <p>` with `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`,
   nohup, pid file `<wt>/.qa/preview.pid`; poll health 90s → `preview_status live`,
-  `preview_url` = `http://localhost:<p>` (PREVIEW_MODE=local) or
-  `https://preview-<runId>.<PREVIEW_DOMAIN>` (tunnel: regenerate cloudflared ingress yaml + restart
-  managed cloudflared child + `cloudflared tunnel route dns` once per hostname).
-  LRU: >MAX_PREVIEWS → kill oldest idle. Teardown on shipped/cancelled via repo's
+  `preview_url` = `http://localhost:<p>`. Previews are local-only until shared.
+  LRU: >MAX_PREVIEWS → kill oldest idle, **except the published run** (evicting the one
+  link outsiders hold would 530 it silently). Teardown on shipped/cancelled via repo's
   `teardown-worktree.sh`.
+- **Sharing a preview** (PREVIEW_MODE=tunnel): exactly ONE run is reachable from outside
+  this Mac, on the single hostname `PREVIEW_DOMAIN` (`qa-preview.example.com`).
+  Cloudflare Universal SSL covers `*.example.com` but NOT `*.qa-preview.example.com`,
+  so per-run hostnames would need a paid cert — hence one shared hostname, swapped on
+  demand. `qa_settings.published_run` (0 = nobody) is the switch; the site's Share button
+  writes it, the worker's settings poll notices within 10s and calls `publishPreview()`:
+  regenerate ingress yaml → restart managed cloudflared → `cloudflared tunnel route dns`
+  once per hostname → published run's `preview_url` = `https://<PREVIEW_DOMAIN>`, all
+  others revert to localhost.
+  **Guard**: `refusesToServe()` rejects any hostname that is a production host
+  (`example.com`, `www|api|qa|app.example.com`), is empty, or is not under
+  `.example.com` — checked both in `publishPreview` and per-record in the DNS loop, so a
+  typo in `PREVIEW_DOMAIN` can never repoint production DNS.
+  The link is intentionally ungated (no Cloudflare Access): the app behind it still
+  requires a the host app login, `/qa-session` refuses without a token, and an anonymous
+  visitor sees the same public landing page as `example.com`.
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans
