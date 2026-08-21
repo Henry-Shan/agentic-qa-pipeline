@@ -148,88 +148,85 @@ export function DocView({ initialDoc, initialSections, initialReports }: Props) 
   );
 
   return (
-    <div className="flex flex-col gap-0 md:flex-row md:gap-6">
-      {/* TOC */}
-      <nav aria-label="Sections" className="hidden w-44 flex-none md:block">
-        <div className="sticky top-20">
-          <div className="mb-2 text-[9.5px] font-bold uppercase tracking-[0.07em] text-ink-3">
-            Sections · {shipped}/{sections.length} shipped
+    <div className="flex flex-col gap-10 lg:flex-row">
+      {/* Sections rail — a quiet index, tight against the column it indexes. */}
+      <nav aria-label="Sections" className="hidden w-[190px] flex-none lg:block">
+        <div className="sticky top-[68px]">
+          <div className="mb-2 flex items-baseline gap-2 px-2">
+            <span className="eyebrow">Tasks</span>
+            <span className="text-[12px] tabular-nums text-ink-3">
+              {shipped}/{sections.length} shipped
+            </span>
           </div>
-          <ul className="flex flex-col gap-0.5">
+          <ul className="flex flex-col gap-px">
             {sections.map((s) => (
               <li key={s.id}>
-                <a
-                  href={`#section-${s.id}`}
-                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-ink-3 hover:bg-surface"
-                >
+                <a href={`#section-${s.id}`} className="nav-item">
                   <span
-                    className={`size-1.5 flex-none rounded-full ${dotFor(
+                    className={`size-[6px] flex-none rounded-full ${dotFor(
                       s.report_id !== null ? reports[s.report_id] : null,
                       Boolean(s.route || s.replay_path),
                     )}`}
                   />
-                  <span className="truncate">{s.title || firstLine(s.body) || 'untitled'}</span>
+                  <span className="truncate">{s.title || firstLine(s.body) || 'Untitled'}</span>
                 </a>
               </li>
             ))}
+            {sections.length === 0 ? <li className="px-2 py-1 text-[13px] text-ink-3">No tasks yet</li> : null}
           </ul>
         </div>
       </nav>
 
-      {/* Body */}
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-start gap-2.5">
-          <span className="text-[22px] leading-tight">{doc.emoji || '📄'}</span>
-          <div className="min-w-0 flex-1">
-            <input
-              defaultValue={doc.title}
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if (v && v !== doc.title) patchDoc({ title: v });
-              }}
-              aria-label="Doc title"
-              className="w-full bg-transparent text-[18px] font-bold tracking-[-0.01em] focus:outline-none"
-            />
-            <div className="text-[11px] text-ink-3">
-              {doc.created_by ?? 'unknown'} · <Link href="/docs" className="text-qa hover:underline">all docs</Link>
-            </div>
-          </div>
-        </div>
+      {/* Document column — one measure, everything left-aligned to it. */}
+      <div className="min-w-0 flex-1 lg:max-w-[720px]">
+        <input
+          defaultValue={doc.title}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== doc.title) patchDoc({ title: v });
+          }}
+          aria-label="Doc title"
+          placeholder="Untitled"
+          className="-ml-1.5 w-full rounded-[6px] border border-transparent bg-transparent px-1.5 py-0.5 text-[26px] font-semibold tracking-[-0.02em] placeholder:text-ink-3 focus:outline-none focus-visible:border-line"
+        />
         <textarea
           defaultValue={doc.description}
           onBlur={(e) => {
             if (e.target.value !== doc.description) patchDoc({ description: e.target.value });
           }}
-          placeholder="What is this doc about?"
+          placeholder="Add a description…"
           aria-label="Doc description"
-          rows={2}
-          className="mb-2 w-full resize-none bg-transparent text-[12.5px] text-ink-2 placeholder:text-ink-3 focus:outline-none"
+          rows={1}
+          className="field -ml-2 mt-0.5 resize-none text-[13.5px] text-ink-2"
         />
+        <div className="mb-7 mt-0.5 px-2 text-[12.5px] text-ink-3">{doc.created_by ?? 'unknown'}</div>
 
-        {sections.map((s, idx) => (
-          <SectionCard
-            key={s.id}
-            section={s}
-            docTitle={doc.title}
-            report={s.report_id !== null ? (reports[s.report_id] ?? null) : null}
-            first={idx === 0}
-            last={idx === sections.length - 1}
-            onPatch={(patch) => patchSection(s.id, patch)}
-            onMove={(dir) => move(s.id, dir)}
-            onRemove={() => remove(s.id)}
-            onDispatched={(report) => {
-              setReports((prev) => ({ ...prev, [report.id]: report }));
-              setSections((prev) => prev.map((x) => (x.id === s.id ? { ...x, report_id: report.id } : x)));
-            }}
-          />
-        ))}
+        <div className="flex flex-col gap-4">
+          {sections.map((s, idx) => (
+            <SectionCard
+              key={s.id}
+              section={s}
+              docTitle={doc.title}
+              report={s.report_id !== null ? (reports[s.report_id] ?? null) : null}
+              first={idx === 0}
+              last={idx === sections.length - 1}
+              onPatch={(patch) => patchSection(s.id, patch)}
+              onMove={(dir) => move(s.id, dir)}
+              onRemove={() => remove(s.id)}
+              onDispatched={(report) => {
+                setReports((prev) => ({ ...prev, [report.id]: report }));
+                setSections((prev) => prev.map((x) => (x.id === s.id ? { ...x, report_id: report.id } : x)));
+              }}
+            />
+          ))}
+        </div>
 
         <button
           type="button"
           onClick={() => void addSection()}
-          className="mt-3.5 w-full rounded-[9px] border border-dashed border-line px-3 py-2.5 text-center text-[12px] text-ink-3 transition-colors hover:border-qa-bright hover:text-qa"
+          className="mt-4 flex w-full items-center gap-2 rounded-[8px] px-3 py-2.5 text-[13px] text-ink-3 transition-colors hover:bg-surface hover:text-ink"
         >
-          ＋ Add a section
+          <span className="text-[15px] leading-none">+</span> New task
         </button>
       </div>
     </div>
@@ -325,21 +322,22 @@ function SectionCard({
   }));
 
   return (
-    <section id={`section-${section.id}`} className="mt-4 overflow-hidden rounded-[11px] border border-line bg-paper">
-      {/* header */}
-      <div className="flex items-center gap-2 border-b border-line bg-stage px-3.5 py-2.5">
-        <span className="flex flex-none flex-col text-[8px] leading-[0.8] text-ink-3/60">
-          <button type="button" disabled={first} onClick={() => onMove(-1)} aria-label="Move up" className="hover:text-qa disabled:opacity-30">▲</button>
-          <button type="button" disabled={last} onClick={() => onMove(1)} aria-label="Move down" className="hover:text-qa disabled:opacity-30">▼</button>
+    <section id={`section-${section.id}`} className="group sheet px-5 pb-4 pt-3.5">
+      {/* Header: the task's name, its state, and controls that stay out of the
+          way until the pointer is here. */}
+      <div className="mb-1 flex items-center gap-2">
+        <span className="-ml-6 flex flex-none flex-col text-[9px] leading-[0.75] text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <button type="button" disabled={first} onClick={() => onMove(-1)} aria-label="Move up" className="hover:text-ink disabled:opacity-25">▲</button>
+          <button type="button" disabled={last} onClick={() => onMove(1)} aria-label="Move down" className="hover:text-ink disabled:opacity-25">▼</button>
         </span>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-bold">
+        <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tracking-[-0.01em]">
           {section.title || firstLine(section.body) || 'New task'}
         </span>
         {report ? <StatusPill status={report.status} /> : null}
         {!dispatched &&
           (confirmDelete ? (
-            <button type="button" onClick={onRemove} className="flex-none rounded px-1.5 text-[10.5px] font-semibold text-red">
-              delete?
+            <button type="button" onClick={onRemove} className="btn btn-quiet flex-none text-red">
+              Delete
             </button>
           ) : (
             <button
@@ -347,14 +345,14 @@ function SectionCard({
               onClick={() => setConfirmDelete(true)}
               onBlur={() => setConfirmDelete(false)}
               aria-label="Delete task"
-              className="flex-none rounded px-1 text-[13px] text-ink-3/60 hover:text-red"
+              className="btn btn-quiet flex-none px-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               ×
             </button>
           ))}
       </div>
 
-      <GroupLabel tone="you">you write</GroupLabel>
+      <GroupLabel>you write</GroupLabel>
 
       <Row label="The problem" required hint="or what you want built">
         <textarea
@@ -383,7 +381,7 @@ function SectionCard({
           rows={2}
           className={FIELD_CLS}
         />
-        <p className="mt-1 text-[10.5px] text-ink-3">
+        <p className="mt-1 px-2 text-[12px] text-ink-3">
           After the fix, your steps are replayed and an examiner checks this sentence.
         </p>
       </Row>
@@ -392,7 +390,7 @@ function SectionCard({
 
       <Row label="Location">
         {section.route ? (
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 px-2 py-1">
             <Chip k="page" mono>{section.route}</Chip>
             {section.component ? <Chip k="component" mono>{section.component}</Chip> : null}
             {section.element_text ? <Chip k="element">“{section.element_text.slice(0, 40)}”</Chip> : null}
@@ -405,12 +403,12 @@ function SectionCard({
       <Row label="What you did" hint={steps.length > 0 ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : undefined}>
         {steps.length > 0 ? (
           <>
-            <ol className="m-0 list-decimal pl-4 text-[11.5px] text-ink-2">
+            <ol className="m-0 list-decimal pl-6 text-[13px] leading-relaxed text-ink-2 marker:text-ink-3">
               {steps.slice(0, 4).map((e, i) => (
                 <li key={i} className="truncate">{stepText(e)}</li>
               ))}
             </ol>
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-ink-3">
+            <div className="mt-1.5 flex items-center gap-2.5 px-2 text-[12.5px] text-ink-3">
               {steps.length > 4 ? <span>+{steps.length - 4} more</span> : null}
               {section.replay_path ? (
                 <button type="button" onClick={() => setShowReplay((v) => !v)} className="font-semibold text-qa hover:underline">
@@ -438,7 +436,7 @@ function SectionCard({
         {section.screenshots.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
             {section.screenshots.map((_, i) => (
-              <span key={i} className="block h-[26px] w-[38px] rounded-[3px] border border-line bg-gradient-to-br from-surface to-line" />
+              <span key={i} className="block h-[30px] w-[44px] rounded-[4px] border border-line bg-surface" />
             ))}
             <Chip>{section.screenshots.length} screenshot{section.screenshots.length === 1 ? '' : 's'}</Chip>
           </div>
@@ -451,12 +449,12 @@ function SectionCard({
         {errorCount > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
             {(section.network_log ?? []).slice(0, 2).map((n, i) => (
-              <span key={i} className="rounded-md border border-red/30 bg-red-soft px-1.5 py-0.5 font-mono text-[10.5px] text-red">
+              <span key={i} className="chip chip-err font-mono text-[11.5px]">
                 {n.status} {n.method} {n.url.slice(0, 44)}
               </span>
             ))}
             {(section.console_log ?? []).slice(0, 2).map((c, i) => (
-              <span key={i} className="rounded-md border border-line bg-surface px-1.5 py-0.5 text-[10.5px] text-ink-2">
+              <span key={i} className="chip">
                 {c.level}: {c.text.slice(0, 50)}
               </span>
             ))}
@@ -470,18 +468,17 @@ function SectionCard({
 
       {/* the one button that fills the four rows above */}
       {!dispatched ? (
-        <div className="flex flex-wrap items-center gap-2 border-y border-line-soft bg-qa-soft px-3.5 py-2.5">
-          <span className="min-w-0 flex-1 text-[11.5px] text-qa">
-            {captured
-              ? '✓ Captured — re-capture if the steps changed.'
-              : '⌖ The four rows above fill themselves — open the app, do the thing, press ⏺ then Finish.'}
-          </span>
-          <Link
-            href={`/doc-capture/${section.id}`}
-            className="flex-none rounded-md border border-qa bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-qa hover:bg-paper/60"
-          >
-            ⌖ {captured ? 'Re-capture' : 'Capture from the app'}
-          </Link>
+        <div className="my-1.5">
+          <div className="flex flex-wrap items-center gap-3 rounded-[8px] bg-surface px-3.5 py-2.5">
+            <span className="min-w-0 flex-1 text-[12.5px] text-ink-2">
+              {captured
+                ? 'Captured. Re-capture if the steps changed.'
+                : 'The four rows above fill themselves — open the app, do the thing, press record, then finish.'}
+            </span>
+            <Link href={`/doc-capture/${section.id}`} className="btn flex-none bg-paper">
+              {captured ? 'Re-capture' : 'Capture from the app'}
+            </Link>
+          </div>
         </div>
       ) : null}
 
@@ -502,7 +499,7 @@ function SectionCard({
               />
               <label
                 htmlFor={`files-${section.id}`}
-                className="cursor-pointer rounded-md border border-dashed border-line px-2 py-1 text-[11px] text-ink-3 hover:border-qa-bright hover:text-qa"
+                className="cursor-pointer rounded-[6px] border border-dashed border-line px-2.5 py-1 text-[12.5px] text-ink-3 transition-colors hover:border-line-strong hover:bg-surface hover:text-ink"
               >
                 {uploading ? 'uploading…' : section.files.length > 0 ? '＋ add' : 'drop a PDF, CSV or spreadsheet that triggers it'}
               </label>
@@ -521,8 +518,8 @@ function SectionCard({
               disabled={dispatched}
               onClick={() => onPatch({ reproduce_as: r.key === '' ? null : r.key })}
               aria-pressed={r.on}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
-                r.on ? 'border-qa bg-qa-soft font-semibold text-qa' : 'border-line bg-paper text-ink-2 hover:border-qa-bright'
+              className={`chip transition-colors ${
+                r.on ? 'border-qa/40 bg-qa-soft font-medium text-qa' : 'hover:bg-surface'
               }`}
             >
               {r.label}
@@ -548,7 +545,7 @@ function SectionCard({
       <GroupLabel tone="set">how it runs</GroupLabel>
 
       <Row label="Model">
-        <span className="inline-flex overflow-hidden rounded-md border border-line">
+        <span className="seg">
           {(['fable', 'opus', 'sonnet'] as const).map((m) => (
             <button
               key={m}
@@ -556,9 +553,6 @@ function SectionCard({
               disabled={dispatched}
               onClick={() => onPatch({ model: section.model === m ? null : m })}
               aria-pressed={section.model === m}
-              className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                section.model === m ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
-              }`}
             >
               {m}
             </button>
@@ -567,7 +561,7 @@ function SectionCard({
       </Row>
 
       <Row label="Base context">
-        <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] text-ink-2">
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-[6px] px-1 py-1 text-[13px] text-ink-2 transition-colors hover:bg-surface">
           <input
             type="checkbox"
             checked={section.base_session !== ''}
@@ -580,18 +574,9 @@ function SectionCard({
       </Row>
 
       <Row label="Treat as">
-        <span className="inline-flex overflow-hidden rounded-md border border-line">
+        <span className="seg">
           {(['bug', 'feature'] as const).map((k) => (
-            <button
-              key={k}
-              type="button"
-              disabled={dispatched}
-              onClick={() => onPatch({ kind: k })}
-              aria-pressed={section.kind === k}
-              className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                section.kind === k ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
-              }`}
-            >
+            <button key={k} type="button" disabled={dispatched} onClick={() => onPatch({ kind: k })} aria-pressed={section.kind === k}>
               {k}
             </button>
           ))}
@@ -599,8 +584,8 @@ function SectionCard({
       </Row>
 
       {/* footer */}
-      <div className="flex items-center gap-3 border-t border-line bg-stage px-3.5 py-2.5">
-        <span className="min-w-0 flex-1 text-[11px] text-ink-3">
+      <div className="mt-4 flex items-center gap-3 border-t border-line-soft pt-3">
+        <span className="min-w-0 flex-1 text-[12.5px] text-ink-3">
           {dispatchError ? (
             <span className="text-red">{dispatchError}</span>
           ) : report ? (
@@ -612,20 +597,17 @@ function SectionCard({
           )}
         </span>
         {report ? (
-          <Link
-            href={`/task/${report.id}`}
-            className="flex-none rounded-md border border-line bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink-2 hover:border-qa-bright"
-          >
-            open task #{report.id} ↗
+          <Link href={`/task/${report.id}`} className="btn flex-none">
+            Open task #{report.id} ↗
           </Link>
         ) : (
           <button
             type="button"
             onClick={() => void dispatch()}
             disabled={dispatching || !ready}
-            className="flex-none rounded-md bg-qa px-3 py-1.5 text-[11.5px] font-semibold text-white transition-colors hover:bg-qa-bright disabled:opacity-40"
+            className="btn btn-primary flex-none"
           >
-            {dispatching ? 'Sending…' : 'Send to Claude ▸'}
+            {dispatching ? 'Sending…' : 'Send to Claude'}
           </button>
         )}
       </div>
@@ -635,24 +617,16 @@ function SectionCard({
 
 // ---- form atoms -----------------------------------------------------------
 
-const FIELD_CLS =
-  'w-full resize-y rounded-[7px] border border-line bg-paper px-2.5 py-1.5 text-[12.5px] leading-relaxed text-ink placeholder:text-ink-3/70 focus:border-qa-bright focus:outline-none focus:ring-[3px] focus:ring-qa/15 disabled:bg-surface disabled:text-ink-2';
+const FIELD_CLS = 'field';
 
 /** '' = the reporter's own roles (contracts §Task input). */
 const ROLE_CHOICES = ['', 'Lab admin', 'Lab member', 'Department head', 'Institution admin'] as const;
 
-function GroupLabel({ tone, children }: { tone: 'you' | 'auto' | 'set'; children: React.ReactNode }) {
-  const cls =
-    tone === 'you'
-      ? 'bg-qa-soft text-qa'
-      : tone === 'auto'
-        ? 'bg-violet-soft text-violet'
-        : 'bg-surface text-ink-3';
+/** A quiet divider that names the group — no chips, no colour blocks. */
+function GroupLabel({ children }: { tone?: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 px-3.5 pb-1 pt-2.5">
-      <span className={`rounded-[3px] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.07em] ${cls}`}>
-        {children}
-      </span>
+    <div className="mt-5 flex items-center gap-3 first:mt-0">
+      <span className="eyebrow">{children}</span>
       <span className="h-px flex-1 bg-line-soft" />
     </div>
   );
@@ -670,36 +644,25 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 border-t border-line-soft px-3.5 py-2.5 sm:flex-row sm:gap-3">
-      <div className="flex-none pt-0.5 sm:w-[128px]">
-        <div className="text-[11.5px] font-semibold text-ink-2">
-          {label}
-          {required ? <span className="ml-0.5 font-bold text-qa">*</span> : null}
-        </div>
-        {hint ? <div className="text-[10.5px] font-normal leading-tight text-ink-3">{hint}</div> : null}
+    <div className="frow">
+      <div className="flabel">
+        {label}
+        {required ? <span className="ml-0.5 text-qa">*</span> : null}
+        {hint ? <span className="hint">{hint}</span> : null}
       </div>
-      <div className="min-w-0 flex-1">{children}</div>
+      <div className="min-w-0">{children}</div>
     </div>
   );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2 text-[12px] text-ink-3/80">
-      <span className="inline-block h-px w-4 flex-none bg-line" />
-      {children}
-    </div>
-  );
+  return <div className="fempty">{children}</div>;
 }
 
 function Chip({ k, mono, children }: { k?: string; mono?: boolean; children: React.ReactNode }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-md border border-line bg-paper px-1.5 py-0.5 text-[11px] text-ink-2 ${
-        mono ? 'font-mono text-[10.5px]' : ''
-      }`}
-    >
-      {k ? <span className="text-ink-3">{k}</span> : null}
+    <span className={`chip ${mono ? 'font-mono text-[11.5px]' : ''}`}>
+      {k ? <span className="chip-key">{k}</span> : null}
       {children}
     </span>
   );

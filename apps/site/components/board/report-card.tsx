@@ -25,12 +25,12 @@ export function ReportCard({
   return (
     <Link
       href={`/task/${report.id}`}
-      className="card mb-3.5 block transition-colors hover:border-qa-bright"
+      className="sheet mb-2 block px-4 py-3 transition-colors hover:bg-surface"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[14.5px] font-semibold">{report.title}</h3>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-ink-3">
+          <h3 className="truncate text-[14px] font-medium leading-snug">{report.title}</h3>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-ink-3">
             <span className="flex items-center gap-1.5" title={report.reporter_email ?? undefined}>
               <span className="avatar">{initialOf(reporter)}</span>
               {reporter} ·{' '}
@@ -46,7 +46,7 @@ export function ReportCard({
             {report.assignee ? (
               <span
                 title={`Assigned to ${report.assignee}`}
-                className="rounded-full bg-qa-soft px-2 py-0.5 text-[11px] font-semibold text-qa"
+                className="rounded-full bg-qa-soft px-2 py-0.5 text-[11.5px] font-medium text-qa"
               >
                 assigned · {report.assignee}
               </span>
@@ -61,13 +61,13 @@ export function ReportCard({
       <Pipeline status={report.status} />
 
       {fixing && run?.log_tail ? (
-        <div className="mt-3 truncate rounded-lg border border-line bg-surface px-3 py-2 font-mono text-xs text-ink-2">
+        <div className="mt-2 truncate rounded-[7px] bg-surface px-2.5 py-1.5 font-mono text-[12px] text-ink-2">
           ▸ {run.log_tail}
         </div>
       ) : null}
 
       {report.status === 'blocked' && needsHuman ? (
-        <div className="mt-3 truncate rounded-lg border border-amber/25 bg-amber-soft px-3 py-2 text-xs text-amber">
+        <div className="mt-2 truncate rounded-[7px] bg-amber-soft px-2.5 py-1.5 text-[12px] text-amber">
           {firstLine(needsHuman)}
         </div>
       ) : null}

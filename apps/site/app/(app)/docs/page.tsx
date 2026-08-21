@@ -29,21 +29,21 @@ export default async function DocsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-5 py-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <main className="mx-auto w-full max-w-[760px] px-5 py-10">
+      <div className="mb-6 flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-[17px] font-bold">Docs</h1>
-          <p className="text-[12px] text-ink-3">
-            Plan the work in sections; each one dispatches to Claude and tracks its task.
+          <h1 className="text-[26px] tracking-[-0.02em]">Docs</h1>
+          <p className="mt-0.5 text-[13.5px] text-ink-3">
+            Plan the work in tasks; each one goes to Claude and tracks itself.
           </p>
         </div>
         <NewDocButton />
       </div>
 
-      <div className="rounded-[10px] border border-line bg-stage">
+      <div className="sheet overflow-hidden">
         {docs.length === 0 ? (
-          <p className="px-5 py-8 text-center text-[12.5px] text-ink-3">
-            No docs yet — create one and start splitting the work into sections.
+          <p className="px-5 py-12 text-center text-[13.5px] text-ink-3">
+            No docs yet. Create one and split the work into tasks.
           </p>
         ) : (
           docs.map((doc) => {
@@ -54,22 +54,22 @@ export default async function DocsPage() {
               <Link
                 key={doc.id}
                 href={`/docs/${doc.slug}`}
-                className="flex items-center gap-3 border-b border-line-soft px-4 py-3 transition-colors last:border-b-0 hover:bg-surface"
+                className="flex items-center gap-3 border-b border-line-soft px-4 py-3.5 transition-colors last:border-b-0 hover:bg-surface"
               >
-                <span className="grid size-8 flex-none place-items-center rounded-lg bg-surface text-[15px]">
-                  {doc.emoji || '📄'}
+                <span className="grid size-8 flex-none place-items-center rounded-[7px] border border-line text-[14px]">
+                  {doc.emoji || '·'}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold">{doc.title}</span>
-                  <span className="block truncate text-[11px] text-ink-3">
-                    {doc.created_by ?? 'unknown'} · {mine.length} section{mine.length === 1 ? '' : 's'}
+                  <span className="block truncate text-[14px] font-medium">{doc.title}</span>
+                  <span className="block truncate text-[12.5px] text-ink-3">
+                    {doc.created_by ?? 'unknown'} · {mine.length} task{mine.length === 1 ? '' : 's'}
                   </span>
                 </span>
                 <span className="flex flex-none items-center gap-2">
-                  <span className="h-[5px] w-[92px] overflow-hidden rounded-full bg-surface">
-                    <span className="block h-full rounded-full bg-qa" style={{ width: `${pct}%` }} />
+                  <span className="hidden h-[4px] w-[88px] overflow-hidden rounded-full bg-surface sm:block">
+                    <span className="block h-full rounded-full bg-qa transition-[width] duration-500" style={{ width: `${pct}%` }} />
                   </span>
-                  <span className="text-[10.5px] tabular-nums text-ink-3">
+                  <span className="text-[12px] tabular-nums text-ink-3">
                     {shipped} / {mine.length} shipped
                   </span>
                 </span>

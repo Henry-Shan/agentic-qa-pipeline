@@ -45,7 +45,7 @@ export function Pipeline({ status, detail = false }: { status: ReportStatus; det
     items.push(
       <span
         key={`node-${i}`}
-        className={`flex items-center gap-1.5 text-xs font-semibold ${
+        className={`flex items-center gap-1.5 text-[12px] font-medium ${
           isDone ? 'text-ink-2' : isNow ? NOW_TEXT[tone] : 'text-ink-3'
         }`}
       >
@@ -72,5 +72,5 @@ export function Pipeline({ status, detail = false }: { status: ReportStatus; det
     );
   }
 
-  return <div className="mt-3 flex flex-wrap items-center gap-y-2.5">{items}</div>;
+  return <div className="mt-2 flex flex-wrap items-center gap-y-2">{items}</div>;
 }

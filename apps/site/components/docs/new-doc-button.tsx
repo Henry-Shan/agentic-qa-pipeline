@@ -53,9 +53,9 @@ export function NewDocButton() {
           setOpen(true);
           requestAnimationFrame(() => inputRef.current?.focus());
         }}
-        className="flex-none rounded-md bg-qa px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-qa-bright"
+        className="btn btn-primary flex-none"
       >
-        ＋ New doc
+        New doc
       </button>
     );
   }
@@ -77,16 +77,16 @@ export function NewDocButton() {
         }}
         placeholder="Doc title…"
         aria-label="Doc title"
-        className="w-52 rounded-md border border-line bg-paper px-2.5 py-1.5 text-[12.5px] focus:border-qa-bright focus:outline-none"
+        className="w-52 rounded-[7px] border border-line bg-paper px-2.5 py-1.5 text-[13.5px] transition-shadow focus:border-line-strong focus:outline-none focus:ring-[3px] focus:ring-qa/15"
       />
       <button
         type="submit"
         disabled={busy || !title.trim()}
-        className="flex-none rounded-md bg-qa px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40"
+        className="btn btn-primary flex-none"
       >
         Create
       </button>
-      {error ? <span className="text-[11px] text-red">{error}</span> : null}
+      {error ? <span className="text-[12.5px] text-red">{error}</span> : null}
     </form>
   );
 }

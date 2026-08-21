@@ -26,7 +26,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-5 py-6">
+    <main className="mx-auto w-full max-w-[1010px] px-6 py-10">
       <DocView initialDoc={doc} initialSections={sections} initialReports={reports} />
     </main>
   );

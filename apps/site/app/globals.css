@@ -1,31 +1,43 @@
 @import "tailwindcss";
 
-/* Design tokens — Figma-studio light theme (approved prototype).
-   White page + cards, #FAFAFA secondary surfaces, hairline borders, teal accent.
-   Light is the only theme by design. */
+/* ---------------------------------------------------------------------------
+   Design tokens — quiet, dense, document-like (the Notion/Figma idiom).
+   The rules that hold the whole UI together:
+     · chrome is nearly invisible — hairlines at ~8% ink, no drop shadows
+       except on things that float above the page
+     · inputs are borderless until you touch them; hover reveals a surface,
+       focus reveals a border + soft ring
+     · rhythm, not rules — space separates rows, dividers only separate GROUPS
+     · one accent, used sparingly; everything else is a warm neutral
+   Light is the only theme by design.
+--------------------------------------------------------------------------- */
 :root {
   color-scheme: light;
   --paper: #ffffff;
-  --surface: #fafafa;
   --stage: #ffffff;
-  --ink: #1e1e1e;
-  --ink-2: #57606a;
-  --ink-3: #9aa4af;
-  --line: #ececf0;
-  --line-soft: #f3f4f6;
-  --qa: #0d9488;
-  --qa-bright: #14b8a6;
-  --qa-soft: #effaf8;
-  --qa-ring: rgba(13, 148, 136, 0.28);
-  --amber: #d97706;
-  --amber-soft: #fef3e2;
-  --green: #16a34a;
-  --green-soft: #e9f9ef;
-  --red: #dc2626;
-  --red-soft: #fee2e2;
+  /* Hover/inset surface — warm so it reads as paper, not as a grey box. */
+  --surface: #f7f7f5;
+  --ink: #1f1e1d;
+  --ink-2: #6b6a66;
+  --ink-3: #9c9b96;
+  --line: rgba(18, 17, 15, 0.09);
+  --line-soft: rgba(18, 17, 15, 0.05);
+  --line-strong: rgba(18, 17, 15, 0.16);
+  --qa: #0d8a7d;
+  --qa-bright: #12a394;
+  --qa-soft: #edf8f6;
+  --qa-ring: rgba(18, 163, 148, 0.18);
+  --amber: #b3730a;
+  --amber-soft: #fdf3e3;
+  --green: #197f4a;
+  --green-soft: #eaf7ef;
+  --red: #c0392f;
+  --red-soft: #fdeeec;
   --on-accent: #ffffff;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.05);
-  --shadow-big: 0 2px 8px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
+  --shadow: 0 1px 2px rgba(18, 17, 15, 0.04);
+  --shadow-big: 0 6px 24px rgba(18, 17, 15, 0.09), 0 1px 3px rgba(18, 17, 15, 0.06);
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --t: 130ms var(--ease);
 }
 
 @theme inline {
@@ -37,6 +49,7 @@
   --color-ink-3: var(--ink-3);
   --color-line: var(--line);
   --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
   --color-qa: var(--qa);
   --color-qa-bright: var(--qa-bright);
   --color-qa-soft: var(--qa-soft);
@@ -60,42 +73,257 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
 h2,
 h3,
 h4 {
-  letter-spacing: -0.01em;
+  letter-spacing: -0.014em;
+  font-weight: 600;
 }
 
-/* Interactive polish — teal focus ring everywhere. */
-:where(a, button, summary, [role="tab"]):focus-visible {
-  outline: 2px solid var(--qa-bright);
-  outline-offset: 2px;
+::selection {
+  background: var(--qa-soft);
+}
+
+/* Focus: a soft ring, never a hard outline jump. */
+:where(a, button, summary, [role="tab"], label):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--qa-ring);
+  border-radius: 6px;
 }
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--qa-ring);
 }
 
 @layer components {
+  /* --- containers ------------------------------------------------------- */
   .card {
     background: var(--stage);
     border: 1px solid var(--line);
-    border-radius: 14px;
-    box-shadow: var(--shadow);
-    padding: 16px 18px;
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  /* A block that reads as one object: hairline, generous inner padding, no shadow. */
+  .sheet {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  /* --- type ------------------------------------------------------------- */
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
+    color: var(--ink-3);
   }
   .cap-label {
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.055em;
     text-transform: uppercase;
     color: var(--ink-3);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+  }
+
+  /* --- form ------------------------------------------------------------- */
+  /* Rows are separated by RHYTHM, not rules. */
+  .frow {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 14px;
+    padding: 4px 0;
+    align-items: start;
+  }
+  @media (max-width: 640px) {
+    .frow {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+    }
+  }
+  .flabel {
+    font-size: 13px;
+    color: var(--ink-2);
+    padding-top: 6px;
+    line-height: 1.35;
+  }
+  .flabel .hint {
+    display: block;
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin-top: 1px;
+  }
+  /* Borderless until touched — the Notion feel. */
+  .field {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--ink);
+    transition:
+      background var(--t),
+      border-color var(--t),
+      box-shadow var(--t);
+    resize: none;
+  }
+  .field::placeholder {
+    color: var(--ink-3);
+  }
+  .field:hover:not(:disabled):not(:focus) {
+    background: var(--surface);
+  }
+  .field:focus {
+    background: var(--paper);
+    border-color: var(--line-strong);
+    box-shadow: 0 0 0 3px var(--qa-ring);
+  }
+  .field:disabled {
+    color: var(--ink-2);
+    cursor: default;
+  }
+  /* The muted "nothing here yet" state of a row that fills itself. */
+  .fempty {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  .fempty::before {
+    content: "";
+    width: 14px;
+    height: 1px;
+    background: var(--line-strong);
+    flex: none;
+  }
+
+  /* --- controls --------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--paper);
+    color: var(--ink-2);
+    padding: 5px 11px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      background var(--t),
+      border-color var(--t),
+      color var(--t);
+    white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--surface);
+    color: var(--ink);
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .btn-primary {
+    background: var(--qa);
+    border-color: var(--qa);
+    color: var(--on-accent);
+    font-weight: 550;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--qa-bright);
+    border-color: var(--qa-bright);
+    color: var(--on-accent);
+  }
+  /* Chromeless — for icon and text actions that live inside content. */
+  .btn-quiet {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ink-3);
+  }
+  .btn-quiet:hover:not(:disabled) {
+    background: var(--surface);
+    color: var(--ink);
+  }
+  /* Segmented control: one bordered group, no gaps between options. */
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    overflow: hidden;
+    background: var(--paper);
+  }
+  .seg > button {
+    padding: 4px 11px;
+    font-size: 13px;
+    color: var(--ink-2);
+    background: transparent;
+    transition:
+      background var(--t),
+      color var(--t);
+    cursor: pointer;
+  }
+  .seg > button + button {
+    border-left: 1px solid var(--line);
+  }
+  .seg > button:hover:not(:disabled):not([aria-pressed="true"]) {
+    background: var(--surface);
+    color: var(--ink);
+  }
+  .seg > button[aria-pressed="true"] {
+    background: var(--qa);
+    color: var(--on-accent);
+    font-weight: 550;
+  }
+  .seg > button:disabled {
+    cursor: default;
+  }
+
+  /* --- data atoms ------------------------------------------------------- */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 2.5px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink-2);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chip-err {
+    border-color: color-mix(in srgb, var(--red) 26%, transparent);
+    background: var(--red-soft);
+    color: var(--red);
+  }
+  .chip-key {
+    color: var(--ink-3);
+    flex: none;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
   }
   .avatar {
     display: inline-grid;
@@ -106,35 +334,33 @@ select:focus-visible {
     background: var(--qa-soft);
     color: var(--qa);
     font-size: 9.5px;
-    font-weight: 700;
+    font-weight: 600;
   }
-  .chip {
-    display: inline-flex;
+  /* Sidebar / list navigation row. */
+  .nav-item {
+    display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 11.5px;
-    padding: 4px 10px;
-    border: 1px solid var(--line-soft);
-    border-radius: 8px;
-    background: var(--surface);
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 13px;
     color: var(--ink-2);
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    transition:
+      background var(--t),
+      color var(--t);
   }
-  .chip-err {
-    border-color: color-mix(in srgb, var(--red) 30%, transparent);
-    background: var(--red-soft);
-    color: var(--red);
+  .nav-item:hover {
+    background: var(--surface);
+    color: var(--ink);
   }
-  .chip-key {
-    color: var(--ink-3);
-    flex: none;
+  .nav-item[aria-current="true"] {
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 550;
   }
 }
 
-/* Small inline spinner — inherits currentColor (e.g. the red "Deleting…" button). */
+/* Small inline spinner — inherits currentColor. */
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -149,12 +375,6 @@ select:focus-visible {
   border-top-color: transparent;
   animation: spin 0.7s linear infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-  .spinner {
-    animation-duration: 1.6s;
-  }
-}
-
 
 @keyframes blink {
   50% {
@@ -162,14 +382,23 @@ select:focus-visible {
   }
 }
 .working-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 9999px;
   background: currentColor;
   animation: blink 1.1s ease-in-out infinite;
 }
+
 @media (prefers-reduced-motion: reduce) {
-  .working-dot {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .spinner {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
   }
 }

@@ -1,27 +1,38 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { SignOutButton } from '@/components/sign-out-button';
 import { WorkerSettings } from '@/components/worker-settings';
 import { useDisplayName } from '@/lib/display-names';
 
+/** Slim app chrome: wordmark, two destinations, who you are. Nothing else. */
 export function TopBar({ email }: { email: string }) {
-  // Greet with the chosen display name; the full email lives in the tooltip.
   const name = useDisplayName(email);
+  const pathname = usePathname() ?? '';
+  const nav = [
+    { href: '/', label: 'Board', on: pathname === '/' || pathname.startsWith('/task') },
+    { href: '/docs', label: 'Docs', on: pathname.startsWith('/docs') },
+  ];
+
   return (
-    <header className="sticky top-0 z-10 border-b border-line bg-stage/90 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-5 py-3">
-        <Link href="/" className="flex items-center gap-2.5 text-[15px] font-bold">
-          <span className="grid size-7 flex-none place-items-center rounded-lg bg-qa text-[13px] font-extrabold text-on-accent">
+    <header className="sticky top-0 z-20 border-b border-line bg-paper/85 backdrop-blur-md">
+      <div className="mx-auto flex h-12 w-full max-w-[1140px] items-center gap-1 px-5">
+        <Link href="/" className="mr-3 flex items-center gap-2 text-[13.5px] font-semibold tracking-[-0.01em]">
+          <span className="grid size-[22px] flex-none place-items-center rounded-[6px] bg-qa text-[11px] font-bold text-on-accent">
             Q
           </span>
           QA Pipeline
         </Link>
-        <div className="flex items-center gap-3 text-[12.5px] text-ink-3">
-          <Link href="/docs" className="font-semibold text-ink-2 hover:text-qa">
-            Docs
+
+        {nav.map((n) => (
+          <Link key={n.href} href={n.href} aria-current={n.on ? 'true' : undefined} className="nav-item">
+            {n.label}
           </Link>
-          <span className="hidden sm:inline" title={email}>
+        ))}
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="hidden max-w-[168px] truncate text-[12.5px] text-ink-3 sm:inline" title={email}>
             {name}
           </span>
           <WorkerSettings email={email} />
