@@ -38,6 +38,20 @@ const dotFor = (report: QaReport | null | undefined, hasContext: boolean): strin
   }
 };
 
+/** What is behind the toggle, said in one line — never "Details" alone. */
+function detailSummary(s: QaDocSection): string {
+  const bits: string[] = [];
+  const steps = s.click_trail?.length ?? 0;
+  if (s.route) bits.push(s.route);
+  if (steps > 0) bits.push(`${steps} step${steps === 1 ? '' : 's'}`);
+  if (s.screenshots.length > 0) bits.push(`${s.screenshots.length} screenshot${s.screenshots.length === 1 ? '' : 's'}`);
+  if (s.files.length > 0) bits.push(`${s.files.length} file${s.files.length === 1 ? '' : 's'}`);
+  if (bits.length === 0) bits.push('nothing captured yet');
+  if (s.constraints.trim()) bits.push('constraints');
+  bits.push(s.model ?? 'default model');
+  return bits.join(' · ');
+}
+
 /** A section's display name = the first line of its description. */
 const firstLine = (body: string): string => body.trim().split('\n')[0]?.trim().slice(0, 80) ?? '';
 
@@ -266,6 +280,7 @@ function SectionCard({
   onDispatched: (report: QaReport) => void;
 }) {
   const router = useRouter();
+  const [expanded, setExpanded] = useState(false);
   const [showReplay, setShowReplay] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [dispatching, setDispatching] = useState(false);
@@ -322,7 +337,7 @@ function SectionCard({
   }));
 
   return (
-    <section id={`section-${section.id}`} className="group sheet px-5 pb-4 pt-3.5">
+    <section id={`section-${section.id}`} className="group border-t border-line-soft pb-2 pt-5 first:border-t-0 first:pt-0">
       {/* Header: the task's name, its state, and controls that stay out of the
           way until the pointer is here. */}
       <div className="mb-1 flex items-center gap-2">
@@ -352,7 +367,7 @@ function SectionCard({
           ))}
       </div>
 
-      <GroupLabel>you write</GroupLabel>
+      {expanded ? <GroupLabel>you write</GroupLabel> : null}
 
       <Row label="The problem" required hint="or what you want built">
         <textarea
@@ -364,7 +379,7 @@ function SectionCard({
           disabled={dispatched}
           placeholder="Write it the way you'd tell a colleague. The first line becomes the task's name."
           aria-label="The problem"
-          rows={Math.max(3, Math.min(10, section.body.split('\n').length + 1))}
+          rows={Math.max(2, Math.min(10, section.body.split('\n').length + 1))}
           className={FIELD_CLS}
         />
       </Row>
@@ -381,12 +396,28 @@ function SectionCard({
           rows={2}
           className={FIELD_CLS}
         />
-        <p className="mt-1 px-2 text-[12px] text-ink-3">
-          After the fix, your steps are replayed and an examiner checks this sentence.
-        </p>
+        {section.done_when.trim() ? null : (
+          <p className="mt-1 px-2 text-[12px] text-ink-3">
+            After the fix, your steps are replayed and an examiner checks this sentence.
+          </p>
+        )}
       </Row>
 
-      <GroupLabel tone="auto">captured from the app</GroupLabel>
+      {/* A document shows its point; the rest is one click away. The summary
+          line says what is inside, so nothing important hides silently. */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="mt-1.5 flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12.5px] text-ink-3 transition-colors hover:bg-surface hover:text-ink-2"
+      >
+        <span className={`flex-none text-[9px] transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
+        <span className="min-w-0 truncate">{detailSummary(section)}</span>
+      </button>
+
+      {expanded ? (
+        <>
+          <GroupLabel tone="auto">captured from the app</GroupLabel>
 
       <Row label="Location">
         {section.route ? (
@@ -583,8 +614,11 @@ function SectionCard({
         </span>
       </Row>
 
+        </>
+      ) : null}
+
       {/* footer */}
-      <div className="mt-4 flex items-center gap-3 border-t border-line-soft pt-3">
+      <div className="mt-3.5 flex items-center gap-3">
         <span className="min-w-0 flex-1 text-[12.5px] text-ink-3">
           {dispatchError ? (
             <span className="text-red">{dispatchError}</span>
