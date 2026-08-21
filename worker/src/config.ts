@@ -50,6 +50,10 @@ export interface WorkerConfig {
   wakePort: number;
   /** Real API a preview's `/__api/*` calls are forwarded to. https origin only. */
   previewApiOrigin: string;
+  /** PREVIEW_BUILD=0 → serve `next dev` instead of a production build (slow; debugging only). */
+  previewBuild: boolean;
+  /** Build command run in the worktree before `next start`. */
+  previewBuildCmd: string;
   cfTunnelName: string;
   siteUrl: string;
   /** QA_DEFAULT_ASSIGNEE — fallback tester display name for auto-assign-on-block. */
@@ -139,6 +143,8 @@ export function loadConfig(): WorkerConfig {
     previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
     wakePort: intEnv('WAKE_PORT', 4521),
     previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
+    previewBuild: process.env.PREVIEW_BUILD !== '0',
+    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npx turbo run build --filter=web',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',

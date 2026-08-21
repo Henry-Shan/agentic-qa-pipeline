@@ -44,6 +44,8 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
 - `PREVIEW_MODE=local|tunnel` · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
 - `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
+- `PREVIEW_BUILD=1` · `PREVIEW_BUILD_CMD='npx turbo run build --filter=web'` — previews serve a
+  production build; `PREVIEW_BUILD=0` falls back to the much slower `next dev`
 - `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
   preview address is `<prefix><reportId>.<zone>`; ONE label deep so `*.<zone>` TLS covers it
 - `SITE_URL=https://qa.example.com`
@@ -550,8 +552,22 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `claude --resume <sid> -p "<note + continue instructions>"` same env/flags (new attempt on same
   `qa_runs` row lineage: attempt+1). `steer|verdict_broken` after done → same resume path, report
   `rework`. `verdict_fixed` → report `verified` + event.
-- **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree:
-  `npm --prefix apps/web run dev -- --port <p>` with `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`,
+- **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree, build first
+  (`PREVIEW_BUILD_CMD`, default `npx turbo run build --filter=web`) then
+  `npm --prefix apps/web run start -- --port <p>`, with `NEXT_PUBLIC_API_BASE_URL` set at
+  BOTH build and run time (`NEXT_PUBLIC_*` is inlined at build).
+  **Not `next dev`.** Measured on this app: dev serves one page as 25.8 MB over 123 requests
+  and holds ~1 GB per preview, because it compiles routes on demand and ships every module
+  unbundled — so opening a new route took seconds. Built: 1.4 MB over 18 requests, 65 ms
+  TTFB through the tunnel, ~64-170 MB per server. A preview shows frozen code, so nothing
+  dev mode offers is worth 19x the bytes.
+  A failed build NEVER costs the tester their preview: it degrades to `next dev` with the
+  reason recorded as an event. Builds are serialized (one at a time) — a restart can want
+  five at once, and five concurrent bundlers finish later than five in a row. Waking an
+  evicted preview reuses the existing `.next` build, so it comes back in seconds.
+  `startingPreviews` claims a run before the server is healthy, so a reconcile and a wake
+  cannot both start a server for the same run.
+  Legacy dev command (`PREVIEW_BUILD=0`),
   nohup, pid file `<wt>/.qa/preview.pid`; poll health 90s → `preview_status live`,
   `preview_url` = `http://localhost:<p>`. Previews are local-only until shared.
   LRU: >MAX_PREVIEWS → kill oldest idle, **except the published run** (evicting the one

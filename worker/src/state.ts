@@ -39,6 +39,10 @@ export class WorkerState {
    *  startPreview calls (reconcile restarts, simultaneous runinfo) must not
    *  pick the same port before the first server binds it. */
   readonly reservedPorts = new Set<number>();
+  /** Runs whose preview is mid-start. `previews` is only populated once the server
+   *  is healthy — seconds later — so without this a reconcile and a wake request can
+   *  both pass the "already running?" check and start two dev servers for one run. */
+  readonly startingPreviews = new Set<number>();
   private readonly askPendingReports = new Set<number>();
   /** Rate-limit cooldown: claim loop stays idle until this epoch-ms. */
   cooldownUntil = 0;

@@ -58,7 +58,20 @@ async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
 
 /** On pr_ready: start the worktree's dev server and publish the preview URL. */
 export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Promise<void> {
-  if (ctx.state.previews.has(run.id)) return;
+  // `previews` is only populated once the server answers, which is seconds (or a
+  // build) away — so the map alone cannot stop a reconcile and a wake request from
+  // both starting a server for the same run. That doubles the heaviest thing on
+  // this machine, so claim the run up front.
+  if (ctx.state.previews.has(run.id) || ctx.state.startingPreviews.has(run.id)) return;
+  ctx.state.startingPreviews.add(run.id);
+  try {
+    await startPreviewInner(ctx, run, skipExam);
+  } finally {
+    ctx.state.startingPreviews.delete(run.id);
+  }
+}
+
+async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promise<void> {
   if (!run.worktree) {
     await ctx.db.insertEvent({
       report_id: run.report_id,
@@ -82,9 +95,6 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   const qaDir = path.join(run.worktree, '.qa');
   fs.mkdirSync(qaDir, { recursive: true });
   const logPath = path.join(qaDir, 'preview.log');
-  const cmd = ctx.cfg.previewCmd
-    ? `${ctx.cfg.previewCmd} ${port}`
-    : `npm --prefix ${shq(path.join(run.worktree, 'apps/web'))} run dev -- --port ${port}`;
   // The API is reached through the preview's OWN origin (`/__api`), which the
   // front door forwards to the real API. Going straight to api.example.com is
   // a cross-origin call the API rejects — its CORS allowlist is example.com and
@@ -93,6 +103,19 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   // of QA, so instead we make the call same-origin and production stays untouched.
   const publicHost = ctx.cfg.previewMode === 'tunnel' ? previewHostname(ctx, run.report_id) : null;
   const apiBase = publicHost && !refusesToServe(ctx, publicHost) ? `https://${publicHost}${API_PREFIX}` : ctx.cfg.previewApiOrigin;
+
+  // Serve a production build, not `next dev`. Measured on this app: dev ships
+  // 25.8 MB over 123 requests for one page and holds ~1 GB per preview, because it
+  // compiles routes on demand and serves every module unbundled. The same page
+  // built is 1.38 MB over 16 requests in a 64 MB server. A preview shows frozen
+  // code, so nothing about dev mode is worth 19x the bytes.
+  const built = await ensureBuild(ctx, run, run.worktree, apiBase, logPath, skipExam);
+  const webDir = shq(path.join(run.worktree, 'apps/web'));
+  const cmd = ctx.cfg.previewCmd
+    ? `${ctx.cfg.previewCmd} ${port}`
+    : built
+      ? `npm --prefix ${webDir} run start -- --port ${port}`
+      : `npm --prefix ${webDir} run dev -- --port ${port}`;
   const out = fs.openSync(logPath, 'a');
   const child = spawn('bash', ['-c', cmd], {
     detached: true,
@@ -183,6 +206,60 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   }
 }
 
+/**
+ * Produce a production build in the worktree, returning false if we must fall back
+ * to `next dev`.
+ *
+ * A build that fails must never cost the tester their preview — a branch with a
+ * type error still deserves to be looked at — so failure degrades to dev mode with
+ * the reason recorded, rather than leaving nothing to open.
+ *
+ * `NEXT_PUBLIC_*` values are inlined at build time, so the API base has to be
+ * passed here and not only to the server process.
+ */
+async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: string, logPath: string, waking: boolean): Promise<boolean> {
+  if (!ctx.cfg.previewBuild || ctx.cfg.previewCmd) return false;
+  const buildId = path.join(worktree, 'apps/web/.next/BUILD_ID');
+  // Waking an evicted preview re-serves code that has not changed since it was
+  // built, so reuse it — that is what makes wake-from-sleep quick.
+  if (waking && fs.existsSync(buildId)) return true;
+
+  log('preview', `run ${run.id}: building preview (${ctx.cfg.previewBuildCmd})`);
+  await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: 'building preview…' });
+  // Timed inside the queue: including the wait would report a 5-minute build for
+  // something that took 80 seconds behind three others.
+  let started = Date.now();
+  const r = await queueBuild(() => {
+    started = Date.now();
+    return execa('bash', ['-c', ctx.cfg.previewBuildCmd], {
+      cwd: worktree,
+      env: { NEXT_PUBLIC_API_BASE_URL: apiBase, NEXT_TELEMETRY_DISABLED: '1' },
+      extendEnv: true,
+      reject: false,
+      timeout: 15 * 60_000,
+    });
+  });
+  const secs = Math.round((Date.now() - started) / 1000);
+  if (r.exitCode === 0 && fs.existsSync(buildId)) {
+    log('preview', `run ${run.id}: built in ${secs}s`);
+    return true;
+  }
+  try {
+    fs.appendFileSync(logPath, `\n--- preview build failed (${secs}s) ---\n${r.stdout ?? ''}\n${r.stderr ?? ''}\n`);
+  } catch {
+    // the log is a convenience; never fail the preview over it
+  }
+  const tail = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.trim().split('\n').slice(-3).join(' · ').slice(0, 300);
+  log('preview', `run ${run.id}: build failed in ${secs}s — serving dev mode instead`);
+  await ctx.db.insertEvent({
+    report_id: run.report_id,
+    run_id: run.id,
+    type: 'system',
+    message: `preview build failed — falling back to the slower dev server. ${tail}`,
+  });
+  return false;
+}
+
 async function enforcePreviewCap(ctx: Ctx): Promise<void> {
   while (ctx.state.previews.size > maxPreviews(ctx)) {
     // Oldest-first. Safe now that every task's URL is permanent: evicting a
@@ -228,6 +305,16 @@ export async function stopAllPreviews(ctx: Ctx): Promise<void> {
 // ---- cloudflared (PREVIEW_MODE=tunnel) -------------------------------------
 
 let cfChild: ChildProcess | null = null;
+
+/** Builds run one at a time. A worker restart can want five at once, and five
+ *  concurrent bundlers on one laptop finish later than five in a row while making
+ *  everything else on the machine crawl. */
+let buildQueue: Promise<unknown> = Promise.resolve();
+function queueBuild<T>(fn: () => Promise<T>): Promise<T> {
+  const next = buildQueue.then(fn, fn);
+  buildQueue = next.catch(() => undefined);
+  return next;
+}
 
 /**
  * Hostnames this worker must NEVER touch. `cloudflared tunnel route dns` writes
