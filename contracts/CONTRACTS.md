@@ -164,6 +164,10 @@ interface IngestBody {
   testid?: string;
   elementText?: string;             // ≤120 chars
   clickTrail: Array<{ ts: number; route: string; kind?: 'click'|'input'; text?: string; testid?: string; component?: string; selector?: string; value?: string }>; // ≤200
+  //  `route` is the FULL route — pathname + search + hash (`buffers.currentRoute()`).
+  //  Query/hash carry real app state (selected sheet, filters, open entry), so a bare
+  //  pathname replays into a different screen than the tester recorded.
+  //  Key steps are `kind:'click'` with `text:'pressed Enter'|'pressed Escape'|'pressed Tab'`.
                                     // kind defaults to 'click'. 'input' entries record typing:
                                     // value = final field value (≤120 chars, scrubbed; NEVER
                                     // recorded for type=password / autocomplete password|cc-*),
@@ -237,8 +241,15 @@ The task page embeds the run's `preview_url` in an iframe and answers the loader
 the SAME activate flow as /capture (shared logic). Additional messages:
 8. **replay** — task page → widget, once after activation:
    `{type:'qa-pipeline:replay', route, trail: ClickTrailEntry[], selector?, elementText?}`.
-   The widget enters replay mode: navigates to `route`, then EXECUTES the recorded procedure
-   in order — for `click` steps: cursor glide + REAL `.click()` on the resolved target (so
+   The widget enters replay mode: navigates to `route` — the FULL route including query and
+   hash, so `/inventory?sheet=a` replays on that sheet, not on a bare `/inventory` — then
+   EXECUTES the recorded procedure in order. **Fidelity rules:** before each step, if the
+   step's own recorded `route` differs from the current location, re-navigate to it (follows
+   the tester's actual path even when a click no longer navigates, or they used Back); and the
+   tester's OWN pacing is honored — the recorded gap between consecutive steps beyond the
+   ~1.2s execution cadence is slept off, capped at 3s per gap (90s whole-replay budget), so
+   deliberate pauses and rapid sequences reproduce rather than being flattened.
+   For `click` steps: cursor glide + REAL `.click()` on the resolved target (so
    navigation/dialogs actually happen); for `input` steps: focus the field and type the
    recorded `value` character-by-character (~30ms/char, native value setter + `input` event so
    React-controlled fields update), caption "N · typed …". Resolution: selector → testid →

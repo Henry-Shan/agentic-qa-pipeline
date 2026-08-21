@@ -1,6 +1,6 @@
 // All widget UI, inside one ShadowRoot: fab → menu → picker → drawer → toast.
 
-import type { Buffers } from './buffers';
+import { currentRoute, type Buffers } from './buffers';
 import type { ClickTrailEntry, ConsoleEntry, IngestBody, IngestUploadTargets, NetworkEntry, WidgetConfig } from './types';
 import { buildSelector, elementMeta, type ElementMeta } from './selector';
 import {
@@ -356,7 +356,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       const rec = {
         recorder: startRecorder(undefined, undefined, { manual: true }),
         t0: Date.now(),
-        route: location.pathname,
+        route: currentRoute(),
         seq: 0,
       };
       activeRec = rec;
@@ -583,7 +583,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
         if (!d || d.type !== 'qa-pipeline:replay') return;
         replay?.cancel(); // restart cleanly on a second replay message
         const req: ReplayRequest = {
-          route: typeof d.route === 'string' && d.route ? d.route : location.pathname,
+          route: typeof d.route === 'string' && d.route ? d.route : currentRoute(),
           trail: Array.isArray(d.trail) ? (d.trail as ReplayRequest['trail']) : [],
         };
         if (typeof d.selector === 'string' && d.selector) req.selector = d.selector;
@@ -715,7 +715,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       const payload: Record<string, unknown> = {
         kind: draft.kind,
         description,
-        route: draft.recording?.route ?? location.pathname,
+        route: draft.recording?.route ?? currentRoute(),
         pageTitle: document.title,
         clickTrail: recordedTrail(draft),
         viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
@@ -752,7 +752,7 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
       description,
       // A recorded report replays from where the recording BEGAN, not from
       // wherever the tester parked before hitting Send.
-      route: draft.recording?.route ?? location.pathname,
+      route: draft.recording?.route ?? currentRoute(),
       pageTitle: document.title,
       // ONLY the recorded window ships (contract §IngestBody clickTrail) —
       // no recording, no trail.

@@ -77,6 +77,8 @@ function clip(value: string, max: number): string {
 function stepIcon(kind: string | undefined, label: string): string {
   if (kind === 'input') return label.startsWith('toggled') ? '☑' : '⌨';
   if (label === 'pressed Enter') return '⏎';
+  if (label === 'pressed Escape') return '⎋';
+  if (label === 'pressed Tab') return '⇥';
   return '⊕';
 }
 
@@ -91,7 +93,7 @@ function trailLabel(entry: ClickTrailEntry): string {
     const typed = `typed "${clip(entry.value ?? '', 32)}"`;
     return where ? `${typed} · ${clip(where, 22)}` : typed;
   }
-  if (entry.text === 'pressed Enter') return 'pressed Enter';
+  if (entry.text?.startsWith('pressed ')) return entry.text;
   const what = entry.text ?? entry.testid ?? entry.component;
   return what ? `clicked ${clip(what, 44)}` : `went to ${entry.route}`;
 }

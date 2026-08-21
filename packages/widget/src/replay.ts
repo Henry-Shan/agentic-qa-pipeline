@@ -63,7 +63,8 @@ const GLIDE_MS = 450; // cursor glide (matches the .qa-cursor CSS transition)
 const SCROLL_SETTLE_MS = 250; // let scrollIntoView land before measuring
 const CAPTION_MS = 900; // pulse + caption chip lifetime
 const FINAL_MS = 4_000; // sustained highlight on the report's element
-const TOTAL_CAP_MS = 45_000; // whole-replay budget (real clicks + typing take time)
+const TOTAL_CAP_MS = 90_000; // whole-replay budget (real clicks + typing + honored pauses)
+const MAX_GAP_MS = 3_000; // most of a recorded pause to honor beyond STEP_MS
 const NAV_TIMEOUT_MS = 1_500; // SPA must react to pushState within this window
 const NAV_SETTLE_MS = 400; // post-route render settle
 const CLICK_BEAT_MS = 150; // pulse lands, THEN the real click fires
@@ -210,7 +211,10 @@ function prefersReducedMotion(): boolean {
  * acceptable — the page reload abandons this run).
  */
 async function ensureRoute(route: string, c: Cancellation): Promise<void> {
-  if (location.pathname === route) return;
+  // Compare the FULL route — query and hash carry real app state (selected
+  // sheet, filters, open entry), so `/inventory?sheet=a` and `/inventory` are
+  // different screens and must not be treated as "already there".
+  if (`${location.pathname}${location.search}${location.hash}` === route) return;
   let mutated = false;
   const observer = new MutationObserver(() => {
     mutated = true;
@@ -428,11 +432,11 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     await c.sleep(STEP_MS - spent);
   }
 
-  /** 'pressed Enter' step: dispatch keydown/keyup Enter on the resolved field (submit-intent). */
-  async function runEnterStep(el: Element, index: number): Promise<void> {
+  /** Key step ('pressed Enter' / 'Escape' / 'Tab'): dispatch keydown+keyup on the resolved field. */
+  async function runEnterStep(el: Element, index: number, key = 'Enter'): Promise<void> {
     const rect = await glideTo(el);
     if (c.cancelled) return;
-    pulse(rect, `${index} · pressed Enter`, CAPTION_MS);
+    pulse(rect, `${index} · pressed ${key}`, CAPTION_MS);
     await c.sleep(CLICK_BEAT_MS);
     if (c.cancelled) return;
     const target: Element = fieldOf(el) ?? el;
@@ -446,7 +450,7 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
     for (const type of ['keydown', 'keyup'] as const) {
       let event: Event;
       try {
-        event = new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
+        event = new KeyboardEvent(type, { key, code: key, bubbles: true, cancelable: true });
       } catch {
         event = new Event(type, { bubbles: true, cancelable: true });
       }
@@ -517,10 +521,30 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
         skipped += steps.length - i;
         break;
       }
+      // Honor the tester's OWN pacing: a deliberate pause before a step is part
+      // of what they did (a screen finished loading, they read a value). Each
+      // step already takes ~STEP_MS to execute, so only the REMAINDER of the
+      // recorded gap is added, capped so a thinking pause can't eat the budget.
+      const prev = i > 0 ? steps[i - 1] : null;
+      const thisTs = steps[i]?.ts;
+      if (prev && typeof prev.ts === 'number' && typeof thisTs === 'number') {
+        const extra = thisTs - prev.ts - STEP_MS;
+        if (Number.isFinite(extra) && extra > 0) {
+          await c.sleep(Math.min(extra, MAX_GAP_MS));
+          if (c.cancelled) return null;
+        }
+      }
       const entry = steps[i];
       if (!entry) continue;
-      // Steps may have navigated the SPA (a real click's pushState) — each
-      // resolve runs against the CURRENT document, wherever we are now.
+      // Follow the tester's actual path: each step records the route it was
+      // performed on, so if a click didn't navigate where it used to (or the
+      // tester used the back button), re-align BEFORE resolving. Steps that
+      // navigate on their own are already there and this is a no-op.
+      if (entry.route) {
+        await ensureRoute(entry.route, c);
+        if (c.cancelled) return null;
+      }
+      // Each resolve runs against the CURRENT document, wherever we are now.
       const el = resolveStep(entry, document, opts.ignore);
       if (!el || !el.isConnected) {
         skipped++;
@@ -553,7 +577,9 @@ export function startReplay(req: ReplayRequest, opts: ReplayOptions): ReplayHand
           await runEditableStep(editable, i + 1, entry);
         }
       } else if (entry.text === 'pressed Enter') {
-        await runEnterStep(el, i + 1);
+        await runEnterStep(el, i + 1, 'Enter');
+      } else if (entry.text === 'pressed Escape' || entry.text === 'pressed Tab') {
+        await runEnterStep(el, i + 1, entry.text.slice('pressed '.length));
       } else {
         await runClickStep(el, i + 1, entry);
       }

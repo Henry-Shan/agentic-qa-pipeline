@@ -9,6 +9,15 @@ import { annotationOf, buildSelector } from './selector';
 import { stepKind, stepLabel } from './trail-list';
 import type { ClickTrailEntry, ConsoleEntry, NetworkEntry, StepMark } from './types';
 
+/**
+ * The FULL route — pathname + query + hash (contract §IngestBody clickTrail).
+ * Query params carry real app state in the host app (selected sheet, filters), so
+ * a bare pathname replays into a different screen than the tester recorded.
+ */
+export function currentRoute(): string {
+  return `${location.pathname}${location.search}${location.hash}`;
+}
+
 const CONSOLE_MAX = 50;
 const CONSOLE_CHARS = 500;
 const NETWORK_MAX = 40;
@@ -425,7 +434,7 @@ export function startBuffers(): Buffers {
     const first = path[0];
     const target = first instanceof Element ? first : e.target instanceof Element ? e.target : null;
     if (!target) return;
-    const entry: ClickTrailEntry = { ts: Date.now(), route: location.pathname, kind: 'click' };
+    const entry: ClickTrailEntry = { ts: Date.now(), route: currentRoute(), kind: 'click' };
     const text = (target.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, CLICK_TEXT_CHARS);
     if (text) entry.text = text;
     stepMetaInto(entry, target);
@@ -444,7 +453,7 @@ export function startBuffers(): Buffers {
   const recordInput = (el: Element, value: string, label?: string): void => {
     const entry: ClickTrailEntry = {
       ts: Date.now(),
-      route: location.pathname,
+      route: currentRoute(),
       kind: 'input',
       value: scrubString(value).slice(0, INPUT_VALUE_CHARS),
     };
@@ -463,7 +472,7 @@ export function startBuffers(): Buffers {
   const recordToggle = (el: HTMLInputElement): void => {
     const entry: ClickTrailEntry = {
       ts: Date.now(),
-      route: location.pathname,
+      route: currentRoute(),
       kind: 'input',
       value: el.checked ? 'checked' : 'unchecked',
     };
@@ -550,7 +559,23 @@ export function startBuffers(): Buffers {
   // typing first (so the trail reads "typed … → pressed Enter"), then record
   // {kind:'click', text:'pressed Enter', selector of the field}.
   const onKeydown = (e: KeyboardEvent): void => {
-    if (e.key !== 'Enter' || inIgnoredRoot(e)) return;
+    if (inIgnoredRoot(e)) return;
+    // Escape/Tab are recorded wherever they happen (Escape closes panels and
+    // dialogs all over the host app; Tab commits a field and moves focus) — they
+    // need no field, so they are recorded against whatever element has focus.
+    if (e.key === 'Escape' || e.key === 'Tab') {
+      const target = e.target instanceof Element ? e.target : document.activeElement;
+      const entry: ClickTrailEntry = {
+        ts: Date.now(),
+        route: currentRoute(),
+        kind: 'click',
+        text: `pressed ${e.key}`,
+      };
+      if (target && target !== document.body) stepMetaInto(entry, target);
+      pushStep(entry);
+      return;
+    }
+    if (e.key !== 'Enter') return;
     const el = asEnterField(e.target);
     if (!el || isSensitiveField(el)) return;
     if (inputTimers.has(el)) {
@@ -560,7 +585,7 @@ export function startBuffers(): Buffers {
     }
     const entry: ClickTrailEntry = {
       ts: Date.now(),
-      route: location.pathname,
+      route: currentRoute(),
       kind: 'click',
       text: 'pressed Enter',
     };
@@ -573,11 +598,11 @@ export function startBuffers(): Buffers {
   disposers.push(() => window.removeEventListener('keydown', onKeydown, true));
 
   // --- route changes -------------------------------------------------------
-  let lastRoute = location.pathname;
+  let lastRoute = currentRoute();
   pushStep({ ts: Date.now(), route: lastRoute });
   const recordRoute = (): void => {
-    if (location.pathname === lastRoute) return;
-    lastRoute = location.pathname;
+    if (currentRoute() === lastRoute) return;
+    lastRoute = currentRoute();
     activeInput = null; // a route change seals any in-progress input step
     suppressChangeFor = null;
     pushStep({ ts: Date.now(), route: lastRoute });

@@ -93,7 +93,8 @@ export function stepLabel(entry: ClickTrailEntry): string {
     const typed = `typed "${truncate(entry.value ?? '', 32)}"`;
     return where ? `${typed} · ${truncate(where, 22)}` : typed;
   }
-  if (entry.text === 'pressed Enter') return 'pressed Enter';
+  // Key steps ('pressed Enter' / 'Escape' / 'Tab') read as themselves.
+  if (entry.text?.startsWith('pressed ')) return entry.text;
   const label = entry.text ?? entry.testid ?? entry.component;
   return label ? truncate(label, CLICK_TEXT_CHARS) : entry.route;
 }
@@ -104,6 +105,8 @@ export function stepIcon(entry: ClickTrailEntry): string {
     return entry.value === 'checked' || entry.value === 'unchecked' ? '☑' : '⌨';
   }
   if (entry.text === 'pressed Enter') return '⏎';
+  if (entry.text === 'pressed Escape') return '⎋';
+  if (entry.text === 'pressed Tab') return '⇥';
   // Mirrors stepLabel: a step with no human name falls back to its route.
   return entry.text ?? entry.testid ?? entry.component ? '⊕' : '→';
 }
