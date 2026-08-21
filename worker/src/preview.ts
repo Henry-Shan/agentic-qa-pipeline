@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execa } from 'execa';
 import type { QaRun } from './db';
 import { examine } from './examine';
-import { maxPreviews, publishedRun } from './settings';
+import { maxPreviews } from './settings';
 import type { Ctx, PreviewHandle } from './state';
 import { log, sleep } from './util';
 
@@ -132,15 +132,29 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   ctx.state.previews.set(run.id, handle);
   releasePort(); // the previews map owns the port from here
 
-  // Previews come up local-only. A per-run hostname would need a wildcard cert
-  // Cloudflare's Universal SSL does not issue (contracts §Preview), so a run
-  // becomes reachable to others only when someone presses Share on the site —
-  // publishPreview then moves the one shared hostname onto it.
-  const url = `http://localhost:${port}`;
+  // Every task gets its own permanent https address (contracts §Preview). Only a
+  // worker restart or an eviction can take the dev server down, and neither
+  // changes the URL — the wake service brings it back on the next request.
+  let url = `http://localhost:${port}`;
+  if (ctx.cfg.previewMode === 'tunnel') {
+    const host = previewHostname(ctx, run.report_id);
+    if (refusesToServe(ctx, host)) {
+      log('preview', `REFUSING to serve ${host} — not a preview hostname`);
+    } else {
+      // A rework supersedes the older run's preview: same task, same hostname,
+      // so leaving both alive would make the ingress order decide which fix the
+      // tester sees.
+      for (const other of ctx.state.previews.values()) {
+        if (other.reportId === run.report_id && other.runId !== run.id) {
+          await stopPreview(ctx, other, `superseded by run ${run.id}`);
+        }
+      }
+      handle.hostname = host;
+      url = `https://${host}`;
+      await syncTunnel(ctx);
+    }
+  }
   await ctx.db.updateRun(run.id, { preview_status: 'live', preview_url: url, preview_port: port });
-  // Re-publish AFTER the row is written, or publishPreview's https URL would be
-  // clobbered by the localhost one above.
-  if (ctx.cfg.previewMode === 'tunnel' && publishedRun(ctx) === run.id) await publishPreview(ctx);
   // Health wait can take up to 120s: only pr_ready may advance to preview, so a
   // late-healthy dev server never regresses verified/stopped/blocked.
   await ctx.db.updateReportIfStatus(run.report_id, 'pr_ready', { status: 'preview' });
@@ -163,13 +177,11 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
 
 async function enforcePreviewCap(ctx: Ctx): Promise<void> {
   while (ctx.state.previews.size > maxPreviews(ctx)) {
-    // The shared preview is exempt: it is the one URL people outside this
-    // machine are holding, and evicting it turns that link into a 530 with no
-    // trace on the site. Everything else is evicted oldest-first as usual.
-    const published = publishedRun(ctx);
-    const victims = [...ctx.state.previews.values()].filter((p) => p.runId !== published);
-    const oldest = victims.sort((a, b) => a.startedAt - b.startedAt).at(0);
-    if (!oldest) return; // only the shared preview left — keep it, cap be damned
+    // Oldest-first. Safe now that every task's URL is permanent: evicting a
+    // preview only puts it to sleep, and the next request to its hostname wakes
+    // it through the wake service.
+    const oldest = [...ctx.state.previews.values()].sort((a, b) => a.startedAt - b.startedAt).at(0);
+    if (!oldest) return;
     await stopPreview(ctx, oldest, `evicted — max previews=${maxPreviews(ctx)}`);
   }
 }
@@ -223,10 +235,33 @@ const PROTECTED_HOSTS = new Set([
   'app.example.com',
 ]);
 
-function refusesToServe(hostname: string): boolean {
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The ONLY shape of hostname this worker may create: `<prefix><digits>.<zone>`.
+ * A digits-only label cannot collide with `api`, `www`, `qa` or the apex, so no
+ * misconfiguration can aim a DNS write at production. PROTECTED_HOSTS stays as a
+ * second, redundant check.
+ */
+function allowedHost(ctx: Ctx): RegExp {
+  return new RegExp(`^${escapeRe(ctx.cfg.previewHostPrefix)}\\d+\\.${escapeRe(ctx.cfg.previewZone)}$`);
+}
+
+function refusesToServe(ctx: Ctx, hostname: string): boolean {
   const h = hostname.trim().toLowerCase().replace(/\.$/, '');
-  // The apex and every production host, however it was spelled.
-  return PROTECTED_HOSTS.has(h) || h === '' || !h.endsWith('.example.com');
+  return PROTECTED_HOSTS.has(h) || !allowedHost(ctx).test(h);
+}
+
+/**
+ * A task's permanent preview address. Keyed by REPORT, not run: reworking a task
+ * spawns a new run, and the tester must not have to hunt for a new link. The DNS
+ * record is created once and never deleted, so the URL keeps working for the life
+ * of the task — when the dev server behind it is asleep, the wake service boots it.
+ */
+export function previewHostname(ctx: Ctx, reportId: number): string {
+  return `${ctx.cfg.previewHostPrefix}${reportId}.${ctx.cfg.previewZone}`;
 }
 
 /** Regenerate the ingress yaml, route new hostnames once, restart cloudflared. */
@@ -242,54 +277,6 @@ export async function republishTunnel(ctx: Ctx): Promise<void> {
   await syncTunnel(ctx);
 }
 
-/**
- * Publish ONE preview on the shared hostname (contracts §Preview).
- *
- * Cloudflare's Universal SSL covers `*.example.com` but not a second-level
- * wildcard, so a per-run hostname would need a paid certificate. One
- * single-label hostname is already covered — so instead of many URLs we serve
- * whichever run is "published", and the site offers a Share button that swaps
- * it. `published_run = 0` takes the hostname down entirely.
- *
- * The published run's `preview_url` becomes the shareable https URL so the
- * embed, the link and anyone else's browser all agree; every other run falls
- * back to its localhost URL.
- */
-export async function publishPreview(ctx: Ctx): Promise<void> {
-  const runId = ctx.state.settings.publishedRun ?? 0;
-  const host = ctx.cfg.previewDomain;
-
-  if (refusesToServe(host)) {
-    log('preview', `REFUSING to publish on ${host} — that is a production hostname`);
-    return;
-  }
-  // Point the tunnel at the published run — or take it down when none is.
-  const handle = runId > 0 ? ctx.state.previews.get(runId) : undefined;
-  for (const p of ctx.state.previews.values()) {
-    p.hostname = handle && p.runId === runId ? host : null;
-  }
-  await syncTunnel(ctx);
-
-  // Every run's stored URL must match what actually serves it.
-  for (const p of ctx.state.previews.values()) {
-    const url = p.runId === runId && handle ? `https://${host}` : `http://localhost:${p.port}`;
-    await ctx.db.updateRun(p.runId, { preview_url: url }).catch(() => undefined);
-  }
-  if (handle) {
-    await ctx.db.insertEvent({
-      report_id: handle.reportId,
-      run_id: handle.runId,
-      type: 'system',
-      message: `preview shared at https://${host} — anyone with the link can open it`,
-    });
-    log('preview', `published run ${runId} at https://${host}`);
-  } else if (runId > 0) {
-    log('preview', `run ${runId} has no live preview to publish`);
-  } else {
-    log('preview', 'shared preview taken down');
-  }
-}
-
 async function syncTunnel(ctx: Ctx): Promise<void> {
   const yml = path.join(ctx.cfg.qaHome, 'cloudflared.yml');
   const entries = [...ctx.state.previews.values()].filter((p) => p.hostname !== null);
@@ -297,7 +284,10 @@ async function syncTunnel(ctx: Ctx): Promise<void> {
   for (const p of entries) {
     lines.push(`  - hostname: ${p.hostname}`, `    service: http://localhost:${p.port}`);
   }
-  lines.push('  - service: http_status:404', '');
+  // Catch-all: any qa-preview-* hostname whose dev server is not currently up
+  // lands on the wake service, which starts it and holds the browser. This is
+  // what makes a task's URL permanent rather than only alive while it runs.
+  lines.push(`  - service: http://localhost:${ctx.cfg.wakePort}`, '');
   fs.writeFileSync(yml, lines.join('\n'));
 
   // `cloudflared tunnel route dns` once per new hostname (persisted set = idempotent)
@@ -310,7 +300,7 @@ async function syncTunnel(ctx: Ctx): Promise<void> {
   }
   for (const p of entries) {
     if (!p.hostname || routed.has(p.hostname)) continue;
-    if (refusesToServe(p.hostname)) {
+    if (refusesToServe(ctx, p.hostname)) {
       log('preview', `REFUSING to route ${p.hostname} — that is a production hostname`);
       continue;
     }

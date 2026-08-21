@@ -42,7 +42,9 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 - `CLAUDE_BIN=/opt/homebrew/bin/claude`
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
-- `PREVIEW_MODE=local|tunnel` · `PREVIEW_DOMAIN=qa-preview.example.com` · `CF_TUNNEL_NAME=qa-pipeline`
+- `PREVIEW_MODE=local|tunnel` · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
+- `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
+  preview address is `<prefix><reportId>.<zone>`; ONE label deep so `*.<zone>` TLS covers it
 - `SITE_URL=https://qa.example.com`
 
 ## Worker settings (`qa_settings`, migration 0008)
@@ -554,22 +556,29 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   LRU: >MAX_PREVIEWS → kill oldest idle, **except the published run** (evicting the one
   link outsiders hold would 530 it silently). Teardown on shipped/cancelled via repo's
   `teardown-worktree.sh`.
-- **Sharing a preview** (PREVIEW_MODE=tunnel): exactly ONE run is reachable from outside
-  this Mac, on the single hostname `PREVIEW_DOMAIN` (`qa-preview.example.com`).
-  Cloudflare Universal SSL covers `*.example.com` but NOT `*.qa-preview.example.com`,
-  so per-run hostnames would need a paid cert — hence one shared hostname, swapped on
-  demand. `qa_settings.published_run` (0 = nobody) is the switch; the site's Share button
-  writes it, the worker's settings poll notices within 10s and calls `publishPreview()`:
-  regenerate ingress yaml → restart managed cloudflared → `cloudflared tunnel route dns`
-  once per hostname → published run's `preview_url` = `https://<PREVIEW_DOMAIN>`, all
-  others revert to localhost.
-  **Guard**: `refusesToServe()` rejects any hostname that is a production host
-  (`example.com`, `www|api|qa|app.example.com`), is empty, or is not under
-  `.example.com` — checked both in `publishPreview` and per-record in the DNS loop, so a
-  typo in `PREVIEW_DOMAIN` can never repoint production DNS.
-  The link is intentionally ungated (no Cloudflare Access): the app behind it still
-  requires a the host app login, `/qa-session` refuses without a token, and an anonymous
-  visitor sees the same public landing page as `example.com`.
+- **Per-task preview URL** (PREVIEW_MODE=tunnel): every task has ONE permanent address,
+  `qa-preview-<reportId>.example.com` — keyed by report, not run, so a rework keeps the
+  same link. One label deep on purpose: the zone's existing `*.example.com` certificate
+  covers it, while `preview-<n>.qa-preview.example.com` (two levels) fails the TLS
+  handshake and would need a paid wildcard.
+  On preview live: `cloudflared tunnel route dns` once per hostname (persisted in
+  `routed-hostnames.json`, idempotent), regenerate ingress yaml, restart the managed
+  cloudflared child. The DNS record is never deleted — that is what makes the URL
+  permanent. A newer run for the same report supersedes the older run's preview so two
+  dev servers never contend for one hostname.
+  **Guard**: only `^<prefix>\d+\.<zone>$` may ever be routed or served
+  (`qa-preview-<digits>.example.com`). A digits-only label cannot spell `api`, `www`,
+  `qa` or the apex, so no misconfiguration can aim a DNS write at production;
+  `PROTECTED_HOSTS` is a second, redundant check. Enforced in `startPreview` and
+  per-record in the DNS loop. 23 unit cases.
+- **Wake service** (`wake.ts`, 127.0.0.1:`WAKE_PORT`, tunnel mode only): cloudflared's
+  catch-all ingress. Dev servers are NOT permanent — the worker restarts and the
+  MAX_PREVIEWS LRU evicts idle ones — so a request for a sleeping task's hostname lands
+  here instead of a Cloudflare 530. It parses the Host header back to a report id (round-
+  tripped through the canonical builder; anything else 404s), starts that report's latest
+  run's preview once (deduped while booting, GET/HEAD only so crawlers don't spawn dev
+  servers), and answers with a self-reloading "starting…" page. This is why eviction is
+  safe and why the site offers the link whether or not the preview is currently up.
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans

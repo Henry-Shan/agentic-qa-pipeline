@@ -41,7 +41,13 @@ export interface WorkerConfig {
   maxPreviews: number;
   runsPerDay: number;
   previewMode: PreviewMode;
-  previewDomain: string;
+  /** Label prefix for per-task preview hostnames: <prefix><reportId>.<zone>. */
+  previewHostPrefix: string;
+  /** Zone the preview hostnames live in. ONE label deep, so the zone's existing
+   *  `*.<zone>` certificate covers them — a second level would need a paid cert. */
+  previewZone: string;
+  /** Serves qa-preview-*.<zone> whose dev server is asleep; wakes it. 127.0.0.1 only. */
+  wakePort: number;
   cfTunnelName: string;
   siteUrl: string;
   /** QA_DEFAULT_ASSIGNEE — fallback tester display name for auto-assign-on-block. */
@@ -127,7 +133,9 @@ export function loadConfig(): WorkerConfig {
     maxPreviews: intEnv('MAX_PREVIEWS', 3),
     runsPerDay: intEnv('RUNS_PER_DAY', 25),
     previewMode,
-    previewDomain: process.env.PREVIEW_DOMAIN ?? 'qa-preview.example.com',
+    previewHostPrefix: process.env.PREVIEW_HOST_PREFIX ?? 'qa-preview-',
+    previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
+    wakePort: intEnv('WAKE_PORT', 4521),
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',

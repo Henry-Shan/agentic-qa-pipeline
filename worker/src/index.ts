@@ -10,6 +10,7 @@ import { startShipLoop } from './ship';
 import { startTerminalHost } from './term';
 import { WorkerState, type Ctx } from './state';
 import { startSteerLoop } from './steer';
+import { startWakeServer } from './wake';
 import { log } from './util';
 
 export interface WorkerHandle {
@@ -21,6 +22,10 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
   const ctx: Ctx = { cfg, db: new Db(cfg), state: new WorkerState() };
   const releaseLock = acquireLock(cfg);
   try {
+    // Before reconcile: reconcile re-publishes the tunnel, whose catch-all points
+    // at this server. Starting it after would leave a window where every asleep
+    // task URL 502s.
+    const wake = startWakeServer(ctx);
     await reconcile(ctx);
     // Initial qa_settings fetch (site-editable limits); table missing → env values.
     await refreshSettings(ctx).catch((e: Error) => log('settings', `initial fetch failed — using env limits: ${e.message}`));
@@ -33,6 +38,7 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
       async stop(): Promise<void> {
         for (const t of timers) clearInterval(t);
         closeTerminals();
+        if (wake) await new Promise<void>((resolve) => wake.close(() => resolve()));
         await new Promise<void>((resolve) => shim.close(() => resolve()));
         releaseLock();
       },

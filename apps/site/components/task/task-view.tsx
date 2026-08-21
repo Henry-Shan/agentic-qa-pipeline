@@ -20,7 +20,6 @@ import { HeroTabs, type HeroTab } from '@/components/task/hero-tabs';
 import { PreviewEmbed } from '@/components/task/preview-embed';
 import { ReplayPlayer } from '@/components/task/replay-player';
 import { ResultCard } from '@/components/task/result-card';
-import { SharePreview } from '@/components/task/share-preview';
 import { SteerBox } from '@/components/task/steer-box';
 import { TerminalPanel } from '@/components/task/terminal-panel';
 import { CopySession } from '@/components/task/copy-session';
@@ -54,9 +53,16 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
   const [rerunLive, setRerunLive] = useState(false);
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
-  // The interactive preview embed exists only while the preview server is up —
-  // there is NO offline placeholder (contracts § Task page layout).
-  const previewUrl = run?.preview_status === 'live' ? run.preview_url : null;
+  const previewLive = run?.preview_status === 'live';
+  // A task's https preview address is permanent: the dev server behind it sleeps
+  // (worker restart, MAX_PREVIEWS eviction) but the link keeps working — the
+  // worker's wake service boots it on the next request. So the link is offered
+  // whenever the task has one, live or not. A localhost URL is only useful on the
+  // worker's own machine, so it is shown only while it is actually up.
+  const previewUrl = run?.preview_url?.startsWith('https://') ? run.preview_url : previewLive ? (run?.preview_url ?? null) : null;
+  // The interactive embed still waits for a server that is genuinely up — there
+  // is NO offline placeholder (contracts § Task page layout).
+  const livePreviewUrl = previewLive ? previewUrl : null;
   // rrweb recording filed with the report = "Before (the report)".
   const hasBefore = Boolean(report.replay_path);
   // The latest run's after-the-fix recording, saved or just uploaded here.
@@ -217,7 +223,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
   // it embeds the preview, which re-executes the tester's steps live (you watch
   // the actions being taken and see the result) and records them as it goes;
   // once that recording exists it plays back, with a link to run it again.
-  const canReplayLive = Boolean(previewUrl);
+  const canReplayLive = Boolean(livePreviewUrl);
   const showLiveRerun = canReplayLive && (!hasAfter || rerunLive);
 
   const heroTabs: HeroTab[] = [];
@@ -244,8 +250,8 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
       content: showLiveRerun ? (
         <div className="flex flex-col gap-2">
           <PreviewEmbed
-            key={previewUrl ?? 'preview'}
-            previewUrl={previewUrl ?? ''}
+            key={livePreviewUrl ?? 'preview'}
+            previewUrl={livePreviewUrl ?? ''}
             report={report}
             runId={run?.id ?? null}
             onAfterReplay={() => {
@@ -293,7 +299,11 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
               href={previewUrl}
               target="_blank"
               rel="noopener noreferrer"
-              title="The fixed build, running on the machine that produced it"
+              title={
+                previewLive
+                  ? 'The fixed build for this task, at its own permanent address'
+                  : 'This preview is asleep — opening it starts it back up, which takes about a minute'
+              }
               className="btn"
             >
               Open live preview ↗
@@ -339,10 +349,6 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
           <HeroTabs tabs={heroTabs} defaultTab={heroDefault} />
         </div>
       ) : null}
-
-      <div className="mt-3">
-        <SharePreview runId={run?.id ?? null} previewLive={run?.preview_status === 'live'} />
-      </div>
 
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">

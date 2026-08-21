@@ -16,18 +16,17 @@
 set -uo pipefail
 
 TUNNEL="${CF_TUNNEL_NAME:-qa-pipeline}"
-DOMAIN="${PREVIEW_DOMAIN:-qa-preview.example.com}"
+PREFIX="${PREVIEW_HOST_PREFIX:-qa-preview-}"
+ZONE="${PREVIEW_ZONE:-example.com}"
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 no()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 
 say "0. Refuse to touch production"
-case "$DOMAIN" in
-  example.com|www.example.com|api.example.com|qa.example.com|app.example.com|"")
-    no "PREVIEW_DOMAIN='$DOMAIN' is a production hostname — refusing."; exit 1 ;;
-  *.example.com) ok "$DOMAIN is a preview hostname" ;;
-  *) no "PREVIEW_DOMAIN='$DOMAIN' is not under example.com — refusing."; exit 1 ;;
-esac
+if [ -z "$PREFIX" ] || [ -z "$ZONE" ]; then
+  no "PREVIEW_HOST_PREFIX / PREVIEW_ZONE must both be set — refusing."; exit 1
+fi
+ok "hostnames will look like ${PREFIX}42.${ZONE} (digits only — cannot spell api/www/qa)"
 
 say "1. Cloudflare login"
 if [ -f "$HOME/.cloudflared/cert.pem" ]; then
@@ -53,19 +52,11 @@ if grep -q '^PREVIEW_MODE=' "$ENV_FILE"; then
 else
   printf '\nPREVIEW_MODE=tunnel\n' >> "$ENV_FILE"
 fi
-if grep -q '^PREVIEW_DOMAIN=' "$ENV_FILE"; then
-  sed -i '' "s/^PREVIEW_DOMAIN=.*/PREVIEW_DOMAIN=$DOMAIN/" "$ENV_FILE"
-else
-  printf 'PREVIEW_DOMAIN=%s\n' "$DOMAIN" >> "$ENV_FILE"
-fi
-ok "PREVIEW_MODE=tunnel · PREVIEW_DOMAIN=$DOMAIN"
+ok "PREVIEW_MODE=tunnel · hostnames ${PREFIX}<task>.${ZONE}"
 launchctl kickstart -k "gui/$UID/com.qa-pipeline.worker" >/dev/null 2>&1 && ok "worker restarted"
 
 say "4. Use it"
-echo "  Open a task whose preview is live and press 'Share this preview'."
-echo "  It appears at https://$DOMAIN within ~10s (the worker's settings poll)."
-echo "  Sharing another run moves the hostname; 'Stop sharing' takes it down."
-echo
-echo "  Revert everything with:"
-echo "    sed -i '' 's/^PREVIEW_MODE=.*/PREVIEW_MODE=local/' $ENV_FILE"
-echo "    launchctl kickstart -k gui/\$UID/com.qa-pipeline.worker"
+echo "  Every task with a preview gets its own permanent link:"
+echo "    https://${PREFIX}<task>.${ZONE}   e.g. https://${PREFIX}47.${ZONE}"
+echo "  'Open live preview' on the task page goes there. The link keeps working"
+echo "  after the dev server sleeps — the wake service restarts it on request."
