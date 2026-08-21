@@ -466,6 +466,30 @@ export class Db {
 
   // ---- storage -------------------------------------------------------------
 
+  /** Examination evidence (contracts §Examination) — PNG bytes into the bucket. */
+  async uploadScreenshot(storagePath: string, bytes: Uint8Array): Promise<{ error: unknown }> {
+    const r = await this.c.storage
+      .from(SCREENSHOT_BUCKET)
+      .upload(storagePath, bytes, { contentType: 'image/png', upsert: true });
+    return { error: r.error };
+  }
+
+  /** One examination row (db/0010). */
+  async insertExamination(fields: {
+    report_id: number;
+    run_id: number | null;
+    attempt: number;
+    verdict: 'pass' | 'fail' | 'inconclusive';
+    summary: string;
+    findings: unknown;
+    shots: string[];
+    steps_shown: number;
+    steps_skipped: number;
+  }): Promise<void> {
+    const r = await this.c.from('qa_examinations').insert(fields);
+    if (r.error) throw new Error(`insertExamination: ${r.error.message}`);
+  }
+
   async downloadScreenshot(storagePath: string): Promise<Uint8Array | null> {
     const r = await this.c.storage.from(SCREENSHOT_BUCKET).download(storagePath);
     if (r.error || !r.data) return null;

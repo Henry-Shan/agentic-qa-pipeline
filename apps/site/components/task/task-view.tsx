@@ -7,12 +7,13 @@ import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
 import { useDisplayName } from '@/lib/display-names';
 import { guardReport, REPORT_GONE_MESSAGE, REPORT_GONE_REDIRECT_MS } from '@/lib/report-gone';
-import type { QaEvent, QaReport, QaRun } from '@/lib/types';
+import type { QaEvent, QaExamination, QaReport, QaRun } from '@/lib/types';
 import { StatusPill } from '@/components/status-pill';
 import { Pipeline } from '@/components/pipeline';
 import { ConfirmDestroy, TrashIcon } from '@/components/confirm-delete';
 import { ReportContext } from '@/components/task/report-context';
 import { GroundingChips } from '@/components/task/grounding-chips';
+import { ExaminationCard } from '@/components/task/examination-card';
 import { NeedsHumanCard } from '@/components/task/needs-human-card';
 import { EventLog } from '@/components/task/event-log';
 import { HeroTabs, type HeroTab } from '@/components/task/hero-tabs';
@@ -26,14 +27,16 @@ interface Props {
   initialReport: QaReport;
   initialRun: QaRun | null;
   initialEvents: QaEvent[];
+  initialExamination?: QaExamination | null;
   userEmail: string;
 }
 
-export function TaskView({ initialReport, initialRun, initialEvents, userEmail }: Props) {
+export function TaskView({ initialReport, initialRun, initialEvents, initialExamination = null, userEmail }: Props) {
   const router = useRouter();
   const [report, setReport] = useState<QaReport>(initialReport);
   const [run, setRun] = useState<QaRun | null>(initialRun);
   const [events, setEvents] = useState<QaEvent[]>(initialEvents);
+  const [examination, setExamination] = useState<QaExamination | null>(initialExamination);
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
   const [destroyBusy, setDestroyBusy] = useState(false);
   const [destroyError, setDestroyError] = useState<string | null>(null);
@@ -142,10 +145,15 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
       { table: 'qa_reports', filter: `id=eq.${reportId}` },
       { table: 'qa_runs', filter: `report_id=eq.${reportId}` },
       { table: 'qa_events', filter: `report_id=eq.${reportId}` },
+      { table: 'qa_examinations', filter: `report_id=eq.${reportId}` },
     ],
     (table, row) => {
       if (table === 'qa_reports') {
         setReport(row as unknown as QaReport);
+      } else if (table === 'qa_examinations') {
+        // Newest examination wins — a rework produces another one.
+        const next = row as unknown as QaExamination;
+        setExamination((prev) => (prev && prev.id > next.id ? prev : next));
       } else if (table === 'qa_runs') {
         const next = row as unknown as QaRun;
         setRun((prev) => (prev && prev.id > next.id ? prev : next));
@@ -293,6 +301,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, userEmail }
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
           {blocked ? <NeedsHumanCard report={report} event={needsHuman} /> : null}
+          {examination ? <ExaminationCard exam={examination} /> : null}
           {run?.grounding?.length ? (
             <>
               <div className="cap-label">How Claude located it — full-stack trace</div>

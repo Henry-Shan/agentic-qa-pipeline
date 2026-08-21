@@ -38,6 +38,21 @@ export type RunPhase =
 
 export type EventType = 'log' | 'phase' | 'error' | 'question' | 'system';
 
+// qa_examinations — the examination loop (db/0010, contracts §Examination).
+export interface QaExamination {
+  id: number;
+  report_id: number;
+  run_id: number | null;
+  attempt: number;
+  verdict: 'pass' | 'fail' | 'inconclusive';
+  summary: string;
+  findings: Array<{ claim: string; met: boolean; evidence: string }>;
+  shots: string[];
+  steps_shown: number;
+  steps_skipped: number;
+  created_at: string;
+}
+
 // qa_docs / qa_doc_sections — QA Docs (db/0009, contracts §QA Docs).
 export interface QaDoc {
   id: number;

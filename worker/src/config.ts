@@ -15,6 +15,11 @@ export interface WorkerConfig {
   claudeModel: string;
   /** QA_CLAUDE_EFFORT — `--effort` for every real claude spawn (low…max). */
   claudeEffort: string;
+  /** QA_EXAMINER_MODEL / _EFFORT — the examination's judge (contracts §Examination). */
+  examinerModel: string;
+  examinerEffort: string;
+  /** QA_EXAM=0 disables the examination loop entirely. */
+  examEnabled: boolean;
   shimPort: number;
   maxRuns: number;
   maxPreviews: number;
@@ -91,6 +96,9 @@ export function loadConfig(): WorkerConfig {
     claudeBin: process.env.CLAUDE_BIN ?? '/opt/homebrew/bin/claude',
     claudeModel: process.env.QA_CLAUDE_MODEL?.trim() || 'opus',
     claudeEffort: process.env.QA_CLAUDE_EFFORT?.trim() || 'xhigh',
+    examinerModel: process.env.QA_EXAMINER_MODEL?.trim() || 'opus',
+    examinerEffort: process.env.QA_EXAMINER_EFFORT?.trim() || 'high',
+    examEnabled: process.env.QA_EXAM !== '0',
     shimPort: intEnv('SHIM_PORT', 4519),
     maxRuns: intEnv('MAX_RUNS', 2),
     maxPreviews: intEnv('MAX_PREVIEWS', 3),

@@ -4,6 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { execa } from 'execa';
 import type { QaRun } from './db';
+import { examine } from './examine';
 import { maxPreviews } from './settings';
 import type { Ctx, PreviewHandle } from './state';
 import { log, sleep } from './util';
@@ -56,7 +57,7 @@ async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
 }
 
 /** On pr_ready: start the worktree's dev server and publish the preview URL. */
-export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
+export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Promise<void> {
   if (ctx.state.previews.has(run.id)) return;
   if (!run.worktree) {
     await ctx.db.insertEvent({
@@ -143,6 +144,19 @@ export async function startPreview(ctx: Ctx, run: QaRun): Promise<void> {
   await ctx.db.updateReportIfStatus(run.report_id, 'pr_ready', { status: 'preview' });
   await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: `preview live: ${url}` });
   await enforcePreviewCap(ctx);
+
+  // Examination loop (contracts §Examination): re-run the tester's own steps on
+  // this build and let an examiner judge the result. Fire-and-forget — it takes
+  // minutes, and a preview must never wait on it. Only for a preview that just
+  // came up for a fresh fix; a preview restarted at boot is not re-examined.
+  if (ctx.cfg.examEnabled && !skipExam) {
+    const report = await ctx.db.getReport(run.report_id);
+    if (report) {
+      void examine(ctx, report, { ...run, preview_url: url }).catch((e: Error) =>
+        log('examine', `report ${run.report_id}: examination failed: ${e.message}`),
+      );
+    }
+  }
 }
 
 async function enforcePreviewCap(ctx: Ctx): Promise<void> {

@@ -82,7 +82,7 @@ export async function reconcile(ctx: Ctx): Promise<void> {
     if (!run.worktree || !fs.existsSync(run.worktree)) continue;
     log('reconcile', `report ${report.id} awaits a verdict with no live preview — restarting run ${run.id}'s preview`);
     // preview boot is slow (health wait ≤120s) — never block boot on it
-    void startPreview(ctx, run).catch((e: Error) =>
+    void startPreview(ctx, run, true).catch((e: Error) =>
       log('reconcile', `preview restart failed for run ${run.id}: ${e.message}`),
     );
   }

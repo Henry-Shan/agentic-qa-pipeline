@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { TaskView } from '@/components/task/task-view';
-import type { QaEvent, QaReport, QaRun } from '@/lib/types';
+import type { QaEvent, QaExamination, QaReport, QaRun } from '@/lib/types';
 
 export default async function TaskPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -11,7 +11,7 @@ export default async function TaskPage({ params }: { params: Promise<{ id: strin
   const supabase = await createClient();
   const { data: userData } = await supabase.auth.getUser();
 
-  const [reportRes, runRes, eventsRes] = await Promise.all([
+  const [reportRes, runRes, eventsRes, examRes] = await Promise.all([
     supabase.from('qa_reports').select('*').eq('id', reportId).maybeSingle(),
     supabase.from('qa_runs').select('*').eq('report_id', reportId).order('id', { ascending: false }).limit(1),
     supabase
@@ -20,12 +20,19 @@ export default async function TaskPage({ params }: { params: Promise<{ id: strin
       .eq('report_id', reportId)
       .order('id', { ascending: false })
       .limit(500),
+    supabase
+      .from('qa_examinations')
+      .select('*')
+      .eq('report_id', reportId)
+      .order('id', { ascending: false })
+      .limit(1),
   ]);
 
   const report = reportRes.data as QaReport | null;
   if (!report) notFound();
   const run = ((runRes.data ?? [])[0] ?? null) as QaRun | null;
   const events = ((eventsRes.data ?? []) as QaEvent[]).slice().reverse();
+  const examination = ((examRes.data ?? [])[0] ?? null) as QaExamination | null;
 
   // Doc backlink (contracts §QA Docs): reports dispatched from a doc section.
   let docRef: { slug: string; title: string; section: string } | null = null;
@@ -66,6 +73,7 @@ export default async function TaskPage({ params }: { params: Promise<{ id: strin
         initialReport={report}
         initialRun={run}
         initialEvents={events}
+        initialExamination={examination}
         userEmail={userData.user?.email ?? ''}
       />
     </main>

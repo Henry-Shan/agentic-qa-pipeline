@@ -69,6 +69,36 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Examination — the closed loop (db/0010)
+
+When a fix's preview comes up, the worker re-runs the tester's OWN recorded steps against it
+and an examiner model judges whether the expected result is there. No test is written for this
+— the recording is the test.
+
+- **Harness** (`worker/exam/exam-run.mjs`, Playwright from the runner repo's node_modules):
+  signs in through the preview's `/qa-session` one-time token **as the reporter** (so
+  role-dependent behavior reproduces), lands on the report's route (verify-and-retry: the app's
+  own post-login redirect can otherwise win the race), then executes each step — resolution
+  order testid → selector → label/placeholder/role (typing steps) → text — re-aligning to each
+  step's recorded route first. Per step it captures a screenshot, the VISIBLE text (a DOM walk
+  that skips mounted-but-hidden drawers, which would otherwise describe a screen the screenshot
+  does not show), console errors and failed requests. Writes `evidence.json` + `step-N.png`.
+  It asserts nothing.
+- **Examiner** (`QA_EXAMINER_MODEL`, default opus/high): a FRESH context that never sees the
+  diff. Input: the tester's own words (the oracle), the steps, and the evidence — screenshots
+  read as images. It derives the expected results itself and writes
+  `{verdict:'pass'|'fail'|'inconclusive', summary, findings:[{claim,met,evidence}]}` to
+  `verdict.json`. `inconclusive` is REQUIRED when the evidence can't decide (sign-in failed,
+  harness error, the expectation isn't observable) — it must never guess.
+- **Loop** (`worker/src/examine.ts`): `pass` → logged, the human still merges. `inconclusive` →
+  logged, NO rework (a broken harness must never steer code). `fail` on attempt 1 → automatic
+  rework via `resumeRun`, steered with exactly what the examiner observed. `fail` on attempt
+  ≥ 2 (`MAX_FIX_ATTEMPTS`) → **stop**: status `blocked` + auto-assigned + a `needs_human` event
+  carrying the findings, so a human takes over instead of burning runs.
+- Rows land in `qa_examinations` (realtime; tester RLS) and render on the task page with the
+  frames the examiner read (`GET /api/exam-shot/[examId]?i=N`). Reports with no recorded steps
+  are not examined. Boot-restarted previews are not re-examined. `QA_EXAM=0` disables the loop.
+
 ## QA Docs (db/0009)
 
 Notion-style documents above the board: `qa_docs` (slug, emoji, title, description) and
