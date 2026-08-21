@@ -69,6 +69,29 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Interrupted runs pause and resume themselves (db/0015)
+
+A closed laptop, a sleeping Mac or a worker restart is **not a failure** — the task simply
+stopped mid-flight, and the machine can pick it up again. So instead of `failed` + `blocked` +
+"press Send to resume", those runs settle as:
+
+- `qa_runs.status = 'interrupted'`, `stopped_reason` "paused — resuming automatically"
+- `qa_reports.status = 'queued'` (never `blocked`, never auto-assigned)
+- a calm `system` event: "paused — the machine went to sleep or the worker stopped. Resuming
+  automatically." — not an `error`
+- the board/task pill reads **"Paused — resumes automatically"** (amber, working dot) rather
+  than "Queued", because it is waiting to RESUME, not to start
+
+The claim loop treats `interrupted` exactly like `limited`: it `--resume`s the SAME session
+(worktree, branch and partial work still on disk) with a note telling the run to re-orient via
+`git status` and continue. Detection: reconcile at boot and the orphan sweep both use it, and a
+tracked child that exits with **no result text at all** — a vanished process, which is what
+sleep looks like — is treated as interrupted rather than failed. A run that genuinely fails
+still reports `failed`.
+
+*Verified end to end: a 'running' run whose process was gone → interrupted + requeued + calm
+event; unpausing the worker → claimed → attempt 2 resumed the same session, no human involved.*
+
 ## Terminal — a real pty, one per tester's own machine
 
 A task page can attach a REAL Claude Code terminal. The page connects to

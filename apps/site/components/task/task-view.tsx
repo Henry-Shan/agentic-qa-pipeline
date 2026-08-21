@@ -281,7 +281,7 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
 
       <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
         <h1 className="min-w-0 text-base font-semibold">{report.title}</h1>
-        <StatusPill status={report.status} />
+        <StatusPill status={report.status} runStatus={run?.status} />
       </div>
       <Pipeline status={report.status} detail />
 

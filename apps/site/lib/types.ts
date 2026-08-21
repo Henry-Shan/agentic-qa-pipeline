@@ -15,7 +15,8 @@ export type ReportStatus =
   | 'stopped'
   | 'cancelled';
 
-export type RunStatus = 'running' | 'done' | 'stopped' | 'failed' | 'limited';
+/** 'interrupted' = paused mid-flight (sleep/restart); resumes automatically (db/0015). */
+export type RunStatus = 'running' | 'done' | 'stopped' | 'failed' | 'limited' | 'interrupted';
 
 export type PreviewStatus = 'none' | 'starting' | 'live' | 'down';
 

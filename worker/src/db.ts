@@ -14,7 +14,7 @@ export type ReportStatus =
   | 'blocked'
   | 'stopped'
   | 'cancelled';
-export type RunStatus = 'running' | 'done' | 'stopped' | 'failed' | 'limited';
+export type RunStatus = 'running' | 'done' | 'stopped' | 'failed' | 'limited' | 'interrupted';
 export type PreviewStatus = 'none' | 'starting' | 'live' | 'down';
 export type MessageKind = 'steer' | 'stop' | 'verdict_fixed' | 'verdict_broken' | 'answer' | 'destroy';
 export type MessageStatus = 'pending' | 'delivered' | 'done';

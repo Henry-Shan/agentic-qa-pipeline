@@ -34,21 +34,22 @@ export async function reconcile(ctx: Ctx): Promise<void> {
       ctx.state.activeDispatches++;
       log('reconcile', `re-attached live run ${run.id} (pid ${pid})`);
     } else {
+      // The machine slept, rebooted, or the worker stopped. Nothing is wrong
+      // with the task — it just stopped mid-flight, so PAUSE it and let the
+      // claim loop pick the same session back up. No human in this loop.
       await ctx.db.updateRun(run.id, {
-        status: 'failed',
-        stopped_reason: 'worker restarted mid-run',
+        status: 'interrupted',
+        stopped_reason: 'paused — the worker stopped mid-run; resuming automatically',
         finished_at: nowIso(),
       });
-      await ctx.db.updateReport(run.report_id, { status: 'blocked' });
-      // A crash-orphaned run still needs an owner, same as any other block.
-      await autoAssignOnBlock(ctx, run.report_id);
+      await ctx.db.updateReport(run.report_id, { status: 'queued' });
       await ctx.db.insertEvent({
         report_id: run.report_id,
         run_id: run.id,
-        type: 'error',
-        message: 'worker restarted mid-run — press Send to resume',
+        type: 'system',
+        message: 'paused — the machine went to sleep or the worker stopped. Resuming automatically.',
       });
-      log('reconcile', `run ${run.id} orphaned (no live process) — report ${run.report_id} blocked`);
+      log('reconcile', `run ${run.id} interrupted — report ${run.report_id} requeued for auto-resume`);
     }
   }
 
@@ -120,18 +121,18 @@ async function sweep(ctx: Ctx): Promise<void> {
       await ctx.db.updateRun(run.id, { status: 'done', phase: 'done', finished_at: nowIso() });
     } else {
       await ctx.db.updateRun(run.id, {
-        status: 'failed',
-        stopped_reason: 'run process exited while detached from the worker',
+        status: 'interrupted',
+        stopped_reason: 'paused — the run stopped mid-flight; resuming automatically',
         finished_at: nowIso(),
       });
-      await ctx.db.updateReport(report.id, { status: 'blocked' });
-      await autoAssignOnBlock(ctx, report.id);
+      await ctx.db.updateReport(report.id, { status: 'queued' });
       await ctx.db.insertEvent({
         report_id: report.id,
         run_id: run.id,
-        type: 'error',
-        message: 'run exited while detached from the worker — press Send to resume',
+        type: 'system',
+        message: 'paused — the run stopped mid-flight (sleep or a worker restart). Resuming automatically.',
       });
+      log('reconcile', `run ${run.id} interrupted — report ${report.id} requeued for auto-resume`);
     }
   }
 }

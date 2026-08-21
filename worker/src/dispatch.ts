@@ -581,6 +581,25 @@ async function settle(ctx: Ctx, h: RunHandle, flags: RunFlags, exitCode: number)
         message: 'run finished without posting runinfo (no PR reported) — press Send to steer',
       });
       await emitNeedsHuman(ctx, run, 'finished without reporting a PR');
+    } else if (!flags.resultText) {
+      // The process vanished without saying anything — no result event, no
+      // stop message. That is what a sleeping machine, a killed process or a
+      // dropped connection looks like, and it is NOT a failure of the task.
+      // Pause it; the claim loop resumes this same session when the worker is
+      // next alive, with the worktree and partial work still on disk.
+      await ctx.db.updateRun(run.id, {
+        status: 'interrupted',
+        stopped_reason: 'paused — the run stopped mid-flight; resuming automatically',
+        finished_at: finished,
+      });
+      await ctx.db.updateReport(report.id, { status: 'queued' });
+      await ctx.db.insertEvent({
+        report_id: report.id,
+        run_id: run.id,
+        type: 'system',
+        message: 'paused — the machine went to sleep or the run was interrupted. Resuming automatically.',
+      });
+      log('dispatch', `run ${run.id} interrupted — report ${report.id} requeued for auto-resume`);
     } else {
       const reason = tailChars(flags.resultText, 400) || `claude exited with code ${exitCode}`;
       await ctx.db.updateRun(run.id, { status: 'failed', stopped_reason: reason, finished_at: finished });
