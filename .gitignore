@@ -10,3 +10,4 @@ dist/
 .vercel/
 .gstack/
 agent/node_modules
+.vercel

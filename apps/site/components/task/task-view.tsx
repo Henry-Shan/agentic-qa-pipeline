@@ -353,7 +353,16 @@ export function TaskView({ initialReport, initialRun, initialEvents, initialExam
         <div className="mt-5">
           <HeroTabs tabs={heroTabs} defaultTab={heroDefault} />
         </div>
-      ) : null}
+      ) : (
+        // Silence here reads as a broken page — people look for the Before/After
+        // toggle and find nothing. Say why there is nothing to show.
+        <div className="mt-5 rounded-lg border border-line bg-paper-2 px-4 py-3 text-[12.5px] text-ink-3">
+          <span className="font-semibold text-ink-2">No replay for this task.</span>{' '}
+          {hasBefore || hasAfter
+            ? 'The recording is still uploading — reload in a moment.'
+            : 'It was filed without a recording, so there are no steps to replay. Use Start recording in the 🐛 widget before reproducing a bug and the Before/After tabs appear here.'}
+        </div>
+      )}
 
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
