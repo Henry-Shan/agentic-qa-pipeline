@@ -571,14 +571,25 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `qa` or the apex, so no misconfiguration can aim a DNS write at production;
   `PROTECTED_HOSTS` is a second, redundant check. Enforced in `startPreview` and
   per-record in the DNS loop. 23 unit cases.
-- **Wake service** (`wake.ts`, 127.0.0.1:`WAKE_PORT`, tunnel mode only): cloudflared's
-  catch-all ingress. Dev servers are NOT permanent — the worker restarts and the
-  MAX_PREVIEWS LRU evicts idle ones — so a request for a sleeping task's hostname lands
-  here instead of a Cloudflare 530. It parses the Host header back to a report id (round-
-  tripped through the canonical builder; anything else 404s), starts that report's latest
-  run's preview once (deduped while booting, GET/HEAD only so crawlers don't spawn dev
-  servers), and answers with a self-reloading "starting…" page. This is why eviction is
-  safe and why the site offers the link whether or not the preview is currently up.
+- **Front door** (`frontdoor.ts`, 127.0.0.1:`WAKE_PORT`, tunnel mode only): cloudflared's
+  ingress is a SINGLE catch-all rule pointing here — no per-hostname rules, so starting or
+  stopping a preview never rewrites the config or restarts cloudflared. It routes by Host:
+  - preview up → **proxy** to its dev server (HTTP + the `/_next/webpack-hmr` websocket)
+  - preview down → start it and hold the browser on a self-reloading page
+  - host not `<prefix><digits>.<zone>` → 404
+  **Header rewrite (this is load-bearing).** Next 16 blocks cross-origin requests to
+  `/_next/*` unless the host is in `allowedDevOrigins`, keying off the **Origin** header
+  (Referer for `sec-fetch-mode: no-cors`) — see `block-cross-site-dev.ts`. A preview served
+  at `qa-preview-46.example.com` is cross-origin by that rule, so HMR and every dev chunk
+  403: the HTML renders and then nothing hydrates, i.e. the page looks fine but no click
+  does anything. The front door therefore presents each request as `localhost:<port>`
+  (Origin, Referer, Host) and adds `x-forwarded-proto/host` so the app still knows it is on
+  https. The fix lives here, NOT in the app's `next.config` — the worktree's diff becomes
+  the PR, and a preview-only config change has no business in it.
+  Also rewrites upstream `Location` headers off `localhost:<port>` back onto the public host.
+  *Verified in a real browser: all `_next` chunks 200, HMR socket 101, clicking Sign In
+  navigates to /login, typing lands in React state, zero console errors. Direct to the dev
+  server with the public Origin still 403s — the rewrite is what fixes it.*
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans

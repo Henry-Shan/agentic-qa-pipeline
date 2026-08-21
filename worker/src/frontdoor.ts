@@ -1,0 +1,197 @@
+import http from 'node:http';
+import net from 'node:net';
+import { previewHostname, startPreview } from './preview';
+import type { Ctx, PreviewHandle } from './state';
+import { log } from './util';
+
+/**
+ * Front door for every `qa-preview-<task>.<zone>` request (contracts §Preview).
+ *
+ * cloudflared sends ALL preview traffic here, and this decides what happens:
+ *
+ *  - preview up   → proxy to its dev server, rewriting the request's origin
+ *  - preview down → start it, and hold the browser on a self-reloading page
+ *
+ * **Why the rewrite.** Next 16 refuses cross-origin requests to `/_next/*` unless
+ * the origin is in `allowedDevOrigins` (block-cross-site-dev.ts). A preview
+ * served at qa-preview-46.example.com is cross-origin by that rule, so HMR and
+ * the dev chunks 403 — the HTML renders and then nothing hydrates, so the page
+ * looks alive but no click does anything. The fix belongs here rather than in the
+ * app's next.config: the worktree's diff becomes the PR, and a preview-only
+ * config change has no business in it. So we present each request to the dev
+ * server as though it came from localhost, which is what it in fact is.
+ *
+ * Bound to 127.0.0.1 — only the local cloudflared process can reach it.
+ */
+export function startFrontDoor(ctx: Ctx): http.Server | null {
+  if (ctx.cfg.previewMode !== 'tunnel') return null;
+
+  // One wake per task at a time: the reloading page must not spawn a dev server
+  // on every poll while the first is still compiling.
+  const waking = new Set<number>();
+
+  const server = http.createServer((req, res) => {
+    const publicHost = hostOf(req.headers.host);
+    const reportId = reportIdFromHost(ctx, publicHost);
+    if (reportId === null) {
+      res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(page('Not a QA preview', 'This address does not belong to a QA task.', false));
+      return;
+    }
+
+    const handle = previewFor(ctx, reportId);
+    if (handle) {
+      proxy(req, res, handle, publicHost);
+      return;
+    }
+
+    // Asleep. Only a page view should boot a dev server — not a crawler, and not
+    // a stray asset request from a tab left open on the waking page.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(503, { 'content-type': 'text/plain' });
+      res.end('preview asleep');
+      return;
+    }
+    if (!waking.has(reportId)) {
+      waking.add(reportId);
+      void wake(ctx, reportId).finally(() => waking.delete(reportId));
+    }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(page('Starting this preview…', `Task #${reportId}'s dev server is booting. This can take a minute.`, true));
+  });
+
+  // Next's HMR socket (/_next/webpack-hmr). Without this the client retries
+  // forever and the dev overlay never settles.
+  server.on('upgrade', (req, socket, head) => {
+    const publicHost = hostOf(req.headers.host);
+    const reportId = reportIdFromHost(ctx, publicHost);
+    const handle = reportId === null ? null : previewFor(ctx, reportId);
+    if (!handle) {
+      socket.destroy();
+      return;
+    }
+    const upstream = net.connect(handle.port, '127.0.0.1', () => {
+      const headers = rewriteHeaders(req.headers, handle.port, publicHost);
+      const head_ = [`${req.method} ${req.url} HTTP/1.1`];
+      for (const [k, v] of Object.entries(headers)) {
+        for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) head_.push(`${k}: ${one}`);
+      }
+      upstream.write(`${head_.join('\r\n')}\r\n\r\n`);
+      if (head.length) upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+  });
+
+  server.listen(ctx.cfg.wakePort, '127.0.0.1', () => {
+    log('preview', `front door on 127.0.0.1:${ctx.cfg.wakePort} — proxies live previews, wakes asleep ones`);
+  });
+  return server;
+}
+
+function hostOf(header: string | undefined): string {
+  return (header ?? '').split(':')[0]?.toLowerCase() ?? '';
+}
+
+function previewFor(ctx: Ctx, reportId: number): PreviewHandle | null {
+  for (const p of ctx.state.previews.values()) if (p.reportId === reportId) return p;
+  return null;
+}
+
+/**
+ * Make the request look local. Next allows `localhost` and, separately, requests
+ * with no Origin at all; presenting the dev server's own address satisfies both
+ * the websocket check and the no-cors/Referer fallback.
+ */
+function rewriteHeaders(
+  headers: http.IncomingHttpHeaders,
+  port: number,
+  publicHost: string,
+): http.IncomingHttpHeaders {
+  const local = `http://localhost:${port}`;
+  const out: http.IncomingHttpHeaders = { ...headers };
+  out.host = `localhost:${port}`;
+  if (out.origin) out.origin = local;
+  if (typeof out.referer === 'string') {
+    out.referer = out.referer.replace(new RegExp(`^https?://${publicHost.replace(/\./g, '\\.')}`, 'i'), local);
+  }
+  // The browser is on https even though this hop is not; without these the app
+  // would mint insecure cookies and build wrong absolute URLs.
+  out['x-forwarded-proto'] = 'https';
+  out['x-forwarded-host'] = publicHost;
+  return out;
+}
+
+function proxy(req: http.IncomingMessage, res: http.ServerResponse, handle: PreviewHandle, publicHost: string): void {
+  const upstream = http.request(
+    {
+      host: '127.0.0.1',
+      port: handle.port,
+      method: req.method,
+      path: req.url,
+      headers: rewriteHeaders(req.headers, handle.port, publicHost),
+    },
+    (pres) => {
+      const headers = { ...pres.headers };
+      // A redirect to the dev server's own address would walk the visitor off the
+      // public hostname onto a localhost URL that means nothing on their machine.
+      const loc = headers.location;
+      if (typeof loc === 'string') {
+        headers.location = loc.replace(new RegExp(`^http://(localhost|127\\.0\\.0\\.1):${handle.port}`, 'i'), `https://${publicHost}`);
+      }
+      res.writeHead(pres.statusCode ?? 502, headers);
+      pres.pipe(res);
+    },
+  );
+  upstream.on('error', (e: Error) => {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(page('Preview unavailable', `The dev server stopped responding (${e.message}).`, false));
+  });
+  req.pipe(upstream);
+}
+
+/** `qa-preview-47.example.com` → 47, and null for anything else. */
+function reportIdFromHost(ctx: Ctx, host: string): number | null {
+  const prefix = ctx.cfg.previewHostPrefix;
+  const suffix = `.${ctx.cfg.previewZone}`;
+  if (!host.startsWith(prefix) || !host.endsWith(suffix)) return null;
+  const label = host.slice(prefix.length, host.length - suffix.length);
+  if (!/^\d+$/.test(label)) return null;
+  const id = Number(label);
+  // Round-trip through the canonical builder: if it doesn't reproduce the host
+  // we were called with, we parsed something we don't actually own.
+  return previewHostname(ctx, id) === host ? id : null;
+}
+
+async function wake(ctx: Ctx, reportId: number): Promise<void> {
+  const run = await ctx.db.latestRunForReport(reportId);
+  if (!run?.worktree) {
+    log('preview', `wake: task ${reportId} has nothing to wake (no run with a worktree)`);
+    return;
+  }
+  if (ctx.state.previews.has(run.id)) return; // already up; the reload will find it
+  log('preview', `wake: task ${reportId} — starting run ${run.id}'s preview on demand`);
+  // skipExam: this is a visitor opening a link, not a fresh fix to be judged.
+  await startPreview(ctx, run, true);
+}
+
+function page(title: string, detail: string, reload: boolean): string {
+  return `<!doctype html><meta charset="utf-8"><title>${title}</title>
+${reload ? '<meta http-equiv="refresh" content="5">' : ''}
+<style>
+  body{margin:0;height:100vh;display:grid;place-items:center;background:#fbfbfa;
+       font:14px/1.6 ui-sans-serif,-apple-system,'Segoe UI',sans-serif;color:#37352f}
+  .c{text-align:center;max-width:26rem;padding:2rem}
+  h1{font-size:15px;font-weight:600;margin:0 0 .4rem}
+  p{margin:0;color:#787774;font-size:13px}
+  .s{width:14px;height:14px;margin:0 auto 1.1rem;border:2px solid #e3e2e0;
+     border-top-color:#37352f;border-radius:50%;animation:r .7s linear infinite}
+  @keyframes r{to{transform:rotate(360deg)}}
+</style>
+<div class="c">${reload ? '<div class="s"></div>' : ''}<h1>${title}</h1><p>${detail}</p></div>`;
+}

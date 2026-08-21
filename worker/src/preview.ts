@@ -280,15 +280,14 @@ export async function republishTunnel(ctx: Ctx): Promise<void> {
 async function syncTunnel(ctx: Ctx): Promise<void> {
   const yml = path.join(ctx.cfg.qaHome, 'cloudflared.yml');
   const entries = [...ctx.state.previews.values()].filter((p) => p.hostname !== null);
-  const lines = [`tunnel: ${ctx.cfg.cfTunnelName}`, 'ingress:'];
-  for (const p of entries) {
-    lines.push(`  - hostname: ${p.hostname}`, `    service: http://localhost:${p.port}`);
-  }
-  // Catch-all: any qa-preview-* hostname whose dev server is not currently up
-  // lands on the wake service, which starts it and holds the browser. This is
-  // what makes a task's URL permanent rather than only alive while it runs.
-  lines.push(`  - service: http://localhost:${ctx.cfg.wakePort}`, '');
-  fs.writeFileSync(yml, lines.join('\n'));
+  // ONE ingress rule: everything goes to the front door, which routes by Host to
+  // the right dev server (or wakes it). Per-hostname rules would mean rewriting
+  // this file and restarting cloudflared on every preview start and stop — and
+  // they could not fix Next's cross-origin block, which needs a header rewrite.
+  const lines = [`tunnel: ${ctx.cfg.cfTunnelName}`, 'ingress:', `  - service: http://localhost:${ctx.cfg.wakePort}`, ''];
+  const desired = lines.join('\n');
+  const changed = !fs.existsSync(yml) || fs.readFileSync(yml, 'utf8') !== desired;
+  if (changed) fs.writeFileSync(yml, desired);
 
   // `cloudflared tunnel route dns` once per new hostname (persisted set = idempotent)
   const routedPath = path.join(ctx.cfg.qaHome, 'routed-hostnames.json');
@@ -316,6 +315,7 @@ async function syncTunnel(ctx: Ctx): Promise<void> {
   }
   fs.writeFileSync(routedPath, JSON.stringify([...routed]));
 
+  if (cfChild && !changed) return; // already running the right config
   if (cfChild) {
     try {
       cfChild.kill('SIGTERM');
@@ -324,7 +324,6 @@ async function syncTunnel(ctx: Ctx): Promise<void> {
     }
     cfChild = null;
   }
-  if (entries.length === 0) return;
   const out = fs.openSync(path.join(ctx.cfg.qaHome, 'cloudflared.log'), 'a');
   cfChild = spawn('cloudflared', ['tunnel', '--config', yml, 'run', ctx.cfg.cfTunnelName], {
     stdio: ['ignore', out, out],
