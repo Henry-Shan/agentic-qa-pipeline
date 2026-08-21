@@ -86,6 +86,13 @@ export interface QaDocSection {
   base_session: string | null;
   /** 'fable' | 'opus' | 'sonnet' — null = worker default (db/0011). */
   model: string | null;
+  /** The questionnaire's remaining answers (db/0012). */
+  done_when: string;
+  constraints: string;
+  reproduce_as: string | null;
+  files: string[];
+  console_log: ConsoleEntry[];
+  network_log: NetworkEntry[];
   created_at: string;
   updated_at: string;
 }
@@ -155,6 +162,11 @@ export interface QaReport {
   /** Base context to fork from / model to run on (db/0011). */
   base_session?: string | null;
   model?: string | null;
+  /** Questionnaire answers (db/0012). */
+  done_when?: string;
+  constraints?: string;
+  reproduce_as?: string | null;
+  files?: string[];
   reporter_email: string | null;
   route: string | null;
   page_title: string | null;

@@ -6,7 +6,8 @@
 // channel as the board). Edits save on blur straight through tester RLS.
 
 import Link from 'next/link';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Pipeline } from '@/components/pipeline';
 import { StatusPill } from '@/components/status-pill';
 import { ReplayPlayer } from '@/components/task/replay-player';
@@ -209,6 +210,7 @@ export function DocView({ initialDoc, initialSections, initialReports }: Props) 
           <SectionCard
             key={s.id}
             section={s}
+            docTitle={doc.title}
             report={s.report_id !== null ? (reports[s.report_id] ?? null) : null}
             first={idx === 0}
             last={idx === sections.length - 1}
@@ -236,9 +238,19 @@ export function DocView({ initialDoc, initialSections, initialReports }: Props) 
 
 // ---------------------------------------------------------------------------
 
+
+/**
+ * One task, as a questionnaire (contracts §Task input). Every field the task
+ * carries is a labelled row in ONE block, read top to bottom: what you write,
+ * then what the app captures — the captured rows are visible from the start,
+ * empty, so the form's own shape says what the task is still missing — then
+ * how it runs. Sending navigates INTO the task page; the answers become the
+ * record there.
+ */
 function SectionCard({
   section,
   report,
+  docTitle,
   first,
   last,
   onPatch,
@@ -248,6 +260,7 @@ function SectionCard({
 }: {
   section: QaDocSection;
   report: QaReport | null;
+  docTitle: string;
   first: boolean;
   last: boolean;
   onPatch: (patch: Partial<QaDocSection>) => void;
@@ -255,15 +268,21 @@ function SectionCard({
   onRemove: () => void;
   onDispatched: (report: QaReport) => void;
 }) {
+  const router = useRouter();
   const [showReplay, setShowReplay] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [dispatching, setDispatching] = useState(false);
   const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const dispatched = section.report_id !== null;
-  const stepCount = section.click_trail?.length ?? 0;
+  const steps = section.click_trail ?? [];
+  const captured = Boolean(section.route || steps.length > 0 || section.screenshots.length > 0);
+  const errorCount = (section.console_log?.length ?? 0) + (section.network_log?.length ?? 0);
+  const ready = section.body.trim().length > 0;
 
   const dispatch = async () => {
-    if (dispatching || dispatched) return;
+    if (dispatching || dispatched || !ready) return;
     setDispatching(true);
     setDispatchError(null);
     try {
@@ -274,216 +293,414 @@ function SectionCard({
       });
       const out = (await res.json()) as { id?: number; error?: string };
       if (!res.ok || !out.id) throw new Error(out.error ?? `dispatch ${res.status}`);
-      // Minimal local report so the pill flips immediately; realtime fills it in.
       onDispatched({ id: out.id, status: 'queued' } as QaReport);
+      // Send moves you IN: the form's answers are the task's record from here.
+      router.push(`/task/${out.id}`);
     } catch (e) {
       setDispatchError((e as Error).message);
-    } finally {
       setDispatching(false);
     }
   };
 
-  const hasContext = Boolean(section.route || section.component || stepCount > 0 || section.screenshots.length > 0);
+  const addFiles = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('sectionId', String(section.id));
+      for (const file of Array.from(list).slice(0, 5)) form.append('files', file);
+      const res = await fetch('/api/docs/section-files', { method: 'POST', body: form });
+      const out = (await res.json()) as { files?: string[]; error?: string };
+      if (res.ok && out.files) onPatch({ files: out.files });
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const roleChips = ROLE_CHOICES.map((role) => ({
+    key: role,
+    label: role === '' ? 'me · my own roles' : role,
+    on: (section.reproduce_as ?? '') === role,
+  }));
 
   return (
-    <section id={`section-${section.id}`} className="mt-3.5 rounded-[9px] border border-line bg-stage">
-      <div className="flex items-start gap-2 px-3 pt-2.5">
-        <span className="flex flex-none flex-col pt-1 text-[9px] leading-[0.8] text-ink-3/60">
-          <button type="button" disabled={first} onClick={() => onMove(-1)} aria-label="Move section up" className="hover:text-qa disabled:opacity-30">▲</button>
-          <button type="button" disabled={last} onClick={() => onMove(1)} aria-label="Move section down" className="hover:text-qa disabled:opacity-30">▼</button>
+    <section id={`section-${section.id}`} className="mt-4 overflow-hidden rounded-[11px] border border-line bg-paper">
+      {/* header */}
+      <div className="flex items-center gap-2 border-b border-line bg-stage px-3.5 py-2.5">
+        <span className="flex flex-none flex-col text-[8px] leading-[0.8] text-ink-3/60">
+          <button type="button" disabled={first} onClick={() => onMove(-1)} aria-label="Move up" className="hover:text-qa disabled:opacity-30">▲</button>
+          <button type="button" disabled={last} onClick={() => onMove(1)} aria-label="Move down" className="hover:text-qa disabled:opacity-30">▼</button>
         </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-bold">
+          {section.title || firstLine(section.body) || 'New task'}
+        </span>
+        {report ? <StatusPill status={report.status} /> : null}
+        {!dispatched &&
+          (confirmDelete ? (
+            <button type="button" onClick={onRemove} className="flex-none rounded px-1.5 text-[10.5px] font-semibold text-red">
+              delete?
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              onBlur={() => setConfirmDelete(false)}
+              aria-label="Delete task"
+              className="flex-none rounded px-1 text-[13px] text-ink-3/60 hover:text-red"
+            >
+              ×
+            </button>
+          ))}
+      </div>
+
+      <GroupLabel tone="you">you write</GroupLabel>
+
+      <Row label="The problem" required hint="or what you want built">
         <textarea
           defaultValue={section.body}
           onBlur={(e) => {
             const v = e.target.value;
-            // First line doubles as the section's name (TOC + task title).
             if (v !== section.body) onPatch({ body: v, title: firstLine(v) });
           }}
-          placeholder="Describe the work — this text is exactly what Claude receives."
-          aria-label="Section description"
+          disabled={dispatched}
+          placeholder="Write it the way you'd tell a colleague. The first line becomes the task's name."
+          aria-label="The problem"
           rows={Math.max(3, Math.min(10, section.body.split('\n').length + 1))}
-          className="min-w-0 flex-1 resize-y bg-transparent text-[12.5px] leading-relaxed text-ink placeholder:text-ink-3 focus:outline-none"
+          className={FIELD_CLS}
         />
-        <div className="flex flex-none items-center gap-1.5">
-          {report ? (
-            <StatusPill status={report.status} />
-          ) : (
-            <button
-              type="button"
-              onClick={() => onPatch({ kind: section.kind === 'bug' ? 'feature' : 'bug' })}
-              title="Toggle bug / feature"
-              className="rounded-full bg-line-soft px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink"
-            >
-              {section.kind}
-            </button>
-          )}
-          {!dispatched &&
-            (confirmDelete ? (
-              <button type="button" onClick={onRemove} className="rounded px-1.5 text-[10.5px] font-semibold text-red">
-                delete?
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(true)}
-                onBlur={() => setConfirmDelete(false)}
-                aria-label="Delete section"
-                className="rounded px-1 text-[13px] text-ink-3/60 hover:text-red"
-              >
-                ×
-              </button>
-            ))}
-        </div>
-      </div>
+      </Row>
 
-      <div className="px-3 pb-2.5 pl-8">
-        {/* Everything Claude receives, verbatim — location and steps appear
-            here once context is attached; nothing hidden, nothing extra. */}
-        <div className="mb-2 rounded-md border border-line-soft bg-paper px-2.5 py-2">
-          <div className="mb-1 text-[9.5px] font-bold uppercase tracking-[0.07em] text-ink-3">
-            What Claude receives
+      <Row label="Done when" required hint="how you'll know it's fixed">
+        <textarea
+          defaultValue={section.done_when}
+          onBlur={(e) => {
+            if (e.target.value !== section.done_when) onPatch({ done_when: e.target.value });
+          }}
+          disabled={dispatched}
+          placeholder="“the stock number drops by the amount I entered”"
+          aria-label="Done when"
+          rows={2}
+          className={FIELD_CLS}
+        />
+        <p className="mt-1 text-[10.5px] text-ink-3">
+          After the fix, your steps are replayed and an examiner checks this sentence.
+        </p>
+      </Row>
+
+      <GroupLabel tone="auto">captured from the app</GroupLabel>
+
+      <Row label="Location">
+        {section.route ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Chip k="page" mono>{section.route}</Chip>
+            {section.component ? <Chip k="component" mono>{section.component}</Chip> : null}
+            {section.element_text ? <Chip k="element">“{section.element_text.slice(0, 40)}”</Chip> : null}
           </div>
-          {hasContext ? (
-            <div className="flex flex-col gap-1 text-[11px] text-ink-2">
-              {section.route ? (
-                <div>
-                  <span className="text-ink-3">location · </span>
-                  <span className="font-mono text-[10.5px]">{section.route}</span>
-                  {section.component ? <span className="font-mono text-[10.5px]"> · {section.component}</span> : null}
-                  {section.source_file ? <span className="font-mono text-[10.5px] text-ink-3"> · {section.source_file}</span> : null}
-                </div>
-              ) : null}
-              {section.selector || section.element_text ? (
-                <div>
-                  <span className="text-ink-3">element · </span>
-                  {section.element_text ? <span>“{section.element_text.slice(0, 40)}”</span> : null}
-                  {section.selector ? (
-                    <span className="font-mono text-[10px] text-ink-3"> {section.selector.slice(0, 60)}</span>
-                  ) : null}
-                </div>
-              ) : null}
-              {stepCount > 0 ? (
-                <div>
-                  <span className="text-ink-3">recorded steps · </span>
-                  <ol className="mt-0.5 list-none pl-3">
-                    {(section.click_trail ?? []).slice(0, 8).map((e, i) => (
-                      <li key={i} className="truncate">
-                        <span className="font-mono text-[10px] text-ink-3">{i + 1}.</span> {stepText(e)}
-                      </li>
-                    ))}
-                    {stepCount > 8 ? <li className="text-ink-3">… +{stepCount - 8} more</li> : null}
-                  </ol>
-                </div>
-              ) : null}
-              <div className="flex items-center gap-2 text-ink-3">
-                {section.screenshots.length > 0 ? (
-                  <span>{section.screenshots.length} screenshot{section.screenshots.length === 1 ? '' : 's'} (read as images)</span>
-                ) : null}
-                {section.replay_path ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowReplay((v) => !v)}
-                    className="rounded-md border border-line bg-paper px-1.5 py-0.5 text-[10.5px] text-ink-2 hover:border-qa-bright"
-                  >
-                    ⏺ recording · {showReplay ? 'hide' : 'play'}
-                  </button>
-                ) : null}
-              </div>
-              <div className="text-[10px] text-ink-3">
-                + your the host app role, added automatically at dispatch · sent verbatim with the description above
-              </div>
-              <div className="text-[10px] text-ink-3">
-                runs on {section.model ?? 'the default model'} ·{' '}
-                {section.base_session === ''
-                  ? 'cold start (no prior context)'
-                  : 'forked from the base-context session'}
-              </div>
-            </div>
-          ) : (
-            <p className="m-0 text-[11px] text-ink-3">
-              Only the description above so far — the location in the website, the element, your recorded
-              steps and screenshots appear here after <b className="text-ink-2">⌖ Attach context</b>.
-            </p>
-          )}
-        </div>
+        ) : (
+          <Empty>not captured yet — the page and component you were on</Empty>
+        )}
+      </Row>
 
-        {/* How this task runs (contracts §Base context): which model, and
-            whether it starts from the base-context session or cold. */}
-        {!dispatched ? (
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-3">
-            <span>run on</span>
-            <span className="inline-flex overflow-hidden rounded-md border border-line">
-              {(['fable', 'opus', 'sonnet'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => onPatch({ model: section.model === m ? null : m })}
-                  aria-pressed={section.model === m}
-                  className={`px-2 py-0.5 font-semibold transition-colors ${
-                    section.model === m ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
-                  }`}
-                >
-                  {m}
-                </button>
+      <Row label="What you did" hint={steps.length > 0 ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : undefined}>
+        {steps.length > 0 ? (
+          <>
+            <ol className="m-0 list-decimal pl-4 text-[11.5px] text-ink-2">
+              {steps.slice(0, 4).map((e, i) => (
+                <li key={i} className="truncate">{stepText(e)}</li>
               ))}
-            </span>
-            <label className="flex cursor-pointer items-center gap-1.5">
-              <input
-                type="checkbox"
-                checked={section.base_session !== ''}
-                onChange={(e) => onPatch({ base_session: e.target.checked ? null : '' })}
-                className="accent-qa"
-              />
-              start from base context
-            </label>
-          </div>
-        ) : null}
+            </ol>
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-ink-3">
+              {steps.length > 4 ? <span>+{steps.length - 4} more</span> : null}
+              {section.replay_path ? (
+                <button type="button" onClick={() => setShowReplay((v) => !v)} className="font-semibold text-qa hover:underline">
+                  {showReplay ? 'hide recording' : 'play recording'}
+                </button>
+              ) : null}
+            </div>
+            {showReplay && section.replay_path ? (
+              <div className="mt-2">
+                <ReplayPlayer
+                  reportId={0}
+                  fetchUrl={`/api/doc-replay/${section.id}`}
+                  label={`⏺ recorded for “${section.title || 'this task'}”`}
+                  steps={steps}
+                />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <Empty>not captured yet — your clicks and typing, recorded</Empty>
+        )}
+      </Row>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+      <Row label="What you saw">
+        {section.screenshots.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {section.screenshots.map((_, i) => (
+              <span key={i} className="block h-[26px] w-[38px] rounded-[3px] border border-line bg-gradient-to-br from-surface to-line" />
+            ))}
+            <Chip>{section.screenshots.length} screenshot{section.screenshots.length === 1 ? '' : 's'}</Chip>
+          </div>
+        ) : (
+          <Empty>not captured yet — screenshots</Empty>
+        )}
+      </Row>
+
+      <Row label="Errors">
+        {errorCount > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(section.network_log ?? []).slice(0, 2).map((n, i) => (
+              <span key={i} className="rounded-md border border-red/30 bg-red-soft px-1.5 py-0.5 font-mono text-[10.5px] text-red">
+                {n.status} {n.method} {n.url.slice(0, 44)}
+              </span>
+            ))}
+            {(section.console_log ?? []).slice(0, 2).map((c, i) => (
+              <span key={i} className="rounded-md border border-line bg-surface px-1.5 py-0.5 text-[10.5px] text-ink-2">
+                {c.level}: {c.text.slice(0, 50)}
+              </span>
+            ))}
+          </div>
+        ) : captured ? (
+          <Empty>none in the recorded session</Empty>
+        ) : (
+          <Empty>not captured yet — console and network failures</Empty>
+        )}
+      </Row>
+
+      {/* the one button that fills the four rows above */}
+      {!dispatched ? (
+        <div className="flex flex-wrap items-center gap-2 border-y border-line-soft bg-qa-soft px-3.5 py-2.5">
+          <span className="min-w-0 flex-1 text-[11.5px] text-qa">
+            {captured
+              ? '✓ Captured — re-capture if the steps changed.'
+              : '⌖ The four rows above fill themselves — open the app, do the thing, press ⏺ then Finish.'}
+          </span>
           <Link
             href={`/doc-capture/${section.id}`}
-            className="rounded-md border border-line bg-paper px-2.5 py-1 text-[11px] font-semibold text-ink-2 hover:border-qa-bright hover:text-qa"
+            className="flex-none rounded-md border border-qa bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-qa hover:bg-paper/60"
           >
-            ⌖ {hasContext ? 'Re-capture context' : 'Attach context from the app'}
+            ⌖ {captured ? 'Re-capture' : 'Capture from the app'}
           </Link>
-
-          {report ? (
-            <Link
-              href={`/task/${report.id}`}
-              className="ml-auto flex items-center gap-1.5 rounded-md border border-line bg-paper px-2 py-0.5 text-[11px] font-semibold text-ink-2 hover:border-qa-bright"
-            >
-              task <span className="font-mono text-[10.5px] text-qa">#{report.id}</span> ↗
-            </Link>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void dispatch()}
-              disabled={dispatching || !section.body.trim()}
-              className="ml-auto rounded-md bg-qa px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-qa-bright disabled:opacity-40"
-            >
-              {dispatching ? 'Dispatching…' : 'Send to Claude ▸'}
-            </button>
-          )}
         </div>
-        {dispatchError ? <div className="mt-1.5 text-[11px] text-red">{dispatchError}</div> : null}
+      ) : null}
 
+      <Row label="Files" hint="optional">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {section.files.map((f, i) => (
+            <Chip key={i}>📎 {f.split('/').pop()}</Chip>
+          ))}
+          {!dispatched ? (
+            <>
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                onChange={(e) => void addFiles(e.target.files)}
+                className="hidden"
+                id={`files-${section.id}`}
+              />
+              <label
+                htmlFor={`files-${section.id}`}
+                className="cursor-pointer rounded-md border border-dashed border-line px-2 py-1 text-[11px] text-ink-3 hover:border-qa-bright hover:text-qa"
+              >
+                {uploading ? 'uploading…' : section.files.length > 0 ? '＋ add' : 'drop a PDF, CSV or spreadsheet that triggers it'}
+              </label>
+            </>
+          ) : null}
+          {dispatched && section.files.length === 0 ? <Empty>none</Empty> : null}
+        </div>
+      </Row>
+
+      <Row label="Reproduce as">
+        <div className="flex flex-wrap gap-1.5">
+          {roleChips.map((r) => (
+            <button
+              key={r.key}
+              type="button"
+              disabled={dispatched}
+              onClick={() => onPatch({ reproduce_as: r.key === '' ? null : r.key })}
+              aria-pressed={r.on}
+              className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+                r.on ? 'border-qa bg-qa-soft font-semibold text-qa' : 'border-line bg-paper text-ink-2 hover:border-qa-bright'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <Row label="Must not do" hint="optional">
+        <textarea
+          defaultValue={section.constraints}
+          onBlur={(e) => {
+            if (e.target.value !== section.constraints) onPatch({ constraints: e.target.value });
+          }}
+          disabled={dispatched}
+          placeholder="“no schema migration · web only”"
+          aria-label="Must not do"
+          rows={1}
+          className={FIELD_CLS}
+        />
+      </Row>
+
+      <GroupLabel tone="set">how it runs</GroupLabel>
+
+      <Row label="Model">
+        <span className="inline-flex overflow-hidden rounded-md border border-line">
+          {(['fable', 'opus', 'sonnet'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              disabled={dispatched}
+              onClick={() => onPatch({ model: section.model === m ? null : m })}
+              aria-pressed={section.model === m}
+              className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                section.model === m ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </span>
+      </Row>
+
+      <Row label="Base context">
+        <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] text-ink-2">
+          <input
+            type="checkbox"
+            checked={section.base_session !== ''}
+            disabled={dispatched}
+            onChange={(e) => onPatch({ base_session: e.target.checked ? null : '' })}
+            className="accent-qa"
+          />
+          start from the base-context session
+        </label>
+      </Row>
+
+      <Row label="Treat as">
+        <span className="inline-flex overflow-hidden rounded-md border border-line">
+          {(['bug', 'feature'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              disabled={dispatched}
+              onClick={() => onPatch({ kind: k })}
+              aria-pressed={section.kind === k}
+              className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                section.kind === k ? 'bg-qa text-white' : 'bg-paper text-ink-3 hover:text-ink'
+              }`}
+            >
+              {k}
+            </button>
+          ))}
+        </span>
+      </Row>
+
+      {/* footer */}
+      <div className="flex items-center gap-3 border-t border-line bg-stage px-3.5 py-2.5">
+        <span className="min-w-0 flex-1 text-[11px] text-ink-3">
+          {dispatchError ? (
+            <span className="text-red">{dispatchError}</span>
+          ) : report ? (
+            <>filed as task #{report.id} from “{docTitle}”</>
+          ) : ready ? (
+            'Claude starts immediately — a run slot is used.'
+          ) : (
+            'Nothing is sent until you press Send.'
+          )}
+        </span>
         {report ? (
-          <div className="mt-2 overflow-x-auto">
-            <Pipeline status={report.status} />
-          </div>
-        ) : null}
-
-        {showReplay && section.replay_path ? (
-          <div className="mt-2.5">
-            <ReplayPlayer
-              reportId={0}
-              fetchUrl={`/api/doc-replay/${section.id}`}
-              label={`⏺ recorded for “${section.title || 'this section'}”`}
-              steps={section.click_trail ?? []}
-            />
-          </div>
-        ) : null}
+          <Link
+            href={`/task/${report.id}`}
+            className="flex-none rounded-md border border-line bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink-2 hover:border-qa-bright"
+          >
+            open task #{report.id} ↗
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void dispatch()}
+            disabled={dispatching || !ready}
+            className="flex-none rounded-md bg-qa px-3 py-1.5 text-[11.5px] font-semibold text-white transition-colors hover:bg-qa-bright disabled:opacity-40"
+          >
+            {dispatching ? 'Sending…' : 'Send to Claude ▸'}
+          </button>
+        )}
       </div>
     </section>
+  );
+}
+
+// ---- form atoms -----------------------------------------------------------
+
+const FIELD_CLS =
+  'w-full resize-y rounded-[7px] border border-line bg-paper px-2.5 py-1.5 text-[12.5px] leading-relaxed text-ink placeholder:text-ink-3/70 focus:border-qa-bright focus:outline-none focus:ring-[3px] focus:ring-qa/15 disabled:bg-surface disabled:text-ink-2';
+
+/** '' = the reporter's own roles (contracts §Task input). */
+const ROLE_CHOICES = ['', 'Lab admin', 'Lab member', 'Department head', 'Institution admin'] as const;
+
+function GroupLabel({ tone, children }: { tone: 'you' | 'auto' | 'set'; children: React.ReactNode }) {
+  const cls =
+    tone === 'you'
+      ? 'bg-qa-soft text-qa'
+      : tone === 'auto'
+        ? 'bg-violet-soft text-violet'
+        : 'bg-surface text-ink-3';
+  return (
+    <div className="flex items-center gap-2 px-3.5 pb-1 pt-2.5">
+      <span className={`rounded-[3px] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.07em] ${cls}`}>
+        {children}
+      </span>
+      <span className="h-px flex-1 bg-line-soft" />
+    </div>
+  );
+}
+
+function Row({
+  label,
+  hint,
+  required,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-line-soft px-3.5 py-2.5 sm:flex-row sm:gap-3">
+      <div className="flex-none pt-0.5 sm:w-[128px]">
+        <div className="text-[11.5px] font-semibold text-ink-2">
+          {label}
+          {required ? <span className="ml-0.5 font-bold text-qa">*</span> : null}
+        </div>
+        {hint ? <div className="text-[10.5px] font-normal leading-tight text-ink-3">{hint}</div> : null}
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 text-[12px] text-ink-3/80">
+      <span className="inline-block h-px w-4 flex-none bg-line" />
+      {children}
+    </div>
+  );
+}
+
+function Chip({ k, mono, children }: { k?: string; mono?: boolean; children: React.ReactNode }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-md border border-line bg-paper px-1.5 py-0.5 text-[11px] text-ink-2 ${
+        mono ? 'font-mono text-[10.5px]' : ''
+      }`}
+    >
+      {k ? <span className="text-ink-3">{k}</span> : null}
+      {children}
+    </span>
   );
 }

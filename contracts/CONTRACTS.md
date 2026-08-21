@@ -69,6 +69,36 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
 
+## Task input — the questionnaire (db/0012)
+
+A doc section IS the task form: one block, read top to bottom, three labelled groups —
+**you write** · **captured from the app** · **how it runs**. Every field the task carries is a
+row; the captured rows are rendered from the start in an EMPTY state ("not captured yet — the
+page and component you were on") so the form's own shape shows what is missing. One
+⌖ Capture button fills all four (location · what you did · what you saw · errors) in place.
+
+Rows and their consumers:
+- **The problem** (required) — the task statement, verbatim. First line = section name + PR title.
+- **Done when** (required) — `done_when`. The examiner's PRIMARY oracle: when present it judges
+  against this sentence rather than inventing a bar (`worker/src/examine.ts`), and it is the
+  acceptance criterion the blind test agent encodes.
+- **Location / What you did / What you saw / Errors** — captured; `console_log`/`network_log`
+  now ride the doc-mode draft too, so a dispatched section carries the same diagnostics a
+  widget-filed report does.
+- **Files** — `files[]`, fixtures a recording cannot carry (a recording has no file bytes).
+  `POST /api/docs/section-files` (multipart, ≤5 files, ≤15MB each) → `doc-section-<id>/files/…`;
+  dispatch copies them to `report-<id>/files/…`; the envelope downloads them into the run dir
+  and the grounding instructions tell the run to reproduce WITH them.
+- **Reproduce as** — `reproduce_as`; null = the reporter's own roles.
+- **Must not do** — `constraints`; HARD boundaries. The envelope states that crossing one is a
+  STOP, not a judgment call.
+- **Model · Base context · Treat as** — see §Base context.
+
+**Send moves you in.** Dispatch navigates to `/task/<id>`; the form is not cleared and there is
+no confirmation screen — the answers become the task's record, and the section keeps tracking
+it from the doc. A dispatched section renders read-only with an "open task #N" link.
+**Priority is deliberately not a field** — order is the doc's order and the queue's arrival time.
+
 ## Base context + per-task model (db/0011)
 
 A run can START from an existing Claude Code session instead of cold — the **base-context**

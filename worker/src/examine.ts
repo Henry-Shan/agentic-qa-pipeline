@@ -127,13 +127,27 @@ function examinerPrompt(report: QaReport, evidence: Evidence, dir: string): stri
     })
     .join('\n');
 
+  // The tester's own "done when" is the oracle when they gave one (contracts
+  // §Task input) — the examiner must judge against it rather than inventing
+  // its own bar, which is what makes verdicts comparable across attempts.
+  const doneWhen = (report.done_when ?? '').trim();
+
   return `You are the EXAMINER for a QA fix. You have NOT seen the code change and must not look for it — judge ONLY what the app did.
 
 A tester reported this, in their own words:
 """
 ${(report.description ?? report.title ?? '').slice(0, 4000)}
 """
-
+${
+    doneWhen
+      ? `
+The tester also stated EXACTLY what "fixed" means to them. This is the PRIMARY criterion — judge against it first and do not substitute your own bar:
+"""
+${doneWhen.slice(0, 1500)}
+"""
+`
+      : ''
+  }
 Their recorded steps were re-executed on the FIXED build just now. Evidence per step is below; screenshots are files — READ THEM AS IMAGES with the Read tool before judging. The closing frame is the outcome.
 
 Signed in as the reporter: ${evidence.signedIn ? 'yes' : 'NO — sign-in may have failed'}
@@ -147,7 +161,7 @@ STEPS
 ${steps || '(no steps were recorded with this report)'}
 
 YOUR JOB
-1. Derive the concrete expected result(s) from the tester's words above — what they say SHOULD happen.
+1. ${doneWhen ? 'Start from the tester\'s "done when" statement above, then add any other expected result their description implies.' : "Derive the concrete expected result(s) from the tester's words above — what they say SHOULD happen."}
 2. For each, decide from the evidence whether it is TRUE on this build, quoting the specific screenshot/text that shows it.
 3. Verdict:
    - "pass" — every expected result is visibly there.

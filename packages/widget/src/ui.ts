@@ -718,6 +718,8 @@ export function createUI(cfg: WidgetConfig, buffers: Buffers): WidgetUI {
         route: draft.recording?.route ?? currentRoute(),
         pageTitle: document.title,
         clickTrail: recordedTrail(draft),
+        consoleLog: buffers.consoleLog(),
+        networkLog: buffers.networkLog(),
         viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
         shots: docShots,
       };

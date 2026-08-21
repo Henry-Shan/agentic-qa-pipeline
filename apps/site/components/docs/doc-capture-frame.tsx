@@ -25,6 +25,8 @@ interface DraftPayload {
   testid?: string;
   elementText?: string;
   clickTrail?: ClickTrailEntry[];
+  consoleLog?: unknown[];
+  networkLog?: unknown[];
   viewport?: { w: number; h: number; dpr: number };
   shots?: string[];
   replayJson?: string;
@@ -66,6 +68,8 @@ export function DocCaptureFrame({
         selector: draft.selector ?? null,
         element_text: draft.elementText ?? null,
         click_trail: draft.clickTrail ?? [],
+        console_log: draft.consoleLog ?? [],
+        network_log: draft.networkLog ?? [],
         viewport: draft.viewport ?? null,
       };
       if (draft.kind === 'bug' || draft.kind === 'feature') patch.kind = draft.kind;

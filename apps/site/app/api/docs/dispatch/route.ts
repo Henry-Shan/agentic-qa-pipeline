@@ -83,8 +83,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       selector: section.selector,
       element_text: section.element_text,
       click_trail: section.click_trail ?? [],
-      console_log: [],
-      network_log: [],
+      console_log: section.console_log ?? [],
+      network_log: section.network_log ?? [],
       screenshots: [],
       viewport: section.viewport ?? { w: 0, h: 0, dpr: 1 },
       app_context: appContext,
@@ -93,6 +93,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // "use the worker default", '' means an explicitly cold start.
       base_session: section.base_session,
       model: section.model,
+      // Questionnaire answers (contracts §Task input): done_when is the
+      // examiner's oracle, constraints are hard boundaries, reproduce_as picks
+      // the role Claude and the examination run under.
+      done_when: section.done_when ?? '',
+      constraints: section.constraints ?? '',
+      reproduce_as: section.reproduce_as,
     })
     .select('id')
     .single();
@@ -110,7 +116,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const { error } = await admin.storage.from('qa-screenshots').copy(from, to);
     if (!error) storedShots.push(to);
   }
+  // Fixture files ride along too — the run must be able to reproduce with them.
+  const storedFiles: string[] = [];
+  for (const from of section.files ?? []) {
+    const name = from.split('/').pop() ?? 'file';
+    const to = `report-${reportId}/files/${name}`;
+    const { error } = await admin.storage.from('qa-screenshots').copy(from, to);
+    if (!error) storedFiles.push(to);
+  }
+
   const patch: Record<string, unknown> = {};
+  if (storedFiles.length > 0) patch.files = storedFiles;
   if (storedShots.length > 0) patch.screenshots = storedShots;
   if (section.replay_path) {
     const to = `report-${reportId}/replay.json`;
