@@ -12,8 +12,12 @@
 // nothing. Nothing is attached until the button is pressed.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getBrowserClient } from '@/lib/supabase/client';
 
 type Phase = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+
+/** Where a tester's own terminal agent listens (localhost, by convention). */
+const TERM_PORT = 4520;
 
 export function TerminalPanel({ reportId }: { reportId: number }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -38,14 +42,13 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
     setPhase('connecting');
     setNote(null);
     try {
-      // 1. A single-use ticket for THIS report (tester-gated, 60s).
-      const res = await fetch('/api/term-token', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reportId }),
-      });
-      if (!res.ok) throw new Error(`could not get a terminal ticket (${res.status})`);
-      const { token, port } = (await res.json()) as { token: string; port: number };
+      // 1. YOUR session token — the host verifies it with Supabase and checks
+      // you are on the QA allowlist. No shared secret, so the same page works
+      // against your own agent as against the worker's built-in host.
+      const { data } = await getBrowserClient().auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('sign in again — your session has expired');
+      const port = TERM_PORT;
 
       // 2. xterm is imported lazily — it never lands in the page's first load.
       const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -77,7 +80,7 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
       fit.fit();
 
       const ws = new WebSocket(
-        `ws://127.0.0.1:${port}/?t=${encodeURIComponent(token)}&cols=${term.cols}&rows=${term.rows}`,
+        `ws://127.0.0.1:${port}/?report=${reportId}&t=${encodeURIComponent(token)}&cols=${term.cols}&rows=${term.rows}`,
       );
       socketRef.current = ws;
 
@@ -89,7 +92,7 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
       ws.onerror = () => {
         setPhase('error');
         setNote(
-          'Could not reach the terminal on this machine. It is bound to localhost, so it only works on the Mac running the worker.',
+          'No terminal agent is running on this machine. Start one — see agent/README.md — then press Reconnect.',
         );
       };
       ws.onclose = (e) => {
@@ -124,9 +127,7 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
       <div className="flex items-center gap-2 border-b border-line bg-stage px-3 py-2">
         <span className="text-[12.5px] font-medium">Terminal</span>
         <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">
-          {phase === 'open'
-            ? 'live — claude, resumed in this run’s worktree'
-            : 'runs on the machine hosting the worker'}
+          {phase === 'open' ? 'live — Claude Code on this machine' : 'runs on your machine, never exposed'}
         </span>
         {phase === 'open' || phase === 'connecting' ? (
           <button type="button" onClick={detach} className="btn btn-quiet flex-none">

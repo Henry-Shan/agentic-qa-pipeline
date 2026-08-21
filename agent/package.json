@@ -1,0 +1,15 @@
+{
+  "name": "qa-pipeline-term-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runs on a tester's own machine so qa.example.com task pages can attach a real Claude Code terminal to THEIR checkout. Localhost-only.",
+  "scripts": {
+    "start": "node term-agent.mjs"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  },
+  "engines": { "node": ">=22" }
+}

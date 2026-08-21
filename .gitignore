@@ -9,3 +9,4 @@ dist/
 .turbo/
 .vercel/
 .gstack/
+agent/node_modules

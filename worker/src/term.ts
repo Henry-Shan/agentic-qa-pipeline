@@ -16,19 +16,17 @@
 //     Without this check ANY site you happen to visit could open a socket to
 //     localhost and get a shell — that is the actual attack this feature would
 //     otherwise create, and it is checked before a single byte is read.
-//  3. SINGLE-USE SIGNED TOKEN, 60s TTL, bound to one report id. Minted only by
-//     `POST /api/term-token`, which the site's middleware gates to signed-in
-//     testers. HMAC key = SHA-256("qa-term-v1" + service-role key) — the same
-//     construction the tester cookie already uses, so the site and worker agree
-//     without sharing another secret. Verified in constant time; the nonce is
-//     burned on use so a captured token cannot be replayed.
+//  3. THE VIEWER'S OWN SUPABASE SESSION. The page sends its access token; this
+//     host verifies it with Supabase and requires the email to be on
+//     `qa_allowed_emails`. No shared secret is involved, which is what lets the
+//     SAME code ship as a standalone agent every tester runs on their own
+//     machine (see agent/term-agent.mjs) without handing anyone a privileged key.
 //  4. NO SESSION HIJACK. While the worker has a live run on that session, the
 //     terminal FORKS it (`--fork-session`) instead of attaching — two clients on
 //     one session corrupt it, and the run must win.
 //  5. Bounded: one terminal per report, a global cap, and an idle timeout that
 //     kills the pty. Closing the tab kills it too.
 
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -38,8 +36,6 @@ import { log } from './util';
 
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 const MAX_TERMINALS = 4;
-/** Tokens are handed straight to a socket; they never need a long life. */
-const TOKEN_TTL_MS = 60_000;
 
 interface Live {
   proc: pty.IPty;
@@ -49,38 +45,33 @@ interface Live {
 
 /** report id → its one live terminal. */
 const live = new Map<number, Live>();
-/** Nonces already spent, so a token works exactly once. */
-const usedNonces = new Set<string>();
 
-function hmacKey(serviceRoleKey: string): Buffer {
-  return createHash('sha256').update(`qa-term-v1${serviceRoleKey}`).digest();
-}
-
-/** `<reportId>.<expiresEpochMs>.<nonce>.<sig>` — verified, then burned. */
-export function verifyTermToken(token: string, serviceRoleKey: string): number | null {
-  const parts = token.split('.');
-  if (parts.length !== 4) return null;
-  const [rawId, rawExp, nonce, sig] = parts;
-  if (!rawId || !rawExp || !nonce || !sig) return null;
-
-  const expected = createHmac('sha256', hmacKey(serviceRoleKey))
-    .update(`${rawId}.${rawExp}.${nonce}`)
-    .digest('base64url');
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-
-  const exp = Number(rawExp);
-  if (!Number.isFinite(exp) || exp < Date.now()) return null;
-  if (exp > Date.now() + TOKEN_TTL_MS * 2) return null; // nonsense future expiry
-  if (usedNonces.has(nonce)) return null; // replay
-  const reportId = Number(rawId);
-  if (!Number.isInteger(reportId) || reportId <= 0) return null;
-
-  usedNonces.add(nonce);
-  // The set only needs to outlive the TTL; drop it wholesale when it grows.
-  if (usedNonces.size > 5_000) usedNonces.clear();
-  return reportId;
+/**
+ * Verify the browser's Supabase session and require QA tester membership.
+ * Uses the PUBLIC url + anon key only — the same check the standalone agent
+ * makes, so neither needs a privileged secret.
+ */
+async function verifyTester(ctx: Ctx, accessToken: string): Promise<string | null> {
+  if (!accessToken || accessToken.length > 4096) return null;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? '';
+  if (!anon) return null;
+  try {
+    const who = await fetch(`${ctx.cfg.supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: anon, authorization: `Bearer ${accessToken}` },
+    });
+    if (!who.ok) return null;
+    const email = ((await who.json()) as { email?: string })?.email;
+    if (!email) return null;
+    const allow = await fetch(
+      `${ctx.cfg.supabaseUrl}/rest/v1/qa_allowed_emails?select=email&email=eq.${encodeURIComponent(email)}`,
+      { headers: { apikey: anon, authorization: `Bearer ${accessToken}` } },
+    );
+    if (!allow.ok) return null;
+    const rows = (await allow.json()) as unknown[];
+    return Array.isArray(rows) && rows.length > 0 ? email : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -134,11 +125,15 @@ export function startTerminalHost(ctx: Ctx): () => void {
         socket.close(4403, 'origin not allowed');
         return;
       }
-      // --- gate 2: single-use signed token bound to a report -------------
+      // --- gate 2: the viewer is a signed-in QA tester --------------------
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-      const token = url.searchParams.get('t') ?? '';
-      const reportId = verifyTermToken(token, ctx.cfg.supabaseServiceRoleKey);
-      if (reportId === null) {
+      const reportId = Number(url.searchParams.get('report'));
+      if (!Number.isInteger(reportId) || reportId <= 0) {
+        socket.close(4400, 'bad report');
+        return;
+      }
+      const email = await verifyTester(ctx, url.searchParams.get('t') ?? '');
+      if (!email) {
         socket.close(4401, 'unauthorized');
         return;
       }
@@ -175,7 +170,7 @@ export function startTerminalHost(ctx: Ctx): () => void {
         setTimeout(() => closeTerminal(reportId, 'idle'), IDLE_TIMEOUT_MS);
       const entry: Live = { proc, socket, idleTimer: touch() };
       live.set(reportId, entry);
-      log('term', `report ${reportId}: ${busy ? 'forked' : 'resumed'} ${run.session_id.slice(0, 8)} in ${cwd}`);
+      log('term', `report ${reportId}: ${email} ${busy ? 'forked' : 'resumed'} ${run.session_id.slice(0, 8)} in ${cwd}`);
 
       socket.send(
         `\r\n\x1b[2m${busy ? 'a run is live — forking the session so it is not disturbed' : 'resuming'} · ${cwd}\x1b[0m\r\n`,
