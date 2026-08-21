@@ -14,6 +14,7 @@
 //   inconclusive  → logged, no rework (a broken harness must never steer code)
 
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { autoAssignOnBlock } from './assign';
@@ -213,6 +214,50 @@ async function storeShots(ctx: Ctx, reportId: number, examKey: string, dir: stri
  * Run one examination for a live preview and act on the verdict. Safe to call
  * fire-and-forget: every failure path logs and returns without throwing.
  */
+/**
+ * rrweb's UMD bundle — the only build that defines `window.rrweb` when injected
+ * as a plain script. The package's "." export is an ES module, which would load
+ * and define nothing.
+ */
+function rrwebBundle(): string | null {
+  try {
+    const req = createRequire(import.meta.url);
+    return path.join(path.dirname(req.resolve('rrweb')), 'rrweb.umd.cjs');
+  } catch {
+    log('examine', 'rrweb not resolvable — the after-the-fix replay will not be recorded');
+    return null;
+  }
+}
+
+/**
+ * Publish the replay's own recording as the task's "After the fix".
+ *
+ * The After used to exist only when a human opened the Live preview tab and let
+ * the embed replay run, so most tasks had a Before and no After — half a
+ * comparison. The examination already re-executes the tester's steps on the
+ * fixed build; recording that run produces the same footage every time, with
+ * nobody watching.
+ *
+ * Same path as the browser flow (`report-<id>/after-replay-<run>.json`), so the
+ * site's `?src=after` route serves either without knowing which made it.
+ */
+async function saveAfterReplay(ctx: Ctx, reportId: number, runId: number, dir: string): Promise<void> {
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(path.join(dir, 'after-replay.json'));
+  } catch {
+    return; // nothing recorded (no steps, recording off, or injection failed)
+  }
+  const storagePath = `report-${reportId}/after-replay-${runId}.json`;
+  const { error } = await ctx.db.uploadScreenshot(storagePath, bytes);
+  if (error) {
+    log('examine', `report ${reportId}: after-replay upload failed: ${String(error)}`);
+    return;
+  }
+  await ctx.db.updateRun(runId, { after_replay_path: storagePath }).catch(() => undefined);
+  log('examine', `report ${reportId}: saved the after-the-fix replay (${Math.round(bytes.length / 1024)} KB)`);
+}
+
 export async function examine(ctx: Ctx, report: QaReport, run: QaRun): Promise<void> {
   const trail = Array.isArray(report.click_trail) ? report.click_trail : [];
   if (trail.length === 0) {
@@ -242,10 +287,15 @@ export async function examine(ctx: Ctx, report: QaReport, run: QaRun): Promise<v
       route: report.route ?? '/',
       steps: trail,
       outDir: dir,
+      // Recording is opt-in and additive: null → the harness behaves exactly as
+      // it did before the After existed (contracts §Replay).
+      rrwebPath: ctx.cfg.examRecord ? rrwebBundle() : null,
       viewport: report.viewport ?? { w: 1440, h: 900 },
     }),
   ];
   await runProcess(process.execPath, args, ctx.cfg.runnerRepo, REPLAY_TIMEOUT_MS);
+
+  await saveAfterReplay(ctx, report.id, run.id, dir);
 
   let evidence: Evidence = {};
   try {

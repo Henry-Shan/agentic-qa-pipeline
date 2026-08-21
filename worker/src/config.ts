@@ -50,6 +50,8 @@ export interface WorkerConfig {
   wakePort: number;
   /** Real API a preview's `/__api/*` calls are forwarded to. https origin only. */
   previewApiOrigin: string;
+  /** EXAM_RECORD=0 → examinations stop recording the "After the fix" replay. */
+  examRecord: boolean;
   /** PREVIEW_BUILD=0 → serve `next dev` instead of a production build (slow; debugging only). */
   previewBuild: boolean;
   /** Build command run in the worktree before `next start`. */
@@ -143,6 +145,7 @@ export function loadConfig(): WorkerConfig {
     previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
     wakePort: intEnv('WAKE_PORT', 4521),
     previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
+    examRecord: process.env.EXAM_RECORD !== '0',
     previewBuild: process.env.PREVIEW_BUILD !== '0',
     // --env-mode=loose: turbo 2 filters environment variables it was not told
     // about, which silently drops the preview's API URL and lets the developer's

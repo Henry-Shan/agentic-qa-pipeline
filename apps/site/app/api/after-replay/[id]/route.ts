@@ -62,6 +62,19 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     .maybeSingle();
   if (!runRow) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
+  // An "After" is the tester's own steps re-executed on the fixed build. Without
+  // a Before there are no steps to re-execute, so whatever the embed captured is
+  // just a browsing session — it would sit in the hero labelled as a comparison
+  // while having nothing to compare against. Refuse it.
+  const { data: reportRow } = await admin
+    .from('qa_reports')
+    .select('replay_path')
+    .eq('id', reportId)
+    .maybeSingle();
+  if (!reportRow?.replay_path) {
+    return NextResponse.json({ error: 'no before recording — nothing to compare against' }, { status: 409 });
+  }
+
   const path = `report-${reportId}/after-replay-${run}.json`;
   const { error: uploadError } = await admin.storage
     .from('qa-screenshots')

@@ -29,7 +29,29 @@ const {
   steps = [],
   outDir,
   viewport = { w: 1440, h: 900 },
+  // Path to rrweb's UMD bundle. Absent → no recording, and everything below
+  // behaves exactly as it did before recording existed.
+  rrwebPath = null,
 } = cfg;
+
+/** Hard ceiling per phase: a stalled phase must fail with a reason, never hang.
+ *  A silent stall costs the whole examination and leaves no artifact to read. */
+const PHASE_MS = { signin: 60_000, route: 60_000, step: 45_000, record: 20_000 };
+const REC_MAX_EVENTS = 20_000;
+
+async function phase(name, ms, fn) {
+  let timer;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`stalled in ${name} after ${Math.round(ms / 1000)}s`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Full URL for a recorded route (which carries pathname + query + hash). */
 function urlFor(r) {
@@ -92,6 +114,17 @@ async function main() {
     viewport: { width: viewport.w || 1440, height: viewport.h || 900 },
     ignoreHTTPSErrors: true,
   });
+  // Events stream straight out of the page as rrweb emits them. No page-global
+  // array to drain: a document unload cannot lose what has already crossed, and
+  // nothing large is ever structured-serialized over CDP.
+  const replayEvents = [];
+  let recording = false;
+  if (rrwebPath) {
+    await context.exposeBinding('__qaEmit', (_src, event) => {
+      if (replayEvents.length < REC_MAX_EVENTS) replayEvents.push(event);
+    });
+  }
+
   const page = await context.newPage();
 
   // Per-step diagnostic windows: cleared after each step is recorded.
@@ -107,6 +140,77 @@ async function main() {
   });
 
   const evidence = { signedIn: false, startedOnRoute: false, steps: [], shown: 0, skipped: 0, fatal: null };
+
+  /**
+   * Start recording on the CURRENT document.
+   *
+   * Deliberately not `addInitScript`: that runs on every document including the
+   * /qa-session magic-link verify and its redirects, and injecting a ~550 KB
+   * bundle into that chain stalled sign-in outright. Recording only has to cover
+   * the steps, so it starts once the app is loaded and on the right route — the
+   * auth flow runs exactly as it does without recording.
+   */
+  const startRecording = async () => {
+    if (!rrwebPath) return;
+    try {
+      await phase('record', PHASE_MS.record, async () => {
+        await page.addScriptTag({ path: rrwebPath });
+        await page.evaluate((max) => {
+          if (window.__qaRecOn || !window.rrweb) return;
+          window.__qaRecOn = true;
+          let n = 0;
+          window.rrweb.record({
+            emit: (e) => {
+              if (n++ < max) window.__qaEmit(e);
+            },
+            maskAllInputs: true,
+            collectFonts: false,
+          });
+        }, REC_MAX_EVENTS);
+      });
+      recording = true;
+    } catch (e) {
+      // Recording is evidence, never a gate: a failure here must not cost the
+      // examination its verdict.
+      evidence.recordingError = String(e?.message ?? e).slice(0, 200);
+    }
+  };
+  /** A step that navigates lands on a fresh document, which has no recorder. */
+  const rearm = async () => {
+    if (!rrwebPath || !recording) return;
+    try {
+      const live = await page.evaluate(() => Boolean(window.__qaRecOn));
+      if (!live) {
+        await page.addScriptTag({ path: rrwebPath });
+        await page.evaluate((max) => {
+          if (window.__qaRecOn || !window.rrweb) return;
+          window.__qaRecOn = true;
+          let n = 0;
+          window.rrweb.record({
+            emit: (e) => {
+              if (n++ < max) window.__qaEmit(e);
+            },
+            maskAllInputs: true,
+            collectFonts: false,
+          });
+        }, REC_MAX_EVENTS);
+      }
+    } catch {
+      // keep whatever we already streamed
+    }
+  };
+  /** Same custom event the widget writes, so the player marks steps identically. */
+  const markStep = async (i, text) => {
+    if (!rrwebPath || !recording) return;
+    try {
+      await page.evaluate(
+        ({ i, text }) => window.rrweb?.record?.addCustomEvent?.('qa-step', { i, kind: 'click', label: text }),
+        { i, text },
+      );
+    } catch {
+      // a marker is a nicety
+    }
+  };
   const shot = async (name) => {
     const file = path.join(outDir, name);
     try {
@@ -153,21 +257,26 @@ async function main() {
     const entry = tokenHash
       ? `${previewUrl.replace(/\/$/, '')}/qa-session#token_hash=${encodeURIComponent(tokenHash)}&next=${encodeURIComponent(route)}`
       : urlFor(route);
-    await page.goto(entry, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(2_500); // verifyOtp + redirect into the app
+    await phase('sign-in', PHASE_MS.signin, async () => {
+      await page.goto(entry, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+      await page.waitForTimeout(2_500); // verifyOtp + redirect into the app
+    });
     if (!/\/qa-session|\/login/.test(new URL(page.url()).pathname)) evidence.signedIn = true;
 
     // Land on the recorded starting route and STAY there: the app runs its own
     // post-login redirect, which can land after a one-shot goto and silently
     // start the examination on the wrong screen. Navigate, settle, verify.
     const want = new URL(urlFor(route)).pathname;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (new URL(page.url()).pathname === want) break;
-      await page.goto(urlFor(route), { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-      await page.waitForTimeout(1_500);
-    }
+    await phase('route', PHASE_MS.route, async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (new URL(page.url()).pathname === want) break;
+        await page.goto(urlFor(route), { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+        await page.waitForTimeout(1_500);
+      }
+    });
     evidence.startedOnRoute = new URL(page.url()).pathname === want;
     await page.waitForTimeout(SETTLE_MS);
+    await startRecording();
     evidence.startShot = await shot('step-0-start.png');
     evidence.startText = await visibleText();
     consoleErrors = [];
@@ -177,6 +286,8 @@ async function main() {
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const record = { i: i + 1, label: label(step), route: step.route ?? null, status: 'done' };
+      await rearm();
+      await markStep(i + 1, record.label);
 
       // Follow the tester's path: re-align when the step happened elsewhere.
       try {
@@ -247,6 +358,10 @@ async function main() {
     await browser.close().catch(() => {});
   }
 
+  if (replayEvents.length) {
+    fs.writeFileSync(path.join(outDir, 'after-replay.json'), JSON.stringify(replayEvents));
+    evidence.afterReplayEvents = replayEvents.length;
+  }
   fs.writeFileSync(path.join(outDir, 'evidence.json'), JSON.stringify(evidence, null, 2));
   process.stdout.write(JSON.stringify({ shown: evidence.shown, skipped: evidence.skipped, fatal: evidence.fatal }));
 }

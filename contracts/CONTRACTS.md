@@ -652,6 +652,31 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   required" (identical to production); with a bogus token → 401 "Invalid token" on both,
   proving the header is forwarded; POST body forwarded (405 from the API itself); and the
   old direct call still throws "Failed to fetch", which was the reported bug.*
+- **"After the fix" is produced by the machine, not by a visitor** (`EXAM_RECORD=1`).
+  The examination already re-executes the tester's steps on the fixed build; it now records
+  itself with rrweb and uploads the result to `report-<id>/after-replay-<run>.json`, setting
+  `qa_runs.after_replay_path` — the same path and column the browser embed writes, so the
+  site's `?src=after` route serves either without knowing which produced it. A Before
+  therefore always gets an After, instead of only when someone happened to open the Live
+  preview tab.
+  **Injection timing is load-bearing.** rrweb is injected with `addScriptTag` AFTER sign-in
+  and after the route has landed — never `addInitScript`, which runs on every document
+  including the `/qa-session` magic-link verify chain and stalled sign-in outright (measured:
+  control finished in 30s, `addInitScript` never produced a single screenshot in 10+ minutes).
+  Events stream out through `exposeBinding('__qaEmit')` as rrweb emits them, so a document
+  unload cannot lose them and nothing large is structured-serialized over CDP. Steps are
+  marked with the same `qa-step` custom event the widget writes, so the player's step markers
+  behave identically on both sides. Capped at 20k events.
+  Recording is strictly additive: any failure records `evidence.recordingError` and the
+  examination proceeds to its verdict exactly as before. `EXAM_RECORD=0` disables it.
+- **Phase deadlines** (`exam-run.mjs`): sign-in, route landing, each step and recording each
+  run under an explicit timeout that fails with `stalled in <phase>`. A stalled phase used to
+  cost the whole examination in silence with no artifact to read — which is how the
+  `addInitScript` hang stayed invisible.
+- **No After without a Before**: `POST /api/after-replay/[id]` refuses (409) when the report
+  has no `replay_path`. An After is the tester's steps re-executed; with no steps, whatever
+  the embed captured is just a browsing session sitting in the hero labelled as a comparison
+  with nothing to compare against.
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans
