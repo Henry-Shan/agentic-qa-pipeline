@@ -44,6 +44,8 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
 - `PREVIEW_MODE=local|tunnel` · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
 - `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
+- `PREVIEW_SUPABASE_URL` · `PREVIEW_SUPABASE_ANON_KEY` — inlined into the preview build;
+  ANON key only, the worker refuses a `service_role` JWT
 - `PREVIEW_BUILD=1` · `PREVIEW_BUILD_CMD='npx turbo run build --filter=web'` — previews serve a
   production build; `PREVIEW_BUILD=0` falls back to the much slower `next dev`
 - `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
@@ -715,6 +717,26 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   has no `replay_path`. An After is the tester's steps re-executed; with no steps, whatever
   the embed captured is just a browsing session sitting in the hero labelled as a comparison
   with nothing to compare against.
+- **A preview never shows an error page for a recoverable state.** Three cases used to:
+  - *no DNS record yet* — the hostname was only routed once a preview went live, so a
+    brand-new task's URL did not resolve at all and the visitor got the browser's "server
+    not found". `ensureDns()` now runs BEFORE the build (idempotent, persisted set), so the
+    address resolves while the preview is still being produced.
+  - *building* — a fresh fix is compiled before it can be served (~2-3 min). The front door
+    reads `state.startingReports` and says "Building this preview…" rather than the
+    "waking up" copy, because minutes and seconds need different expectations.
+  - *dev server died without the worker noticing* — previews are detached processes, so a
+    crash or a killed port leaves a handle pointing at nothing and the proxy answered 502.
+    On ECONNREFUSED/ECONNRESET/EHOSTUNREACH the front door now drops the stale handle,
+    marks the run down, triggers a wake and serves the waiting page.
+- **Preview env comes from the worker, never from a symlink.** `apps/web/.env.local` is a
+  symlink into the developer's checkout that only SOME worktrees have; a build without it
+  produces an app whose login page reads "Supabase is not configured for the web app"
+  (observed on tasks 45 and 60). The worker writes `NEXT_PUBLIC_SUPABASE_URL` /
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` alongside the API URLs, from `PREVIEW_SUPABASE_*`.
+  **It refuses a service_role key**: the value is inlined into a client bundle anyone with
+  the link can read, so publishing it would be a full database leak. The role is decoded
+  from the JWT payload, not trusted from the variable name. 5 cases.
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans

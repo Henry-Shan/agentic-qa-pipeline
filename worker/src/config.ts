@@ -52,6 +52,10 @@ export interface WorkerConfig {
   previewApiOrigin: string;
   /** EXAM_RECORD=0 → examinations stop recording the "After the fix" replay. */
   examRecord: boolean;
+  /** Supabase the PREVIEW's browser code talks to. Public anon key ONLY — this is
+   *  inlined into a client bundle anyone with the link can read. */
+  previewSupabaseUrl: string;
+  previewSupabaseAnonKey: string;
   /** PREVIEW_BUILD=0 → serve `next dev` instead of a production build (slow; debugging only). */
   previewBuild: boolean;
   /** Build command run in the worktree before `next start`. */
@@ -146,6 +150,8 @@ export function loadConfig(): WorkerConfig {
     wakePort: intEnv('WAKE_PORT', 4521),
     previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
     examRecord: process.env.EXAM_RECORD !== '0',
+    previewSupabaseUrl: process.env.PREVIEW_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '',
+    previewSupabaseAnonKey: process.env.PREVIEW_SUPABASE_ANON_KEY ?? '',
     previewBuild: process.env.PREVIEW_BUILD !== '0',
     // --env-mode=loose: turbo 2 filters environment variables it was not told
     // about, which silently drops the preview's API URL and lets the developer's

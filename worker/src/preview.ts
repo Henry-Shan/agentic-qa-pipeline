@@ -64,10 +64,12 @@ export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Prom
   // this machine, so claim the run up front.
   if (ctx.state.previews.has(run.id) || ctx.state.startingPreviews.has(run.id)) return;
   ctx.state.startingPreviews.add(run.id);
+  ctx.state.startingReports.add(run.report_id);
   try {
     await startPreviewInner(ctx, run, skipExam);
   } finally {
     ctx.state.startingPreviews.delete(run.id);
+    ctx.state.startingReports.delete(run.report_id);
   }
 }
 
@@ -104,6 +106,12 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
   const publicHost = ctx.cfg.previewMode === 'tunnel' ? previewHostname(ctx, run.report_id) : null;
   const apiBase = publicHost && !refusesToServe(ctx, publicHost) ? `https://${publicHost}${API_PREFIX}` : ctx.cfg.previewApiOrigin;
 
+  // Reserve the hostname BEFORE the build. A build takes minutes, and until the
+  // DNS record exists the URL does not resolve at all — the visitor gets the
+  // browser's "server not found", not our "building…" page. The record is
+  // created once and never removed, so this only does work the first time.
+  if (publicHost) await ensureDns(ctx, publicHost);
+
   // Serve a production build, not `next dev`. Measured on this app: dev ships
   // 25.8 MB over 123 requests for one page and holds ~1 GB per preview, because it
   // compiles routes on demand and serves every module unbundled. The same page
@@ -120,7 +128,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
   const child = spawn('bash', ['-c', cmd], {
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, ...previewEnv(apiBase), PORT: String(port) },
+    env: { ...process.env, ...previewEnv(ctx, apiBase), PORT: String(port) },
   });
   fs.closeSync(out);
   child.unref();
@@ -234,7 +242,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   //     turbo, hence `--env-mode=loose` in the default build command. Turbo 2
   //     filters unknown variables by default, which is exactly how the dev
   //     `.env.local` won and previews ended up calling localhost:8082.
-  const env = previewEnv(apiBase);
+  const env = previewEnv(ctx, apiBase);
   try {
     fs.writeFileSync(
       path.join(worktree, 'apps/web/.env.production.local'),
@@ -413,8 +421,38 @@ export const API_PREFIX = '/__api';
  * that inherits them answers every call with ERR_CONNECTION_REFUSED. Production
  * serves both from the same API host, so both point at the same place here.
  */
-function previewEnv(apiBase: string): Record<string, string> {
-  return { NEXT_PUBLIC_API_BASE_URL: apiBase, NEXT_PUBLIC_OCR_BASE_URL: apiBase };
+function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
+  const env: Record<string, string> = {
+    NEXT_PUBLIC_API_BASE_URL: apiBase,
+    NEXT_PUBLIC_OCR_BASE_URL: apiBase,
+  };
+  // Supabase too, for the same reason: `apps/web/.env.local` is a symlink into
+  // the developer's checkout that only SOME worktrees have, and a build without
+  // it produces an app whose login page reads "Supabase is not configured".
+  // A preview must not depend on a file that may or may not be there.
+  if (ctx.cfg.previewSupabaseUrl && ctx.cfg.previewSupabaseAnonKey) {
+    if (isServiceRoleKey(ctx.cfg.previewSupabaseAnonKey)) {
+      // This value is inlined into a client bundle that anyone with the preview
+      // link can read. A service-role key there is a full database leak.
+      log('preview', 'REFUSING to build with PREVIEW_SUPABASE_ANON_KEY that is a service_role key');
+    } else {
+      env.NEXT_PUBLIC_SUPABASE_URL = ctx.cfg.previewSupabaseUrl;
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY = ctx.cfg.previewSupabaseAnonKey;
+    }
+  }
+  return env;
+}
+
+/** A Supabase JWT carries its role in the payload; anon is safe to publish, service_role is not. */
+function isServiceRoleKey(key: string): boolean {
+  try {
+    const payload = key.split('.')[1];
+    if (!payload) return false;
+    const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as { role?: string };
+    return json.role === 'service_role';
+  } catch {
+    return false; // not a JWT we can read; the explicit env name is the contract
+  }
 }
 
 /**
@@ -440,6 +478,41 @@ export async function republishTunnel(ctx: Ctx): Promise<void> {
   await syncTunnel(ctx);
 }
 
+/**
+ * Give a hostname a DNS record, once. Idempotent via a persisted set, so calling
+ * it on every preview start costs nothing after the first time.
+ *
+ * Called BEFORE the build so the address resolves while the preview is still
+ * being produced — otherwise the visitor gets the browser's own "server not
+ * found" instead of the page that says what is happening.
+ */
+async function ensureDns(ctx: Ctx, hostname: string): Promise<void> {
+  if (ctx.cfg.previewMode !== 'tunnel') return;
+  if (refusesToServe(ctx, hostname)) {
+    log('preview', `REFUSING to route ${hostname} — not a preview hostname`);
+    return;
+  }
+  const routedPath = path.join(ctx.cfg.qaHome, 'routed-hostnames.json');
+  let routed: Set<string>;
+  try {
+    routed = new Set(JSON.parse(fs.readFileSync(routedPath, 'utf8')) as string[]);
+  } catch {
+    routed = new Set();
+  }
+  if (routed.has(hostname)) return;
+  const r = await execa('cloudflared', ['tunnel', 'route', 'dns', ctx.cfg.cfTunnelName, hostname], {
+    reject: false,
+    timeout: 60_000,
+  });
+  if (r.exitCode === 0 || /already exists/i.test(`${r.stdout ?? ''}${r.stderr ?? ''}`)) {
+    routed.add(hostname);
+    fs.writeFileSync(routedPath, JSON.stringify([...routed]));
+    log('preview', `routed ${hostname}`);
+  } else {
+    log('preview', `cloudflared route dns failed for ${hostname}: ${r.stderr ?? r.stdout ?? 'unknown'}`);
+  }
+}
+
 async function syncTunnel(ctx: Ctx): Promise<void> {
   const yml = path.join(ctx.cfg.qaHome, 'cloudflared.yml');
   const entries = [...ctx.state.previews.values()].filter((p) => p.hostname !== null);
@@ -452,31 +525,7 @@ async function syncTunnel(ctx: Ctx): Promise<void> {
   const changed = !fs.existsSync(yml) || fs.readFileSync(yml, 'utf8') !== desired;
   if (changed) fs.writeFileSync(yml, desired);
 
-  // `cloudflared tunnel route dns` once per new hostname (persisted set = idempotent)
-  const routedPath = path.join(ctx.cfg.qaHome, 'routed-hostnames.json');
-  let routed: Set<string>;
-  try {
-    routed = new Set(JSON.parse(fs.readFileSync(routedPath, 'utf8')) as string[]);
-  } catch {
-    routed = new Set();
-  }
-  for (const p of entries) {
-    if (!p.hostname || routed.has(p.hostname)) continue;
-    if (refusesToServe(ctx, p.hostname)) {
-      log('preview', `REFUSING to route ${p.hostname} — that is a production hostname`);
-      continue;
-    }
-    const r = await execa('cloudflared', ['tunnel', 'route', 'dns', ctx.cfg.cfTunnelName, p.hostname], {
-      reject: false,
-      timeout: 60_000,
-    });
-    if (r.exitCode === 0 || /already exists/i.test(`${r.stdout ?? ''}${r.stderr ?? ''}`)) {
-      routed.add(p.hostname);
-    } else {
-      log('preview', `cloudflared route dns failed for ${p.hostname}: ${r.stderr ?? r.stdout ?? 'unknown'}`);
-    }
-  }
-  fs.writeFileSync(routedPath, JSON.stringify([...routed]));
+  for (const p of entries) if (p.hostname) await ensureDns(ctx, p.hostname);
 
   if (cfChild && !changed) return; // already running the right config
   if (cfChild) {

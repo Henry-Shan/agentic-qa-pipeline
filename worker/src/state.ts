@@ -43,6 +43,9 @@ export class WorkerState {
    *  is healthy — seconds later — so without this a reconcile and a wake request can
    *  both pass the "already running?" check and start two dev servers for one run. */
   readonly startingPreviews = new Set<number>();
+  /** Reports whose preview is mid-build/start — what the front door shows a
+   *  visitor while they wait, so "building" never looks like "broken". */
+  readonly startingReports = new Set<number>();
   private readonly askPendingReports = new Set<number>();
   /** Rate-limit cooldown: claim loop stays idle until this epoch-ms. */
   cooldownUntil = 0;

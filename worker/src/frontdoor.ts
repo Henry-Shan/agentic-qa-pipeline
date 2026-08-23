@@ -49,7 +49,7 @@ export function startFrontDoor(ctx: Ctx): http.Server | null {
 
     const handle = previewFor(ctx, reportId);
     if (handle) {
-      proxy(req, res, handle, publicHost);
+      proxy(ctx, req, res, handle, publicHost, reportId, waking);
       return;
     }
 
@@ -60,12 +60,21 @@ export function startFrontDoor(ctx: Ctx): http.Server | null {
       res.end('preview asleep');
       return;
     }
-    if (!waking.has(reportId)) {
+    // Already building (a fresh fix is compiled before it can be served) vs
+    // asleep (evicted, just needs starting). The wait is minutes in the first
+    // case and seconds in the second, and saying so is the difference between
+    // "working" and "broken" to whoever is staring at it.
+    const building = ctx.state.startingReports.has(reportId);
+    if (!building && !waking.has(reportId)) {
       waking.add(reportId);
       void wake(ctx, reportId).finally(() => waking.delete(reportId));
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(page('Starting this preview…', `Task #${reportId}'s dev server is booting. This can take a minute.`, true));
+    res.end(
+      building
+        ? page('Building this preview…', `Task #${reportId} is being compiled. This usually takes a few minutes — this page refreshes itself.`, true)
+        : page('Starting this preview…', `Task #${reportId} is waking up. This takes about a minute — this page refreshes itself.`, true),
+    );
   });
 
   // Next's HMR socket (/_next/webpack-hmr). Without this the client retries
@@ -131,7 +140,15 @@ function rewriteHeaders(
   return out;
 }
 
-function proxy(req: http.IncomingMessage, res: http.ServerResponse, handle: PreviewHandle, publicHost: string): void {
+function proxy(
+  ctx: Ctx,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  handle: PreviewHandle,
+  publicHost: string,
+  reportId: number,
+  waking: Set<number>,
+): void {
   const upstream = http.request(
     {
       host: '127.0.0.1',
@@ -152,9 +169,27 @@ function proxy(req: http.IncomingMessage, res: http.ServerResponse, handle: Prev
       pres.pipe(res);
     },
   );
-  upstream.on('error', (e: Error) => {
+  upstream.on('error', (e: Error & { code?: string }) => {
     if (res.headersSent) {
       res.destroy();
+      return;
+    }
+    // The dev server died without the worker noticing — it is a detached process,
+    // so a crash, a kill, or a machine that slept all leave a handle pointing at
+    // a port nobody is listening on. Serving a 502 here is what makes a
+    // recoverable preview look broken. Drop the stale handle and put the visitor
+    // on the same waiting page as any asleep preview; the wake restarts it.
+    const dead = e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET' || e.code === 'EHOSTUNREACH';
+    if (dead) {
+      ctx.state.previews.delete(handle.runId);
+      void ctx.db.updateRun(handle.runId, { preview_status: 'down' }).catch(() => undefined);
+      log('preview', `task ${reportId}: dev server on ${handle.port} is gone — restarting it`);
+      if (!waking.has(reportId)) {
+        waking.add(reportId);
+        void wake(ctx, reportId).finally(() => waking.delete(reportId));
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(page('Starting this preview…', `Task #${reportId} is waking up. This takes about a minute — this page refreshes itself.`, true));
       return;
     }
     res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
