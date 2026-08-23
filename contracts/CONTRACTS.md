@@ -275,6 +275,24 @@ choice via `POST /api/enroll` (`{code?, name}`), and ingest copies it into
 
 `qa_runs.phase` (live pipeline label): `starting | grounding | testing | implementing | verifying | feature_test | pr | preview | done`
 
+The **original report** renders the tester's own words as markdown (`react-markdown` +
+`remark-gfm`), not as a single paragraph. Reports are routinely specs — headings, tables of
+states and hex values — and a colour table is only legible AS a table. Raw HTML stays
+disabled: the text is untrusted, so it is rendered as markup, never executed as markup.
+
+`normalizeMarkdown()` first puts back the blank lines a paste lost. Markdown needs a blank
+line to close a block, and a table with no blank line after it SWALLOWS the following prose
+and the next table — three blocks render as one wrong table (observed on task 46). Breaks are
+inserted only around tables and before headings, and never inside a fence. 7 cases.
+
+The section also shows what was previously collected but never displayed: the questionnaire
+answers (`done_when`, `reproduce_as`, `constraints`) and **what the tester did** — the
+`click_trail` written out as numbered steps ("clicked Notebook", "typed \"12\" into Amount of
+Gelatin"), with the route shown only when it changes. That data already drove the replay's
+step markers; without it in words, the only way to learn what was clicked was to scrub a
+recording. The description is full width, with screenshots as a thumbnail row beneath, so a
+wide table has the room to stay a table.
+
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
 
 The `preview` pill reads the RUN, not just the report: `qa_reports.status = 'preview'` only
