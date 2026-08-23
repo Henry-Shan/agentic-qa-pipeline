@@ -431,7 +431,7 @@ export function TaskView({
       <div className="mt-5 grid gap-5 md:grid-cols-[3fr_2fr]">
         <div className="min-w-0">
           {blocked ? (
-            <NeedsHumanCard report={report} event={needsHuman} />
+            <NeedsHumanCard report={report} event={needsHuman} run={run} events={events} />
           ) : null}
           {examination ? <ExaminationCard exam={examination} /> : null}
           {run?.grounding?.length ? (

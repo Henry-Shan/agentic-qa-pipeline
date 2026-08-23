@@ -293,6 +293,26 @@ step markers; without it in words, the only way to learn what was clicked was to
 recording. The description is full width, with screenshots as a thumbnail row beneath, so a
 wide table has the room to stay a table.
 
+**Needs-a-human card must answer two questions**: what went wrong, and what to do. When the
+worker wrote a `needs_human` summary it answers both — the code lane writes
+"What went wrong / What I analyzed / What to do (numbered)", the infra lane writes a runbook
+("Confirm it / Fix it (numbered) / Verify / Careful"). When it did NOT, the card used to read
+only "the details are in Claude's log below": the reader was told they were needed and not
+what for, which is the whole point of the card.
+
+A run that died mid-flight never reaches the hand-off step, so the card now diagnoses from
+the run, most specific first:
+
+| condition | told to the reader |
+|---|---|
+| stop reason or last error says the process vanished / slept / worker restarted | nothing is wrong with the task, no fix was attempted — re-run, or resume in the Terminal |
+| a `question` event is the last thing posted | quotes the question — answer in "Talk to Claude" |
+| any other `stopped_reason` | shows the reason — read the log, reply, or re-run |
+| nothing at all | says the run ended before it could write a summary |
+
+Re-run sits IN the card: it is the answer for the interrupted case, and hunting for it
+elsewhere on the page is friction at exactly the wrong moment. 7 branch cases.
+
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
 
 The `preview` pill reads the RUN, not just the report: `qa_reports.status = 'preview'` only
