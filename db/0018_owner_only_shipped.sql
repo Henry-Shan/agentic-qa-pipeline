@@ -23,6 +23,8 @@ declare
   claims json;
   jwt_role text;
   jwt_email text;
+  -- keep in step with NEXT_PUBLIC_QA_OWNER_EMAILS on the site
+  owners text[] := array['admin@example.com', 'the host app@example.com'];
 begin
   if new.status = 'shipped' and coalesce(old.status, '') <> 'shipped' then
     claims := nullif(current_setting('request.jwt.claims', true), '')::json;
@@ -31,7 +33,7 @@ begin
     end if;
     jwt_role := coalesce(claims ->> 'role', '');
     jwt_email := lower(coalesce(claims ->> 'email', ''));
-    if jwt_role <> 'service_role' and jwt_email <> 'admin@example.com' then
+    if jwt_role <> 'service_role' and not (jwt_email = any(owners)) then
       raise exception 'only the QA owner may mark a report shipped (got %)', coalesce(nullif(jwt_email, ''), jwt_role);
     end if;
   end if;

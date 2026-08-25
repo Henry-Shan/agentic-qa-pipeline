@@ -454,13 +454,24 @@ export async function stopAllPreviews(ctx: Ctx): Promise<void> {
 
 let cfChild: ChildProcess | null = null;
 
-/** Builds run one at a time. A worker restart can want five at once, and five
- *  concurrent bundlers on one laptop finish later than five in a row while making
- *  everything else on the machine crawl. */
-let buildQueue: Promise<unknown> = Promise.resolve();
+/**
+ * Bounded build concurrency.
+ *
+ * Five at once thrashes a laptop and finishes later than five in a row. One at a
+ * time is safe but serialises a backlog: after the symlink fix every worktree
+ * needs one materialise-and-build (~15 min), and strictly serial that is hours
+ * during which every preview reads "waiting". Two keeps the machine responsive
+ * while halving the queue — the phases interleave, since materialising is
+ * disk-bound and building is CPU-bound.
+ */
+const BUILD_SLOTS = Math.max(1, Number(process.env.PREVIEW_BUILD_CONCURRENCY ?? 2) || 2);
+const buildLanes: Array<Promise<unknown>> = Array.from({ length: BUILD_SLOTS }, () => Promise.resolve());
+let nextLane = 0;
 function queueBuild<T>(fn: () => Promise<T>): Promise<T> {
-  const next = buildQueue.then(fn, fn);
-  buildQueue = next.catch(() => undefined);
+  const lane = nextLane;
+  nextLane = (nextLane + 1) % BUILD_SLOTS;
+  const next = (buildLanes[lane] ?? Promise.resolve()).then(fn, fn);
+  buildLanes[lane] = next.catch(() => undefined);
   return next;
 }
 

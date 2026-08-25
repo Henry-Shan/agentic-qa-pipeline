@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { guardReport } from '@/lib/report-gone';
-import { MarkShipped } from '@/components/task/mark-shipped';
 import type { MessageKind, ReportStatus } from '@/lib/types';
 
 interface Props {
@@ -52,11 +51,8 @@ export function SteerBox({ reportId, status, assignee, userEmail, onReportGone }
     setNote(confirmation);
   }
 
-  const canShip = status === 'verified';
-
   return (
     <div className="card">
-      {canShip ? <MarkShipped reportId={reportId} userEmail={userEmail} onReportGone={onReportGone} /> : null}
       {canVerdict ? (
         <div className="mb-3 border-b border-line-soft pb-3">
           <div className="text-[13.5px] font-semibold">Did this fix it?</div>

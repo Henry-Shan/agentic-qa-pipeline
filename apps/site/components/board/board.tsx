@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
@@ -19,6 +19,8 @@ function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
   }
   return map;
 }
+
+const TAB_KEY = 'qa.board.tab';
 
 const EMPTY: Record<TabKey, string> = {
   fixing: 'Nothing being worked on — reports filed from the widget inside example.com land here first.',
@@ -43,7 +45,24 @@ export function Board({
   const [needsHuman, setNeedsHuman] = useState<Record<number, QaEvent>>(() =>
     latestNeedsHuman(initialNeedsHuman),
   );
-  const [tab, setTab] = useState<TabKey>('fixing');
+  // Remember which bucket you were in. Opening a task and pressing "← All
+  // reports" is the most common round trip on this board, and landing back on
+  // Fixing every time silently discards where you were — you have to re-find the
+  // list you were working through. sessionStorage rather than a URL param so the
+  // plain "/" link the task page uses still returns you to the right place.
+  const [tab, setTabState] = useState<TabKey>('fixing');
+  useEffect(() => {
+    const saved = sessionStorage.getItem(TAB_KEY);
+    if (saved && TABS.some((t) => t.key === saved)) setTabState(saved as TabKey);
+  }, []);
+  const setTab = (next: TabKey) => {
+    setTabState(next);
+    try {
+      sessionStorage.setItem(TAB_KEY, next);
+    } catch {
+      // private mode / storage disabled — the tab just does not persist
+    }
+  };
   // Display name decides "Assigned to me" membership (contracts § "Assigned to me").
   const myName = useDisplayName(userEmail);
 

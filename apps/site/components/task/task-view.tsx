@@ -25,6 +25,7 @@ import { PreviewEmbed } from "@/components/task/preview-embed";
 import { ReplayPlayer } from "@/components/task/replay-player";
 import { ResultCard } from "@/components/task/result-card";
 import { RerunTask } from "@/components/task/rerun-task";
+import { MarkShipped } from "@/components/task/mark-shipped";
 import { SteerBox } from "@/components/task/steer-box";
 import { TerminalPanel } from "@/components/task/terminal-panel";
 import { CopySession } from "@/components/task/copy-session";
@@ -432,6 +433,16 @@ export function TaskView({
         <div className="min-w-0">
           {blocked ? (
             <NeedsHumanCard report={report} event={needsHuman} run={run} events={events} />
+          ) : null}
+          {/* A verified task's whole remaining question is "did this ship?", so it
+              belongs at the top of the task — not at the bottom of the right
+              column inside the steer card, where it was easy to miss entirely. */}
+          {report.status === "verified" ? (
+            <MarkShipped
+              reportId={report.id}
+              userEmail={userEmail}
+              onReportGone={() => setGone(true)}
+            />
           ) : null}
           {examination ? <ExaminationCard exam={examination} /> : null}
           {run?.grounding?.length ? (
