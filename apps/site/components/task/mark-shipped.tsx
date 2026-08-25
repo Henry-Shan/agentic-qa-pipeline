@@ -18,18 +18,24 @@
 // the API; db/0018's trigger is what refuses that.
 
 import { useState } from 'react';
+import { useDisplayName } from '@/lib/display-names';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { guardReport } from '@/lib/report-gone';
 
-/** Comma-separated; keep in step with db/0018's list. */
-const OWNERS = (process.env.NEXT_PUBLIC_QA_OWNER_EMAILS ?? 'admin@example.com,the host app@example.com')
-  .split(',')
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
-
-export function isOwner(email: string | null | undefined): boolean {
-  return OWNERS.includes((email ?? '').trim().toLowerCase());
-}
+/**
+ * Ownership is a PERSON, not an address.
+ *
+ * Henry signs in from more than one account — `albatross.the host app+aa-dep-head-1@`
+ * and `+gg-member-1@` both resolve to the display name "owner" — so an email
+ * allowlist gets this wrong, and did: the first version keyed on
+ * admin@example.com, which is nobody's login, so the owner saw no button at all
+ * and reasonably concluded it had not been built.
+ *
+ * `qa_allowed_emails.display_name` already maps every account to its person, and
+ * is what the rest of the board shows. Key on that and adding an account for the
+ * same person needs no code change. db/0018 checks the same column.
+ */
+const OWNER_NAME = (process.env.NEXT_PUBLIC_QA_OWNER_NAME ?? 'owner').trim().toLowerCase();
 
 export function MarkShipped({
   reportId,
@@ -42,7 +48,8 @@ export function MarkShipped({
 }) {
   const [armed, setArmed] = useState(false);
   const [state, setState] = useState<'idle' | 'sending' | 'failed'>('idle');
-  const owner = isOwner(userEmail);
+  const viewer = useDisplayName(userEmail);
+  const owner = viewer.trim().toLowerCase() === OWNER_NAME;
 
   async function ship() {
     setState('sending');
@@ -81,12 +88,12 @@ export function MarkShipped({
           <>
             <button
               disabled
-              title={`Only ${OWNERS.join(' or ')} can mark a task shipped`}
+              title={`Only ${OWNER_NAME} can mark a task shipped`}
               className="h-9 rounded-lg border border-line px-3.5 text-[12.5px] font-semibold text-ink-3 opacity-60"
             >
               Mark as shipped
             </button>
-            <span className="text-[11.5px] text-ink-3">Only {OWNERS[0]} can do this.</span>
+            <span className="text-[11.5px] text-ink-3">Only {OWNER_NAME} can do this.</span>
           </>
         ) : armed ? (
           <>
