@@ -4,7 +4,7 @@ import net from 'node:net';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { execa } from 'execa';
-import type { QaRun } from './db';
+import type { PreviewStatus, QaRun } from './db';
 import { examine } from './examine';
 import { maxPreviews } from './settings';
 import type { Ctx, PreviewHandle } from './state';
@@ -80,6 +80,17 @@ async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
 }
 
 /** On pr_ready: start the worktree's dev server and publish the preview URL. */
+/**
+ * Record what the preview is doing and WHY, for whoever is looking at the task.
+ *
+ * `preview_status` alone renders as "Preview waiting", which is true and useless:
+ * evicted, building, queued and broken all look identical. The reason already
+ * exists at every one of these points — it was only ever going into the log.
+ */
+async function setPreviewState(ctx: Ctx, runId: number, status: PreviewStatus, detail: string): Promise<void> {
+  await ctx.db.updateRun(runId, { preview_status: status, preview_detail: detail }).catch(() => undefined);
+}
+
 export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Promise<void> {
   // `previews` is only populated once the server answers, which is seconds (or a
   // build) away — so the map alone cannot stop a reconcile and a wake request from
@@ -106,7 +117,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
     });
     return;
   }
-  await ctx.db.updateRun(run.id, { preview_status: 'starting' });
+  await setPreviewState(ctx, run.id, 'starting', 'Getting this preview ready.');
   const port = await findFreePort(ctx);
   if (port === null) {
     await ctx.db.updateRun(run.id, { preview_status: 'down' });
@@ -217,7 +228,12 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
       await syncTunnel(ctx);
     }
   }
-  await ctx.db.updateRun(run.id, { preview_status: 'live', preview_url: url, preview_port: port });
+  await ctx.db.updateRun(run.id, {
+    preview_status: 'live',
+    preview_url: url,
+    preview_port: port,
+    preview_detail: built ? 'Running the built version of the fix.' : 'Running in dev mode — the production build failed, so pages load slowly.',
+  });
   // Health wait can take up to 120s: only pr_ready may advance to preview, so a
   // late-healthy dev server never regresses verified/stopped/blocked.
   await ctx.db.updateReportIfStatus(run.report_id, 'pr_ready', { status: 'preview' });
@@ -256,7 +272,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   // built, so reuse it — that is what makes wake-from-sleep quick. But only if
   // that build points at the right backend: builds made before this check exists,
   // or made while the env was wrong, must not be handed back.
-  if (waking && fs.existsSync(buildId) && bundleTargets(worktree, apiBase)) return true;
+  if (waking && fs.existsSync(buildId) && bundleTargets(worktree, mustBeInBundle(ctx, apiBase))) return true;
 
   // Belt and braces on the env, because getting this wrong is silent: the build
   // succeeds and the app calls the wrong backend.
@@ -277,11 +293,13 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   }
   log('preview', `run ${run.id}: building preview (${ctx.cfg.previewBuildCmd})`);
   await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: 'building preview…' });
+  await setPreviewState(ctx, run.id, 'starting', 'Queued to build. Builds run two at a time, so this waits its turn.');
   // Timed inside the queue: including the wait would report a 5-minute build for
   // something that took 80 seconds behind three others.
   let started = Date.now();
   const r = await queueBuild(async () => {
     await ensureDeps(ctx, worktree, run.id);
+    await setPreviewState(ctx, run.id, 'starting', 'Compiling the fixed build. This takes a few minutes the first time.');
     started = Date.now();
     return execa('bash', ['-c', ctx.cfg.previewBuildCmd], {
       cwd: worktree,
@@ -295,13 +313,13 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   if (r.exitCode === 0 && fs.existsSync(buildId)) {
     // A build that silently baked in the wrong backend is worse than no build:
     // it looks fine and every request is refused. Prove the URL is in the bundle.
-    if (!bundleTargets(worktree, apiBase)) {
-      log('preview', `run ${run.id}: built in ${secs}s but the bundle does not point at ${apiBase} — serving dev mode`);
+    if (!bundleTargets(worktree, mustBeInBundle(ctx, apiBase))) {
+      log('preview', `run ${run.id}: built in ${secs}s but the bundle is missing ${mustBeInBundle(ctx, apiBase).join(' / ')} — serving dev mode`);
       await ctx.db.insertEvent({
         report_id: run.report_id,
         run_id: run.id,
         type: 'system',
-        message: `preview build did not pick up the API URL (expected ${apiBase}) — falling back to the dev server`,
+        message: `preview build did not inline what it needs (expected ${mustBeInBundle(ctx, apiBase).join(' and ')}) — falling back to the dev server`,
       });
       return false;
     }
@@ -387,8 +405,20 @@ function depsAreLocal(worktree: string): boolean {
   }
 }
 
-/** Does the built client bundle actually call `apiBase`? */
-function bundleTargets(worktree: string, apiBase: string): boolean {
+/**
+ * Does the built client bundle carry EVERY value the preview needs?
+ *
+ * Checking only the API URL was not enough: a build made before the worker
+ * supplied Supabase env still contained the right `/__api` base, so the reuse
+ * path accepted it — and served an app whose login page reads "Supabase is not
+ * configured for the web app", because NEXT_PUBLIC_SUPABASE_URL was never
+ * inlined. Anything the preview cannot run without belongs in this check, or a
+ * stale build survives forever.
+ */
+function bundleTargets(worktree: string, values: string[]): boolean {
+  const wanted = values.filter(Boolean);
+  if (wanted.length === 0) return true;
+  const found = new Set<string>();
   const dir = path.join(worktree, 'apps/web/.next/static/chunks');
   let files: string[];
   try {
@@ -400,7 +430,9 @@ function bundleTargets(worktree: string, apiBase: string): boolean {
     const full = path.join(dir, f);
     try {
       if (!fs.statSync(full).isFile() || !full.endsWith('.js')) continue;
-      if (fs.readFileSync(full, 'utf8').includes(apiBase)) return true;
+      const text = fs.readFileSync(full, 'utf8');
+      for (const value of wanted) if (text.includes(value)) found.add(value);
+      if (found.size === wanted.length) return true;
     } catch {
       // unreadable chunk — keep looking
     }
@@ -430,7 +462,7 @@ export async function stopPreview(ctx: Ctx, handle: PreviewHandle, reason: strin
     }
   }
   ctx.state.previews.delete(handle.runId);
-  await ctx.db.updateRun(handle.runId, { preview_status: 'down' });
+  await setPreviewState(ctx, handle.runId, 'down', explainStop(ctx, reason));
   await ctx.db.insertEvent({ report_id: handle.reportId, run_id: handle.runId, type: 'system', message: `preview stopped: ${reason}` });
   log('preview', `stopped preview for run ${handle.runId}: ${reason}`);
   if (ctx.cfg.previewMode === 'tunnel') await syncTunnel(ctx);
@@ -520,6 +552,29 @@ export const API_PREFIX = '/__api';
  * that inherits them answers every call with ERR_CONNECTION_REFUSED. Production
  * serves both from the same API host, so both point at the same place here.
  */
+/** Turn an internal stop reason into something worth reading on the task page. */
+function explainStop(ctx: Ctx, reason: string): string {
+  if (reason.startsWith('evicted')) {
+    return `Stopped to free memory — the machine keeps ${maxPreviews(ctx)} previews running at once and this was the least recently started. Opening the link starts it again, which takes about a minute.`;
+  }
+  if (reason.includes('worker shutting down')) {
+    return 'Stopped because the worker restarted. Opening the link starts it again.';
+  }
+  if (reason.includes('process is gone')) {
+    return 'The dev server stopped on its own — usually the Mac went to sleep. Opening the link starts it again.';
+  }
+  if (reason.startsWith('superseded')) {
+    return 'Replaced by a newer run for this task.';
+  }
+  if (reason === 'shipped') return 'Shipped — the preview was torn down.';
+  return reason;
+}
+
+/** The values a served preview is broken without. */
+function mustBeInBundle(ctx: Ctx, apiBase: string): string[] {
+  return [apiBase, ctx.cfg.previewSupabaseUrl].filter(Boolean);
+}
+
 function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
   const env: Record<string, string> = {
     NEXT_PUBLIC_API_BASE_URL: apiBase,

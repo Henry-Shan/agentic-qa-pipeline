@@ -85,6 +85,7 @@ export interface QaRun {
   pr_number: number | null;
   preview_url: string | null;
   preview_port: number | null;
+  preview_detail?: string | null;
   preview_status: PreviewStatus;
   grounding: GroundingChip[] | null;
   files_changed: FileChanged[] | null;

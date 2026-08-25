@@ -761,6 +761,23 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
     down, so the next request wakes it instead of proxying into a dead port.
   Caching what the row *probably* says does not work: that cache goes stale exactly the way
   the row does (tried, and it failed the test — the correction never fired).
+- **A waiting preview says WHY** (`qa_runs.preview_detail`, db/0019). `preview_status` alone
+  renders as "Preview waiting", which is true and useless — evicted, queued, building and
+  broken all look identical, and the real reason was only ever going to the worker log that
+  nobody reading the board can see. The worker writes a sentence at every transition:
+  | situation | what the task page says |
+  |---|---|
+  | evicted by the cap | "Stopped to free memory — the machine keeps N previews running at once and this was the least recently started. Opening the link starts it again…" |
+  | worker restarted | "Stopped because the worker restarted. Opening the link starts it again." |
+  | dev server vanished | "The dev server stopped on its own — usually the Mac went to sleep." |
+  | waiting to build | "Queued to build. Builds run two at a time, so this waits its turn." |
+  | building | "Compiling the fixed build. This takes a few minutes the first time." |
+  | superseded | "Replaced by a newer run for this task." |
+  | live, but dev mode | "Running in dev mode — the production build failed, so pages load slowly." (amber) |
+  The build-reuse check (`bundleTargets`) verifies EVERY value a preview cannot run without —
+  the API base AND the Supabase URL — because checking only the API base let a build made
+  before the worker supplied Supabase env be reused forever, serving an app whose login page
+  read "Supabase is not configured".
 - **A preview never shows an error page for a recoverable state.** Three cases used to:
   - *no DNS record yet* — the hostname was only routed once a preview went live, so a
     brand-new task's URL did not resolve at all and the visitor got the browser's "server

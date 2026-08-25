@@ -386,6 +386,20 @@ export function TaskView({
       </div>
       <Pipeline status={report.status} detail />
 
+      {/* "Preview waiting" is true and useless on its own — evicted, building,
+          queued and broken all render identically. The worker records why at
+          every transition (db/0019); this is where the reader asks the question,
+          so this is where the answer belongs. */}
+      {report.status === "preview" && !previewLive && run?.preview_detail ? (
+        <p className="mt-2 text-[12.5px] leading-[1.55] text-ink-2">
+          <span className="font-semibold text-ink">Why it is waiting: </span>
+          {run.preview_detail}
+        </p>
+      ) : null}
+      {previewLive && run?.preview_detail?.startsWith("Running in dev mode") ? (
+        <p className="mt-2 text-[12.5px] leading-[1.55] text-amber">{run.preview_detail}</p>
+      ) : null}
+
       <ReportContext report={report} />
 
       {/* Hero — full content width, top-center, a segmented switch over
