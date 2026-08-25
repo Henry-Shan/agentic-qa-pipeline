@@ -42,6 +42,28 @@ async function findFreePort(ctx: Ctx): Promise<number | null> {
   return null;
 }
 
+/**
+ * Who is actually listening on `port`, if anyone.
+ *
+ * This is the authoritative liveness test for a preview, and the pid file is
+ * not. Starting a preview creates TWO processes — the `npm` wrapper we record,
+ * and the `next-server` it spawns — and the wrapper can die while the server
+ * keeps serving (routine after the Mac sleeps). Asking "is the recorded pid
+ * alive?" then declares a working preview dead, the row is marked down, and the
+ * site shows "Preview waiting" over a preview that answers every request. So ask
+ * the port instead, and take the pid FROM the listener so a later stop still
+ * reaches the right process.
+ */
+export async function listeningPid(port: number): Promise<number | null> {
+  const r = await execa('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { reject: false, timeout: 10_000 });
+  if (r.exitCode !== 0) return null;
+  for (const line of (r.stdout ?? '').split('\n')) {
+    const pid = Number(line.trim());
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  }
+  return null;
+}
+
 async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -162,6 +184,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
   const handle: PreviewHandle = {
     runId: run.id,
     reportId: run.report_id,
+
     worktree: run.worktree,
     port,
     pid,

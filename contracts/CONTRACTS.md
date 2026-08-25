@@ -717,6 +717,22 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   has no `replay_path`. An After is the tester's steps re-executed; with no steps, whatever
   the embed captured is just a browsing session sitting in the hero labelled as a comparison
   with nothing to compare against.
+- **`preview_status` is re-derived from the port, never trusted.** The row is what the site
+  reads — pill, link and Live tab all come from it, and none of them ask the preview itself.
+  Two bugs followed from that:
+  - *the liveness check tested the wrong process.* Starting a preview creates an `npm`
+    wrapper and the `next-server` it spawns; only the wrapper's pid was recorded, and it
+    routinely dies while the server keeps serving (normal after the Mac sleeps). `reconcile`
+    then declared a working preview dead. It now asks `listeningPid(port)` — the one thing
+    that cannot lie — and stores the LISTENER's pid so a later stop reaches the right process.
+  - *nothing re-checked the row while the worker ran.* The check happened only at boot, so a
+    worker up for days carried a wrong value indefinitely: task 60 read "Preview waiting" for
+    two days over a preview that answered every request, after two writes raced across a
+    restart. `preview-sync.ts` re-derives the truth every 60s in both directions — serving
+    but marked down → corrected to live; gone but marked live → handle dropped and marked
+    down, so the next request wakes it instead of proxying into a dead port.
+  Caching what the row *probably* says does not work: that cache goes stale exactly the way
+  the row does (tried, and it failed the test — the correction never fired).
 - **A preview never shows an error page for a recoverable state.** Three cases used to:
   - *no DNS record yet* — the hostname was only routed once a preview went live, so a
     brand-new task's URL did not resolve at all and the visitor got the browser's "server
