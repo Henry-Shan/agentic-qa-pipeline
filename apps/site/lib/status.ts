@@ -1,34 +1,38 @@
 import type { ReportStatus } from '@/lib/types';
 
-// `mine` is membership-based (assignee / blocked-and-filed-by-me), not a status
-// bucket — `tabOf` never returns it; the board filters that tab separately.
-export type TabKey = 'all' | 'mine' | 'fixing' | 'preview' | 'queued' | 'shipped';
+// Four buckets, and every report lands in exactly one — so there is no "All"
+// tab to fall through to and nothing can hide. The names describe who the task
+// is waiting on, not the machine's internal state:
+//
+//   Fixing    the machine has it (queued counts — it is waiting to be picked up)
+//   Done      the machine is finished; it is waiting on YOUR judgment, whether
+//             that finished as a PR, a block, or a failure
+//   Verified  you said it works
+//   Shipped   the PR is merged
+export type TabKey = 'fixing' | 'done' | 'verified' | 'shipped';
 
 export const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
-  { key: 'all', label: 'All' },
-  { key: 'mine', label: 'Assigned to me' },
   { key: 'fixing', label: 'Fixing' },
-  { key: 'preview', label: 'Preview' },
-  { key: 'queued', label: 'Queued' },
+  { key: 'done', label: 'Done' },
+  { key: 'verified', label: 'Verified' },
   { key: 'shipped', label: 'Shipped' },
 ];
 
-/** Board filter bucket for a status; null → visible only under "All". */
-export function tabOf(status: ReportStatus): Exclude<TabKey, 'all'> | null {
+/** Board bucket for a status. Total, by design: every status has a home. */
+export function tabOf(status: ReportStatus): TabKey {
   switch (status) {
+    case 'queued':
     case 'running':
     case 'rework':
       return 'fixing';
-    case 'pr_ready':
-    case 'preview':
-      return 'preview';
-    case 'queued':
-      return 'queued';
     case 'verified':
+      return 'verified';
     case 'shipped':
       return 'shipped';
+    // pr_ready · preview · blocked · failed · stopped · cancelled — the machine
+    // is done with it either way, and each needs a person to look.
     default:
-      return null;
+      return 'done';
   }
 }
 

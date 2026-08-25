@@ -315,6 +315,25 @@ the run, most specific first:
 Re-run sits IN the card: it is the answer for the interrupted case, and hunting for it
 elsewhere on the page is friction at exactly the wrong moment. 7 branch cases.
 
+**Board buckets — four, total, no "All".** Every status lands in exactly one, so nothing can
+hide: `Fixing` (queued · running · rework — the machine has it), `Done` (pr_ready · preview ·
+blocked · failed · stopped · cancelled — the machine is finished and it is waiting on a
+person), `Verified`, `Shipped`. The names say who is waiting, not what the machine is doing.
+
+**Verified → Shipped is owner-only.** The worker ships a task by itself when the PR merges;
+"Pushed to GitHub?" covers the gap (merged another way, or no PR). The site hides the button
+from non-owners (`NEXT_PUBLIC_QA_OWNER_EMAIL`, default `admin@example.com`) — but hiding is
+not enforcement, because RLS on `qa_reports` is `qa_is_tester()` for everything. `db/0018`
+adds the trigger that refuses it: a non-owner JWT raises, the worker's service role passes,
+and a direct connection (psql, migrations) passes so the table stays maintainable.
+*Verified all three: a non-owner tester was refused by name with the row unchanged; the owner
+and the service role both succeeded.*
+
+**One send button.** "Still broken" and "Send to Claude" both resumed the same session with
+the same note — the only difference being that a verdict also flags `rework`. The task page
+now has one, and the report's own status picks the kind (`verdict_broken` at pr_ready/preview,
+otherwise `steer`). Assignment is gone from the action row.
+
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
 
 The `preview` pill reads the RUN, not just the report: `qa_reports.status = 'preview'` only
@@ -608,6 +627,15 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `claude --resume <sid> -p "<note + continue instructions>"` same env/flags (new attempt on same
   `qa_runs` row lineage: attempt+1). `steer|verdict_broken` after done → same resume path, report
   `rework`. `verdict_fixed` → report `verified` + event.
+- **Worktree dependencies must be REAL and local.** Worktrees are created with `node_modules`
+  symlinked into the runner checkout (1011 of ~1100 packages) to avoid a 1.6 GB install per
+  task. Turbopack rejects that: it resolves `next` to its real path, infers THAT as the
+  workspace root, and refuses to compile anything outside it — so every preview build failed
+  and silently fell back to dev mode, the 19x-heavier thing the build exists to avoid.
+  `ensureDeps()` checks the exact condition that matters — does `next` resolve from `apps/web`
+  to a path INSIDE the worktree — then materialises with `cp -Rc` (APFS clone: copy-on-write,
+  cheap) and runs `npm install` to reconcile branch-added dependencies. Both worktree layouts
+  (root-hoisted and apps/web) pass the check untouched.
 - **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree, build first
   (`PREVIEW_BUILD_CMD`, default `npx turbo run build --filter=web`) then
   `npm --prefix apps/web run start -- --port <p>`.

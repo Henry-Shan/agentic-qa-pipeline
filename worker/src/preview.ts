@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { execa } from 'execa';
 import type { QaRun } from './db';
@@ -279,7 +280,8 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   // Timed inside the queue: including the wait would report a 5-minute build for
   // something that took 80 seconds behind three others.
   let started = Date.now();
-  const r = await queueBuild(() => {
+  const r = await queueBuild(async () => {
+    await ensureDeps(ctx, worktree, run.id);
     started = Date.now();
     return execa('bash', ['-c', ctx.cfg.previewBuildCmd], {
       cwd: worktree,
@@ -320,6 +322,69 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
     message: `preview build failed — falling back to the slower dev server. ${tail}`,
   });
   return false;
+}
+
+/**
+ * Make the worktree's dependencies real and its own.
+ *
+ * Worktrees are created with their `node_modules` SYMLINKED into the runner
+ * checkout — 1011 of ~1100 packages — which is a sensible way to avoid a 1.6 GB
+ * install per task, and worked fine while previews ran `next dev`.
+ *
+ * Turbopack does not accept it. It resolves `next` to its real path, infers THAT
+ * directory as the workspace root, and then refuses to compile anything outside
+ * it: "files outside of the project directory will not be compiled". So every
+ * preview build failed and silently fell back to dev mode — the 19x-heavier
+ * thing built precisely to avoid.
+ *
+ * Materialising with `cp -c` is an APFS clone: copy-on-write, so the 1.6 GB costs
+ * seconds and almost no disk. Then `npm install` reconciles what THIS branch adds
+ * (a task that adds a dependency — `xlsx`, say — is not in the runner's tree).
+ * Measured on a real worktree: 25s clone + 13s install, once per worktree.
+ */
+async function ensureDeps(ctx: Ctx, worktree: string, runId: number): Promise<void> {
+  if (depsAreLocal(worktree)) return;
+
+  const started = Date.now();
+  const src = path.join(ctx.cfg.runnerRepo, 'node_modules');
+  if (fs.existsSync(src)) {
+    const nodeModules = path.join(worktree, 'node_modules');
+    const clone = await execa('bash', ['-c', `rm -rf ${shq(nodeModules)} && cp -Rc ${shq(src)} ${shq(nodeModules)}`], {
+      reject: false,
+      timeout: 10 * 60_000,
+    });
+    if (clone.exitCode !== 0) {
+      log('preview', `run ${runId}: dependency clone failed (${clone.stderr ?? ''}) — falling back to a plain install`);
+    }
+  }
+  // Reconciles what THIS branch adds, and covers having nothing to clone from.
+  const install = await execa('npm', ['install', '--no-audit', '--no-fund'], {
+    cwd: worktree,
+    reject: false,
+    timeout: 20 * 60_000,
+  });
+  const secs = Math.round((Date.now() - started) / 1000);
+  if (install.exitCode === 0) log('preview', `run ${runId}: dependencies materialised in ${secs}s`);
+  else log('preview', `run ${runId}: npm install exited ${install.exitCode} after ${secs}s — building anyway`);
+}
+
+/**
+ * Is `next` resolvable from the app AND inside this worktree?
+ *
+ * That is exactly Turbopack's requirement, and it is not the same as "a
+ * node_modules exists". Worktrees come in two shapes — deps hoisted to the
+ * worktree root, or under apps/web — and both are fine as long as the resolved
+ * path stays inside the worktree. A symlink into the runner checkout resolves
+ * OUTSIDE it, which is the case that breaks the build.
+ */
+function depsAreLocal(worktree: string): boolean {
+  try {
+    const from = createRequire(path.join(worktree, 'apps/web', 'package.json'));
+    const resolved = fs.realpathSync(from.resolve('next/package.json'));
+    return resolved.startsWith(`${fs.realpathSync(worktree)}${path.sep}`);
+  } catch {
+    return false; // not resolvable at all → it needs installing
+  }
 }
 
 /** Does the built client bundle actually call `apiBase`? */

@@ -20,6 +20,13 @@ function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
   return map;
 }
 
+const EMPTY: Record<TabKey, string> = {
+  fixing: 'Nothing being worked on — reports filed from the widget inside example.com land here first.',
+  done: 'Nothing waiting on you.',
+  verified: 'Nothing verified yet — check a Done task and say whether it works.',
+  shipped: 'Nothing shipped yet — a task ships when its PR is merged.',
+};
+
 export function Board({
   initialReports,
   initialRuns,
@@ -36,7 +43,7 @@ export function Board({
   const [needsHuman, setNeedsHuman] = useState<Record<number, QaEvent>>(() =>
     latestNeedsHuman(initialNeedsHuman),
   );
-  const [tab, setTab] = useState<TabKey>('all');
+  const [tab, setTab] = useState<TabKey>('fixing');
   // Display name decides "Assigned to me" membership (contracts § "Assigned to me").
   const myName = useDisplayName(userEmail);
 
@@ -131,21 +138,10 @@ export function Board({
   // `live` already excludes cancelled; the filter dedupes by construction.
   const mine = live.filter((r) => inPersonalBand(r, userEmail, myName));
 
-  const counts: Record<TabKey, number> = {
-    all: live.length,
-    mine: mine.length,
-    fixing: 0,
-    preview: 0,
-    queued: 0,
-    shipped: 0,
-  };
-  for (const report of live) {
-    const key = tabOf(report.status);
-    if (key) counts[key]++;
-  }
+  const counts: Record<TabKey, number> = { fixing: 0, done: 0, verified: 0, shipped: 0 };
+  for (const report of live) counts[tabOf(report.status)]++;
 
-  const visible =
-    tab === 'all' ? live : tab === 'mine' ? mine : live.filter((r) => tabOf(r.status) === tab);
+  const visible = live.filter((r) => tabOf(r.status) === tab);
 
   return (
     <div>
@@ -179,9 +175,7 @@ export function Board({
 
       {visible.length === 0 ? (
         <div className="card py-10 text-center text-[13px] text-ink-3">
-          {tab === 'mine'
-            ? 'Nothing assigned to you — reports that block on a human land here.'
-            : 'Nothing here yet — reports filed from the widget inside example.com land on this board.'}
+          {EMPTY[tab]}
         </div>
       ) : (
         visible.map((report) => (
