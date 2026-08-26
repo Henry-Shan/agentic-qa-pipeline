@@ -18,12 +18,15 @@ function sane(v: number | undefined): number | null {
 
 export async function refreshSettings(ctx: Ctx): Promise<void> {
   const rows = await ctx.db.getSettings();
-  const next = { maxRuns: sane(rows['max_runs']), maxPreviews: sane(rows['max_previews']) };
+  const next = {
+    maxRuns: sane(rows['max_runs']),
+    maxPreviews: sane(rows['max_previews']),
+  };
   const prev = ctx.state.settings;
   if (next.maxRuns !== prev.maxRuns || next.maxPreviews !== prev.maxPreviews) {
-    ctx.state.settings = next;
-    log('settings', `qa_settings → max ${maxRuns(ctx)} runs / ${maxPreviews(ctx)} previews`);
+    log('settings', `qa_settings → max ${next.maxRuns ?? ctx.cfg.maxRuns} runs / ${next.maxPreviews ?? ctx.cfg.maxPreviews} previews`);
   }
+  ctx.state.settings = next;
 }
 
 export function startSettingsLoop(ctx: Ctx): NodeJS.Timeout {

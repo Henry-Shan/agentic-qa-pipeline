@@ -37,6 +37,18 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
 
   useEffect(() => () => detach(), [detach]);
 
+  // Attach as soon as the panel mounts — the terminal should already be there
+  // when you arrive, not one click away. The ref guards React's double-invoke
+  // in development so a single visit never opens two ptys. When no agent is
+  // listening this fails quietly into the "start an agent" state.
+  const autoAttempted = useRef(false);
+  useEffect(() => {
+    if (autoAttempted.current) return;
+    autoAttempted.current = true;
+    void attach();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
+  }, []);
+
   const attach = useCallback(async () => {
     if (phase === 'connecting' || phase === 'open') return;
     setPhase('connecting');
@@ -127,7 +139,11 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
       <div className="flex items-center gap-2 border-b border-line bg-stage px-3 py-2">
         <span className="text-[12.5px] font-medium">Terminal</span>
         <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">
-          {phase === 'open' ? 'live — Claude Code on this machine' : 'runs on your machine, never exposed'}
+          {phase === 'open'
+            ? 'live — Claude Code on this machine'
+            : phase === 'connecting'
+              ? 'connecting to the agent on this machine…'
+              : 'runs on your machine, never exposed'}
         </span>
         {phase === 'open' || phase === 'connecting' ? (
           <button type="button" onClick={detach} className="btn btn-quiet flex-none">
@@ -142,8 +158,7 @@ export function TerminalPanel({ reportId }: { reportId: number }) {
 
       {phase === 'idle' ? (
         <p className="px-3 py-6 text-center text-[12.5px] text-ink-3">
-          Opens a real terminal running <code className="font-mono">claude --resume</code> in this run’s
-          worktree — the same session, the same keys.
+          Detached. Attach again to reopen <code className="font-mono">claude</code> for this task.
         </p>
       ) : (
         <div ref={mountRef} className="h-[420px] w-full bg-[#1c1b19] px-2 py-2" />

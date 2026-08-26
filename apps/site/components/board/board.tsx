@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { useLive } from '@/lib/use-live';
@@ -20,6 +20,15 @@ function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
   return map;
 }
 
+const TAB_KEY = 'qa.board.tab';
+
+const EMPTY: Record<TabKey, string> = {
+  fixing: 'Nothing being worked on — reports filed from the widget inside example.com land here first.',
+  done: 'Nothing waiting on you.',
+  verified: 'Nothing verified yet — check a Done task and say whether it works.',
+  shipped: 'Nothing shipped yet — a task ships when its PR is merged.',
+};
+
 export function Board({
   initialReports,
   initialRuns,
@@ -36,7 +45,24 @@ export function Board({
   const [needsHuman, setNeedsHuman] = useState<Record<number, QaEvent>>(() =>
     latestNeedsHuman(initialNeedsHuman),
   );
-  const [tab, setTab] = useState<TabKey>('all');
+  // Remember which bucket you were in. Opening a task and pressing "← All
+  // reports" is the most common round trip on this board, and landing back on
+  // Fixing every time silently discards where you were — you have to re-find the
+  // list you were working through. sessionStorage rather than a URL param so the
+  // plain "/" link the task page uses still returns you to the right place.
+  const [tab, setTabState] = useState<TabKey>('fixing');
+  useEffect(() => {
+    const saved = sessionStorage.getItem(TAB_KEY);
+    if (saved && TABS.some((t) => t.key === saved)) setTabState(saved as TabKey);
+  }, []);
+  const setTab = (next: TabKey) => {
+    setTabState(next);
+    try {
+      sessionStorage.setItem(TAB_KEY, next);
+    } catch {
+      // private mode / storage disabled — the tab just does not persist
+    }
+  };
   // Display name decides "Assigned to me" membership (contracts § "Assigned to me").
   const myName = useDisplayName(userEmail);
 
@@ -131,21 +157,10 @@ export function Board({
   // `live` already excludes cancelled; the filter dedupes by construction.
   const mine = live.filter((r) => inPersonalBand(r, userEmail, myName));
 
-  const counts: Record<TabKey, number> = {
-    all: live.length,
-    mine: mine.length,
-    fixing: 0,
-    preview: 0,
-    queued: 0,
-    shipped: 0,
-  };
-  for (const report of live) {
-    const key = tabOf(report.status);
-    if (key) counts[key]++;
-  }
+  const counts: Record<TabKey, number> = { fixing: 0, done: 0, verified: 0, shipped: 0 };
+  for (const report of live) counts[tabOf(report.status)]++;
 
-  const visible =
-    tab === 'all' ? live : tab === 'mine' ? mine : live.filter((r) => tabOf(r.status) === tab);
+  const visible = live.filter((r) => tabOf(r.status) === tab);
 
   return (
     <div>
@@ -179,9 +194,7 @@ export function Board({
 
       {visible.length === 0 ? (
         <div className="card py-10 text-center text-[13px] text-ink-3">
-          {tab === 'mine'
-            ? 'Nothing assigned to you — reports that block on a human land here.'
-            : 'Nothing here yet — reports filed from the widget inside example.com land on this board.'}
+          {EMPTY[tab]}
         </div>
       ) : (
         visible.map((report) => (

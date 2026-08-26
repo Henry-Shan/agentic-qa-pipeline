@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execa } from 'execa';
 import { autoAssignOnBlock } from './assign';
 import { pidAlive } from './config';
-import { startPreview } from './preview';
+import { listeningPid, republishTunnel, startPreview } from './preview';
 import type { Ctx } from './state';
 import { log, nowIso } from './util';
 
@@ -34,43 +34,59 @@ export async function reconcile(ctx: Ctx): Promise<void> {
       ctx.state.activeDispatches++;
       log('reconcile', `re-attached live run ${run.id} (pid ${pid})`);
     } else {
+      // The machine slept, rebooted, or the worker stopped. Nothing is wrong
+      // with the task — it just stopped mid-flight, so PAUSE it and let the
+      // claim loop pick the same session back up. No human in this loop.
       await ctx.db.updateRun(run.id, {
-        status: 'failed',
-        stopped_reason: 'worker restarted mid-run',
+        status: 'interrupted',
+        stopped_reason: 'paused — the worker stopped mid-run; resuming automatically',
         finished_at: nowIso(),
       });
-      await ctx.db.updateReport(run.report_id, { status: 'blocked' });
-      // A crash-orphaned run still needs an owner, same as any other block.
-      await autoAssignOnBlock(ctx, run.report_id);
+      await ctx.db.updateReport(run.report_id, { status: 'queued' });
       await ctx.db.insertEvent({
         report_id: run.report_id,
         run_id: run.id,
-        type: 'error',
-        message: 'worker restarted mid-run — press Send to resume',
+        type: 'system',
+        message: 'paused — the machine went to sleep or the worker stopped. Resuming automatically.',
       });
-      log('reconcile', `run ${run.id} orphaned (no live process) — report ${run.report_id} blocked`);
+      log('reconcile', `run ${run.id} interrupted — report ${run.report_id} requeued for auto-resume`);
     }
   }
 
   for (const run of await ctx.db.previewRuns()) {
     if (ctx.cfg.onlyReportId !== null && run.report_id !== ctx.cfg.onlyReportId) continue;
-    const pid = run.worktree ? readPid(path.join(run.worktree, '.qa', 'preview.pid')) : null;
-    if (run.worktree && pid !== null && pidAlive(pid) && run.preview_port !== null) {
+    // Ask the PORT, not the recorded pid. The pid file holds the npm wrapper,
+    // which routinely dies while the server it spawned keeps serving — and
+    // trusting it marked healthy previews dead and left the site showing
+    // "Preview waiting" over a preview that answered every request.
+    const listener = run.worktree && run.preview_port !== null ? await listeningPid(run.preview_port) : null;
+    if (run.worktree && run.preview_port !== null && listener !== null) {
       ctx.state.previews.set(run.id, {
         runId: run.id,
         reportId: run.report_id,
+        // the LISTENER's pid, so a later stop reaches the process that is serving
+        pid: listener,
         worktree: run.worktree,
         port: run.preview_port,
-        pid,
         hostname: hostnameFromUrl(run.preview_url),
         startedAt: Date.now(),
       });
-      log('reconcile', `re-attached live preview for run ${run.id} on port ${run.preview_port}`);
+      // The row can disagree with a preview that is plainly alive (two writes
+      // racing across a restart is enough). We can see the truth here, so say it.
+      if (run.preview_status !== 'live') {
+        await ctx.db.updateRun(run.id, { preview_status: 'live' }).catch(() => undefined);
+        log('reconcile', `run ${run.id}: row said ${run.preview_status} but port ${run.preview_port} is serving — corrected to live`);
+      }
+      log('reconcile', `re-attached live preview for run ${run.id} on port ${run.preview_port} (pid ${listener})`);
     } else {
-      await ctx.db.updateRun(run.id, { preview_status: 'down' });
+      if (run.preview_status !== 'down') await ctx.db.updateRun(run.id, { preview_status: 'down' });
       log('reconcile', `preview for run ${run.id} is dead — marked down`);
     }
   }
+
+  // Re-attached previews still have tunnel hostnames, but the cloudflared child
+  // died with the old worker — republish so those URLs resolve again.
+  await republishTunnel(ctx).catch((e: Error) => log('reconcile', `tunnel republish failed: ${e.message}`));
 
   // A graceful shutdown stops preview servers and down-marks their runs; a
   // crash leaves them dead and the loop above down-marks them. Either way a
@@ -120,18 +136,18 @@ async function sweep(ctx: Ctx): Promise<void> {
       await ctx.db.updateRun(run.id, { status: 'done', phase: 'done', finished_at: nowIso() });
     } else {
       await ctx.db.updateRun(run.id, {
-        status: 'failed',
-        stopped_reason: 'run process exited while detached from the worker',
+        status: 'interrupted',
+        stopped_reason: 'paused — the run stopped mid-flight; resuming automatically',
         finished_at: nowIso(),
       });
-      await ctx.db.updateReport(report.id, { status: 'blocked' });
-      await autoAssignOnBlock(ctx, report.id);
+      await ctx.db.updateReport(report.id, { status: 'queued' });
       await ctx.db.insertEvent({
         report_id: report.id,
         run_id: run.id,
-        type: 'error',
-        message: 'run exited while detached from the worker — press Send to resume',
+        type: 'system',
+        message: 'paused — the run stopped mid-flight (sleep or a worker restart). Resuming automatically.',
       });
+      log('reconcile', `run ${run.id} interrupted — report ${report.id} requeued for auto-resume`);
     }
   }
 }

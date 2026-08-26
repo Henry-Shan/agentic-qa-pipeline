@@ -49,17 +49,44 @@ Then in `worker/.env` set `PREVIEW_MODE=tunnel`, `PREVIEW_DOMAIN=qa-preview.exam
 `CF_TUNNEL_NAME=qa-pipeline`. The worker maintains the ingress file and the cloudflared child
 process itself.
 
-**Cloudflare Access (strongly recommended):** Zero Trust → Access → add an application for
-`*.qa-preview.example.com` with a policy allowing the same tester emails (one-time PIN). Until
-this exists, keep `PREVIEW_MODE=local`.
+**Cloudflare Access is REQUIRED, not recommended.** A preview is an in-progress build wired to
+the real Supabase and the real API, so an unauthenticated hostname would put lab data on the
+public internet. Zero Trust → Access → Applications → Self-hosted, domain
+`*.qa-preview.example.com`, policy Allow · Emails → the tester list, identity One-time PIN.
+
+**Certificate prerequisite (this is what blocks it today).** Cloudflare's Universal SSL covers
+`example.com` and `*.example.com` but NOT a second-level wildcard like
+`*.qa-preview.example.com` — so `preview-50.qa-preview.example.com` gets no certificate and
+TLS fails before Access is even consulted (verified: `sslv3 alert handshake failure`, while
+`qa.example.com` serves a cert normally). Enable **Advanced Certificate Manager** on the zone
+(~$10/mo) with a `*.qa-preview.example.com` cert, and everything else here already works — the
+tunnel connects, DNS records are created per run, and the Access policy is in place.
+
+Then run `./worker/setup-tunnel.sh`. It authenticates checks, creates the tunnel, refuses to
+switch modes until you confirm Access is in place, flips `PREVIEW_MODE=tunnel`, restarts the
+worker, and tells you how to verify (and how to revert). Until then previews stay
+`PREVIEW_MODE=local` — visible only on this machine, which is the safe default.
 
 ## 4. Worker as a service (launchd)
 
 ```bash
-cd ~/qa-pipeline && npm run build:worker
 cp worker/launchd/com.qa-pipeline.worker.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
+launchctl load -w ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
 tail -f ~/.qa-pipeline/worker.log
+```
+
+The agent runs the TypeScript source through tsx, so there is no build step and
+no risk of a stale `dist` serving old code. It starts at login and restarts on
+crash (verified: `kill -9` → back in seconds under a new pid). Sleep still
+pauses everything — a sleeping Mac runs nothing — but waking resumes the poll
+loop and queued reports are claimed within ~3s.
+
+Useful commands:
+
+```bash
+launchctl list | grep qa-worker                 # pid + last exit status
+launchctl kickstart -k gui/$UID/com.qa-pipeline.worker   # restart (after code changes)
+launchctl unload ~/Library/LaunchAgents/com.qa-pipeline.worker.plist  # stop for good
 ```
 
 Dev mode instead: `npm run dev:worker`.

@@ -42,7 +42,19 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 - `CLAUDE_BIN=/opt/homebrew/bin/claude`
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
-- `PREVIEW_MODE=local|tunnel` · `PREVIEW_DOMAIN=qa-preview.example.com` · `CF_TUNNEL_NAME=qa-pipeline`
+- `PREVIEW_MODE=local|tunnel` — **local is the current setting**: previews are served at
+  `http://localhost:33xx` on the worker's own Mac and no tunnel runs. The production API
+  allows any `http://localhost:` origin (`main.go` `isAllowedOrigin`), so a local preview calls
+  `https://api.example.com` directly and `/__api` proxying is not used. The tunnel code stays
+  in place and inert; flipping the variable back turns it on
+- (tunnel-only) · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
+- `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
+- `PREVIEW_SUPABASE_URL` · `PREVIEW_SUPABASE_ANON_KEY` — inlined into the preview build;
+  ANON key only, the worker refuses a `service_role` JWT
+- `PREVIEW_BUILD=1` · `PREVIEW_BUILD_CMD='npx turbo run build --filter=web'` — previews serve a
+  production build; `PREVIEW_BUILD=0` falls back to the much slower `next dev`
+- `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
+  preview address is `<prefix><reportId>.<zone>`; ONE label deep so `*.<zone>` TLS covers it
 - `SITE_URL=https://qa.example.com`
 
 ## Worker settings (`qa_settings`, migration 0008)
@@ -68,6 +80,29 @@ storage-upload URLs). The widget then PUTs each blob directly to Supabase storag
 (binary PNG / JSON — best-effort; a failed PUT means missing evidence, never a lost
 report). The inline fields remain accepted for backward compatibility (small payloads,
 old cached widget bundles).
+
+## Interrupted runs pause and resume themselves (db/0015)
+
+A closed laptop, a sleeping Mac or a worker restart is **not a failure** — the task simply
+stopped mid-flight, and the machine can pick it up again. So instead of `failed` + `blocked` +
+"press Send to resume", those runs settle as:
+
+- `qa_runs.status = 'interrupted'`, `stopped_reason` "paused — resuming automatically"
+- `qa_reports.status = 'queued'` (never `blocked`, never auto-assigned)
+- a calm `system` event: "paused — the machine went to sleep or the worker stopped. Resuming
+  automatically." — not an `error`
+- the board/task pill reads **"Paused — resumes automatically"** (amber, working dot) rather
+  than "Queued", because it is waiting to RESUME, not to start
+
+The claim loop treats `interrupted` exactly like `limited`: it `--resume`s the SAME session
+(worktree, branch and partial work still on disk) with a note telling the run to re-orient via
+`git status` and continue. Detection: reconcile at boot and the orphan sweep both use it, and a
+tracked child that exits with **no result text at all** — a vanished process, which is what
+sleep looks like — is treated as interrupted rather than failed. A run that genuinely fails
+still reports `failed`.
+
+*Verified end to end: a 'running' run whose process was gone → interrupted + requeued + calm
+event; unpausing the worker → claimed → attempt 2 resumed the same session, no human involved.*
 
 ## Terminal — a real pty, one per tester's own machine
 
@@ -247,7 +282,91 @@ choice via `POST /api/enroll` (`{code?, name}`), and ingest copies it into
 
 `qa_runs.phase` (live pipeline label): `starting | grounding | testing | implementing | verifying | feature_test | pr | preview | done`
 
+The **original report** renders the tester's own words as markdown (`react-markdown` +
+`remark-gfm`), not as a single paragraph. Reports are routinely specs — headings, tables of
+states and hex values — and a colour table is only legible AS a table. Raw HTML stays
+disabled: the text is untrusted, so it is rendered as markup, never executed as markup.
+
+`normalizeMarkdown()` first puts back the blank lines a paste lost. Markdown needs a blank
+line to close a block, and a table with no blank line after it SWALLOWS the following prose
+and the next table — three blocks render as one wrong table (observed on task 46). Breaks are
+inserted only around tables and before headings, and never inside a fence. 7 cases.
+
+The section also shows what was previously collected but never displayed: the questionnaire
+answers (`done_when`, `reproduce_as`, `constraints`) and **what the tester did** — the
+`click_trail` written out as numbered steps ("clicked Notebook", "typed \"12\" into Amount of
+Gelatin"), with the route shown only when it changes. That data already drove the replay's
+step markers; without it in words, the only way to learn what was clicked was to scrub a
+recording. The description is full width, with screenshots as a thumbnail row beneath, so a
+wide table has the room to stay a table.
+
+**Needs-a-human card must answer two questions**: what went wrong, and what to do. When the
+worker wrote a `needs_human` summary it answers both — the code lane writes
+"What went wrong / What I analyzed / What to do (numbered)", the infra lane writes a runbook
+("Confirm it / Fix it (numbered) / Verify / Careful"). When it did NOT, the card used to read
+only "the details are in Claude's log below": the reader was told they were needed and not
+what for, which is the whole point of the card.
+
+A run that died mid-flight never reaches the hand-off step, so the card now diagnoses from
+the run, most specific first:
+
+| condition | told to the reader |
+|---|---|
+| stop reason or last error says the process vanished / slept / worker restarted | nothing is wrong with the task, no fix was attempted — re-run, or resume in the Terminal |
+| a `question` event is the last thing posted | quotes the question — answer in "Talk to Claude" |
+| any other `stopped_reason` | shows the reason — read the log, reply, or re-run |
+| nothing at all | says the run ended before it could write a summary |
+
+Re-run sits IN the card: it is the answer for the interrupted case, and hunting for it
+elsewhere on the page is friction at exactly the wrong moment. 7 branch cases.
+
+**`pr_ready` lives in Fixing, not Done.** A PR with no preview yet is still being turned into
+something you can click, and "PR ready" reads as finished — so the reader waits without
+knowing what for. It moves to Done when the preview comes up. The pill says
+**"Building preview"** (amber, working dot) while `preview_status = 'starting'`.
+
+**Build progress is a phase and a clock, never a percentage.** The worker knows which phase it
+is in and when that phase began (`preview_detail_at`, db/0020); it does not know how far
+through a bundler is. The task page shows the phase, live elapsed time, the four steps with
+the finished ones ticked, and how long that phase usually takes — which answers "is this
+stuck?", the only question being asked. A bar that stalls at 90% answers nothing.
+
+**Board buckets — four, total, no "All".** Every status lands in exactly one, so nothing can
+hide: `Fixing` (queued · running · rework — the machine has it), `Done` (pr_ready · preview ·
+blocked · failed · stopped · cancelled — the machine is finished and it is waiting on a
+person), `Verified`, `Shipped`. The names say who is waiting, not what the machine is doing.
+
+**Verified → Shipped is owner-only.** The worker ships a task by itself when the PR merges;
+"Pushed to GitHub?" covers the gap (merged another way, or no PR). The site hides the button
+from non-owners (`NEXT_PUBLIC_QA_OWNER_EMAIL`, default `admin@example.com`) — but hiding is
+not enforcement, because RLS on `qa_reports` is `qa_is_tester()` for everything. `db/0018`
+adds the trigger that refuses it: a non-owner JWT raises, the worker's service role passes,
+and a direct connection (psql, migrations) passes so the table stays maintainable.
+*Verified all three: a non-owner tester was refused by name with the row unchanged; the owner
+and the service role both succeeded.*
+
+**One send button.** "Still broken" and "Send to Claude" both resumed the same session with
+the same note — the only difference being that a verdict also flags `rework`. The task page
+now has one, and the report's own status picks the kind (`verdict_broken` at pr_ready/preview,
+otherwise `steer`). Assignment is gone from the action row.
+
 Board pipeline rendering order: Filed(✓ always) → Queued → Fixing(running/rework) → PR ready → Preview → Verified/Shipped, with `blocked/stopped/failed` as terminal badges.
+
+The `preview` pill reads the RUN, not just the report: `qa_reports.status = 'preview'` only
+records that a preview was once built, and the dev server behind it is evicted whenever the
+machine needs the room — so the report status alone would claim "Preview live" for something
+that is not running, and send people hunting for a button that is not there.
+
+| run.preview_status | run.preview_url | pill | task page |
+|---|---|---|---|
+| `live` | https | **Preview live** | `Open live preview ↗` + Before/After tabs |
+| not live | https | **Preview waiting** | `Start preview ↗` (the wake service boots it, ~1 min) |
+| not live | localhost / none | **Preview not deployed** | no link — localhost is openable only on the worker's own machine |
+
+Before/After tabs are independent of all this: they are stored recordings, and they render
+whenever they exist. A task shows only the ones it has — a report filed without a recording
+has no Before, and a run whose preview was never opened has no After (the After capture is
+produced by the Live preview tab replaying the tester's steps).
 
 ## Widget → Site: `POST {SITE_URL}/api/ingest`
 
@@ -524,14 +643,187 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `claude --resume <sid> -p "<note + continue instructions>"` same env/flags (new attempt on same
   `qa_runs` row lineage: attempt+1). `steer|verdict_broken` after done → same resume path, report
   `rework`. `verdict_fixed` → report `verified` + event.
-- **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree:
-  `npm --prefix apps/web run dev -- --port <p>` with `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`,
+- **Worktree dependencies must be REAL and local.** Worktrees are created with `node_modules`
+  symlinked into the runner checkout (1011 of ~1100 packages) to avoid a 1.6 GB install per
+  task. Turbopack rejects that: it resolves `next` to its real path, infers THAT as the
+  workspace root, and refuses to compile anything outside it — so every preview build failed
+  and silently fell back to dev mode, the 19x-heavier thing the build exists to avoid.
+  `ensureDeps()` checks the exact condition that matters — does `next` resolve from `apps/web`
+  to a path INSIDE the worktree — then materialises with `cp -Rc` (APFS clone: copy-on-write,
+  cheap) and runs `npm install` to reconcile branch-added dependencies. Both worktree layouts
+  (root-hoisted and apps/web) pass the check untouched.
+- **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree, build first
+  (`PREVIEW_BUILD_CMD`, default `npx turbo run build --filter=web`) then
+  `npm --prefix apps/web run start -- --port <p>`.
+  **Backend URLs must be forced, three ways.** `apps/web/.env.local` is symlinked into every
+  worktree from the main checkout and points at a local dev stack (`localhost:8082` API,
+  `localhost:8080` OCR) — nothing listens there on a tester's machine, so an inherited value
+  means ERR_CONNECTION_REFUSED on every call. So the worker (a) writes
+  `apps/web/.env.production.local` (Next's highest-precedence env file, and gitignored, so it
+  never reaches the PR diff), (b) passes the values in the process env — which beats every
+  env file, but only survives turbo with `--env-mode=loose`, since turbo 2 filters variables
+  it was not told about, and (c) after building, greps the client bundle for the expected URL
+  and falls back to dev mode if it is absent. Both `NEXT_PUBLIC_API_BASE_URL` and
+  `NEXT_PUBLIC_OCR_BASE_URL` are set (production serves both from the API host).
+  The same check gates build REUSE on wake, so a bundle built with the wrong backend
+  self-heals instead of being handed back forever.
+  **Not `next dev`.** Measured on this app: dev serves one page as 25.8 MB over 123 requests
+  and holds ~1 GB per preview, because it compiles routes on demand and ships every module
+  unbundled — so opening a new route took seconds. Built: 1.4 MB over 18 requests, 65 ms
+  TTFB through the tunnel, ~64-170 MB per server. A preview shows frozen code, so nothing
+  dev mode offers is worth 19x the bytes.
+  A failed build NEVER costs the tester their preview: it degrades to `next dev` with the
+  reason recorded as an event. Builds are serialized (one at a time) — a restart can want
+  five at once, and five concurrent bundlers finish later than five in a row. Waking an
+  evicted preview reuses the existing `.next` build, so it comes back in seconds.
+  `startingPreviews` claims a run before the server is healthy, so a reconcile and a wake
+  cannot both start a server for the same run.
+  Legacy dev command (`PREVIEW_BUILD=0`),
   nohup, pid file `<wt>/.qa/preview.pid`; poll health 90s → `preview_status live`,
-  `preview_url` = `http://localhost:<p>` (PREVIEW_MODE=local) or
-  `https://preview-<runId>.<PREVIEW_DOMAIN>` (tunnel: regenerate cloudflared ingress yaml + restart
-  managed cloudflared child + `cloudflared tunnel route dns` once per hostname).
-  LRU: >MAX_PREVIEWS → kill oldest idle. Teardown on shipped/cancelled via repo's
+  `preview_url` = `http://localhost:<p>`. Previews are local-only until shared.
+  LRU: >MAX_PREVIEWS → kill oldest idle, **except the published run** (evicting the one
+  link outsiders hold would 530 it silently). Teardown on shipped/cancelled via repo's
   `teardown-worktree.sh`.
+- **Per-task preview URL** (PREVIEW_MODE=tunnel): every task has ONE permanent address,
+  `qa-preview-<reportId>.example.com` — keyed by report, not run, so a rework keeps the
+  same link. One label deep on purpose: the zone's existing `*.example.com` certificate
+  covers it, while `preview-<n>.qa-preview.example.com` (two levels) fails the TLS
+  handshake and would need a paid wildcard.
+  On preview live: `cloudflared tunnel route dns` once per hostname (persisted in
+  `routed-hostnames.json`, idempotent), regenerate ingress yaml, restart the managed
+  cloudflared child. The DNS record is never deleted — that is what makes the URL
+  permanent. A newer run for the same report supersedes the older run's preview so two
+  dev servers never contend for one hostname.
+  **Guard**: only `^<prefix>\d+\.<zone>$` may ever be routed or served
+  (`qa-preview-<digits>.example.com`). A digits-only label cannot spell `api`, `www`,
+  `qa` or the apex, so no misconfiguration can aim a DNS write at production;
+  `PROTECTED_HOSTS` is a second, redundant check. Enforced in `startPreview` and
+  per-record in the DNS loop. 23 unit cases.
+- **Front door** (`frontdoor.ts`, 127.0.0.1:`WAKE_PORT`, tunnel mode only): cloudflared's
+  ingress is a SINGLE catch-all rule pointing here — no per-hostname rules, so starting or
+  stopping a preview never rewrites the config or restarts cloudflared. It routes by Host:
+  - preview up → **proxy** to its dev server (HTTP + the `/_next/webpack-hmr` websocket)
+  - preview down → start it and hold the browser on a self-reloading page
+  - host not `<prefix><digits>.<zone>` → 404
+  **Header rewrite (this is load-bearing).** Next 16 blocks cross-origin requests to
+  `/_next/*` unless the host is in `allowedDevOrigins`, keying off the **Origin** header
+  (Referer for `sec-fetch-mode: no-cors`) — see `block-cross-site-dev.ts`. A preview served
+  at `qa-preview-46.example.com` is cross-origin by that rule, so HMR and every dev chunk
+  403: the HTML renders and then nothing hydrates, i.e. the page looks fine but no click
+  does anything. The front door therefore presents each request as `localhost:<port>`
+  (Origin, Referer, Host) and adds `x-forwarded-proto/host` so the app still knows it is on
+  https. The fix lives here, NOT in the app's `next.config` — the worktree's diff becomes
+  the PR, and a preview-only config change has no business in it.
+  Also rewrites upstream `Location` headers off `localhost:<port>` back onto the public host.
+  *Verified in a real browser: all `_next` chunks 200, HMR socket 101, clicking Sign In
+  navigates to /login, typing lands in React state, zero console errors. Direct to the dev
+  server with the public Origin still 403s — the rewrite is what fixes it.*
+- **Preview API access** (`/__api/*`): a preview's `NEXT_PUBLIC_API_BASE_URL` is set to
+  `https://<its own host>/__api`, and the front door forwards that prefix to
+  `PREVIEW_API_ORIGIN` (default `https://api.example.com`), stripping `origin`/`referer`
+  so it arrives as a plain server-to-server call.
+  **Why.** The API's CORS allowlist is `example.com` plus localhost (`main.go`
+  `isAllowedOrigin`). A preview hostname is neither, so calling the API directly fails
+  preflight — "No 'Access-Control-Allow-Origin' header is present" — and every request dies
+  as `ERR_FAILED`, which looks exactly like the backend being down. The alternative was
+  adding preview hosts to that allowlist, i.e. editing and redeploying the PRODUCTION API to
+  serve QA. Same-origin keeps production untouched and needs no deploy.
+  The browser's `Authorization` header rides along, so the API still authenticates the real
+  tester and lab scoping is unchanged — the hop adds no privilege (an unauthenticated caller
+  gets the API's own 401, exactly as it would calling the API directly).
+  `previewApiOrigin` must be https: these requests carry a bearer token.
+  *Verified from inside the page: `/__api/repository/my-labs` → 401 "Authorization header
+  required" (identical to production); with a bogus token → 401 "Invalid token" on both,
+  proving the header is forwarded; POST body forwarded (405 from the API itself); and the
+  old direct call still throws "Failed to fetch", which was the reported bug.*
+- **"After the fix" is produced by the machine, not by a visitor** (`EXAM_RECORD=1`).
+  The examination already re-executes the tester's steps on the fixed build; it now records
+  itself with rrweb and uploads the result to `report-<id>/after-replay-<run>.json`, setting
+  `qa_runs.after_replay_path` — the same path and column the browser embed writes, so the
+  site's `?src=after` route serves either without knowing which produced it. A Before
+  therefore always gets an After, instead of only when someone happened to open the Live
+  preview tab.
+  **Injection timing is load-bearing.** rrweb is injected with `addScriptTag` AFTER sign-in
+  and after the route has landed — never `addInitScript`, which runs on every document
+  including the `/qa-session` magic-link verify chain and stalled sign-in outright (measured:
+  control finished in 30s, `addInitScript` never produced a single screenshot in 10+ minutes).
+  Events stream out through `exposeBinding('__qaEmit')` as rrweb emits them, so a document
+  unload cannot lose them and nothing large is structured-serialized over CDP. Steps are
+  marked with the same `qa-step` custom event the widget writes, so the player's step markers
+  behave identically on both sides. Capped at 20k events.
+  Recording is strictly additive: any failure records `evidence.recordingError` and the
+  examination proceeds to its verdict exactly as before. `EXAM_RECORD=0` disables it.
+- **Phase deadlines** (`exam-run.mjs`): sign-in, route landing, each step and recording each
+  run under an explicit timeout that fails with `stalled in <phase>`. A stalled phase used to
+  cost the whole examination in silence with no artifact to read — which is how the
+  `addInitScript` hang stayed invisible.
+- **No After without a Before**: `POST /api/after-replay/[id]` refuses (409) when the report
+  has no `replay_path`. An After is the tester's steps re-executed; with no steps, whatever
+  the embed captured is just a browsing session sitting in the hero labelled as a comparison
+  with nothing to compare against.
+- **`preview_status` is re-derived from the port, never trusted.** The row is what the site
+  reads — pill, link and Live tab all come from it, and none of them ask the preview itself.
+  Two bugs followed from that:
+  - *the liveness check tested the wrong process.* Starting a preview creates an `npm`
+    wrapper and the `next-server` it spawns; only the wrapper's pid was recorded, and it
+    routinely dies while the server keeps serving (normal after the Mac sleeps). `reconcile`
+    then declared a working preview dead. It now asks `listeningPid(port)` — the one thing
+    that cannot lie — and stores the LISTENER's pid so a later stop reaches the right process.
+  - *nothing re-checked the row while the worker ran.* The check happened only at boot, so a
+    worker up for days carried a wrong value indefinitely: task 60 read "Preview waiting" for
+    two days over a preview that answered every request, after two writes raced across a
+    restart. `preview-sync.ts` re-derives the truth every 60s in both directions — serving
+    but marked down → corrected to live; gone but marked live → handle dropped and marked
+    down, so the next request wakes it instead of proxying into a dead port.
+  Caching what the row *probably* says does not work: that cache goes stale exactly the way
+  the row does (tried, and it failed the test — the correction never fired).
+- **A build records what it was built FOR** (`<worktree>/.qa/build-target.json`: apiBase +
+  supabaseUrl). Reuse compares that marker, and a mismatch forces a rebuild. Grepping the
+  bundle for the expected URLs does NOT work — the app carries `https://api.example.com` as a
+  hardcoded fallback in `getPublicEnv()`, so the string is present whether or not the build
+  used it, and a stale build passed the check and kept serving after the tunnel was switched
+  off. The sync loop retires a live preview whose marker no longer matches, so a settings
+  change cannot leave pages that load while every request inside them fails.
+- **`preview_url` is derived from the current mode, never from when the preview started.**
+  Switching tunnel → local otherwise left every live row advertising a `https://qa-preview-*`
+  address whose tunnel no longer existed.
+- **A waiting preview says WHY** (`qa_runs.preview_detail`, db/0019). `preview_status` alone
+  renders as "Preview waiting", which is true and useless — evicted, queued, building and
+  broken all look identical, and the real reason was only ever going to the worker log that
+  nobody reading the board can see. The worker writes a sentence at every transition:
+  | situation | what the task page says |
+  |---|---|
+  | evicted by the cap | "Stopped to free memory — the machine keeps N previews running at once and this was the least recently started. Opening the link starts it again…" |
+  | worker restarted | "Stopped because the worker restarted. Opening the link starts it again." |
+  | dev server vanished | "The dev server stopped on its own — usually the Mac went to sleep." |
+  | waiting to build | "Queued to build. Builds run two at a time, so this waits its turn." |
+  | building | "Compiling the fixed build. This takes a few minutes the first time." |
+  | superseded | "Replaced by a newer run for this task." |
+  | live, but dev mode | "Running in dev mode — the production build failed, so pages load slowly." (amber) |
+  The build-reuse check (`bundleTargets`) verifies EVERY value a preview cannot run without —
+  the API base AND the Supabase URL — because checking only the API base let a build made
+  before the worker supplied Supabase env be reused forever, serving an app whose login page
+  read "Supabase is not configured".
+- **A preview never shows an error page for a recoverable state.** Three cases used to:
+  - *no DNS record yet* — the hostname was only routed once a preview went live, so a
+    brand-new task's URL did not resolve at all and the visitor got the browser's "server
+    not found". `ensureDns()` now runs BEFORE the build (idempotent, persisted set), so the
+    address resolves while the preview is still being produced.
+  - *building* — a fresh fix is compiled before it can be served (~2-3 min). The front door
+    reads `state.startingReports` and says "Building this preview…" rather than the
+    "waking up" copy, because minutes and seconds need different expectations.
+  - *dev server died without the worker noticing* — previews are detached processes, so a
+    crash or a killed port leaves a handle pointing at nothing and the proxy answered 502.
+    On ECONNREFUSED/ECONNRESET/EHOSTUNREACH the front door now drops the stale handle,
+    marks the run down, triggers a wake and serves the waiting page.
+- **Preview env comes from the worker, never from a symlink.** `apps/web/.env.local` is a
+  symlink into the developer's checkout that only SOME worktrees have; a build without it
+  produces an app whose login page reads "Supabase is not configured for the web app"
+  (observed on tasks 45 and 60). The worker writes `NEXT_PUBLIC_SUPABASE_URL` /
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` alongside the API URLs, from `PREVIEW_SUPABASE_*`.
+  **It refuses a service_role key**: the value is inlined into a client bundle anyone with
+  the link can read, so publishing it would be a full database leak. The role is decoded
+  from the JWT payload, not trusted from the variable name. 5 cases.
 - **Ship detect**: poll open PRs 10min (`gh pr view <n> --json state,mergedAt`) → merged →
   `shipped`, teardown, distill `qa_area_notes` (grounding + fix summary + stopped lessons).
 - Singleton lockfile; graceful shutdown kills previews not runs; on boot reconcile orphans

@@ -41,7 +41,25 @@ export interface WorkerConfig {
   maxPreviews: number;
   runsPerDay: number;
   previewMode: PreviewMode;
-  previewDomain: string;
+  /** Label prefix for per-task preview hostnames: <prefix><reportId>.<zone>. */
+  previewHostPrefix: string;
+  /** Zone the preview hostnames live in. ONE label deep, so the zone's existing
+   *  `*.<zone>` certificate covers them — a second level would need a paid cert. */
+  previewZone: string;
+  /** Serves qa-preview-*.<zone> whose dev server is asleep; wakes it. 127.0.0.1 only. */
+  wakePort: number;
+  /** Real API a preview's `/__api/*` calls are forwarded to. https origin only. */
+  previewApiOrigin: string;
+  /** EXAM_RECORD=0 → examinations stop recording the "After the fix" replay. */
+  examRecord: boolean;
+  /** Supabase the PREVIEW's browser code talks to. Public anon key ONLY — this is
+   *  inlined into a client bundle anyone with the link can read. */
+  previewSupabaseUrl: string;
+  previewSupabaseAnonKey: string;
+  /** PREVIEW_BUILD=0 → serve `next dev` instead of a production build (slow; debugging only). */
+  previewBuild: boolean;
+  /** Build command run in the worktree before `next start`. */
+  previewBuildCmd: string;
   cfTunnelName: string;
   siteUrl: string;
   /** QA_DEFAULT_ASSIGNEE — fallback tester display name for auto-assign-on-block. */
@@ -127,7 +145,18 @@ export function loadConfig(): WorkerConfig {
     maxPreviews: intEnv('MAX_PREVIEWS', 3),
     runsPerDay: intEnv('RUNS_PER_DAY', 25),
     previewMode,
-    previewDomain: process.env.PREVIEW_DOMAIN ?? 'qa-preview.example.com',
+    previewHostPrefix: process.env.PREVIEW_HOST_PREFIX ?? 'qa-preview-',
+    previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
+    wakePort: intEnv('WAKE_PORT', 4521),
+    previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
+    examRecord: process.env.EXAM_RECORD !== '0',
+    previewSupabaseUrl: process.env.PREVIEW_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '',
+    previewSupabaseAnonKey: process.env.PREVIEW_SUPABASE_ANON_KEY ?? '',
+    previewBuild: process.env.PREVIEW_BUILD !== '0',
+    // --env-mode=loose: turbo 2 filters environment variables it was not told
+    // about, which silently drops the preview's API URL and lets the developer's
+    // .env.local win.
+    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npx turbo run build --filter=web --env-mode=loose',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
     siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',

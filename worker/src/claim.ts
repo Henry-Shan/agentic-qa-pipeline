@@ -69,14 +69,16 @@ async function tick(ctx: Ctx): Promise<void> {
     }
 
     const prev = await ctx.db.latestRunForReport(report.id);
-    if (prev && prev.status === 'limited') {
+    if (prev && (prev.status === 'limited' || prev.status === 'interrupted')) {
       // requeued after a rate limit: continue the same session (worktree,
       // branch and partial work are still on disk) instead of starting over
       await resumeRun(
         ctx,
         report,
         prev,
-        'The previous attempt was interrupted by a usage/rate limit. Re-orient (git status in your worktree, last completed ship-task step) and continue where you left off.',
+        prev.status === 'interrupted'
+          ? 'You were interrupted mid-run (the machine slept or the worker restarted) — nothing is wrong. Re-orient: git status in your worktree and the last completed ship-task step, then continue exactly where you left off.'
+          : 'The previous attempt was interrupted by a usage/rate limit. Re-orient (git status in your worktree, last completed ship-task step) and continue where you left off.',
         'running',
       );
     } else {

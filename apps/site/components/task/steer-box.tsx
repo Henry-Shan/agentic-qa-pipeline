@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { guardReport } from '@/lib/report-gone';
-import { AssignControl } from '@/components/task/assign-control';
 import type { MessageKind, ReportStatus } from '@/lib/types';
 
 interface Props {
@@ -74,7 +73,7 @@ export function SteerBox({ reportId, status, assignee, userEmail, onReportGone }
               title={hasText ? undefined : 'Write a note first — what is still broken?'}
               className="flex-1 rounded-lg border-[1.5px] border-red bg-stage px-4 py-2.5 text-[13px] font-bold text-red disabled:opacity-45"
             >
-              Still broken
+              Still broken — send back
             </button>
           </div>
         </div>
@@ -93,19 +92,23 @@ export function SteerBox({ reportId, status, assignee, userEmail, onReportGone }
           a hairline. All 36px tall, 8px radius, 8px gaps; wraps at narrow widths
           (the Stop group keeps its own line rather than crowding Assign). */}
       <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/* One button, not two. "Still broken" and "Send to Claude" both resumed
+            the same session with the same note — the only difference was that a
+            verdict also flagged the report as reworking. So send the note, and
+            let the report's own state decide which that is. */}
         <button
-          onClick={() => void send('steer', text.trim(), 'Sent — Claude will pick it up shortly.')}
+          onClick={() =>
+            void send(
+              canVerdict ? 'verdict_broken' : 'steer',
+              text.trim(),
+              canVerdict ? 'Sent back to Claude for rework.' : 'Sent — Claude will pick it up shortly.',
+            )
+          }
           disabled={busy || !hasText}
           className="h-9 min-w-32 flex-1 rounded-lg bg-qa px-3.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-qa-bright disabled:opacity-50"
         >
           Send to Claude
         </button>
-        <AssignControl
-          reportId={reportId}
-          assignee={assignee}
-          userEmail={userEmail}
-          onReportGone={onReportGone}
-        />
         {canStop ? (
           <div className="ml-auto flex items-center gap-2 border-l border-line-soft pl-2">
             <button

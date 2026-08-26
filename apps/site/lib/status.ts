@@ -1,34 +1,43 @@
 import type { ReportStatus } from '@/lib/types';
 
-// `mine` is membership-based (assignee / blocked-and-filed-by-me), not a status
-// bucket — `tabOf` never returns it; the board filters that tab separately.
-export type TabKey = 'all' | 'mine' | 'fixing' | 'preview' | 'queued' | 'shipped';
+// Four buckets, and every report lands in exactly one — so there is no "All"
+// tab to fall through to and nothing can hide. The names describe who the task
+// is waiting on, not the machine's internal state:
+//
+//   Fixing    the machine still has work to do — queued, running, and pr_ready,
+//             because a PR with no preview yet is still being turned into
+//             something you can click
+//   Done      there is something to look at or decide: a live preview, or a run
+//             that stopped and needs a person
+//   Verified  you said it works
+//   Shipped   the PR is merged
+export type TabKey = 'fixing' | 'done' | 'verified' | 'shipped';
 
 export const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
-  { key: 'all', label: 'All' },
-  { key: 'mine', label: 'Assigned to me' },
   { key: 'fixing', label: 'Fixing' },
-  { key: 'preview', label: 'Preview' },
-  { key: 'queued', label: 'Queued' },
+  { key: 'done', label: 'Done' },
+  { key: 'verified', label: 'Verified' },
   { key: 'shipped', label: 'Shipped' },
 ];
 
-/** Board filter bucket for a status; null → visible only under "All". */
-export function tabOf(status: ReportStatus): Exclude<TabKey, 'all'> | null {
+/** Board bucket for a status. Total, by design: every status has a home. */
+export function tabOf(status: ReportStatus): TabKey {
   switch (status) {
+    case 'queued':
     case 'running':
     case 'rework':
-      return 'fixing';
+    // pr_ready is NOT done: the PR exists but the preview is still being built,
+    // and until it is there is nothing to click. It moves to Done when the
+    // preview comes up.
     case 'pr_ready':
-    case 'preview':
-      return 'preview';
-    case 'queued':
-      return 'queued';
+      return 'fixing';
     case 'verified':
+      return 'verified';
     case 'shipped':
       return 'shipped';
+    // preview · blocked · failed · stopped · cancelled — each needs a person.
     default:
-      return null;
+      return 'done';
   }
 }
 
