@@ -22,6 +22,7 @@ import { NeedsHumanCard } from "@/components/task/needs-human-card";
 import { EventLog } from "@/components/task/event-log";
 import { HeroTabs, type HeroTab } from "@/components/task/hero-tabs";
 import { PreviewEmbed } from "@/components/task/preview-embed";
+import { previewLauncherUrl } from "@/lib/preview";
 import { ReplayPlayer } from "@/components/task/replay-player";
 import { ResultCard } from "@/components/task/result-card";
 import { RerunTask } from "@/components/task/rerun-task";
@@ -69,15 +70,16 @@ export function TaskView({
   const reporter = useDisplayName(report.reporter_email);
   const reportId = initialReport.id;
   const previewLive = run?.preview_status === "live";
-  // A task's https preview address is permanent: the dev server behind it sleeps
-  // (worker restart, MAX_PREVIEWS eviction) but the link keeps working — the
-  // worker's wake service boots it on the next request. So the link is offered
-  // whenever the task has one, live or not. A localhost URL is only useful on the
-  // worker's own machine, so it is shown only while it is actually up.
+  // A task's preview address is permanent AND machine-independent. The https
+  // form (tunnel mode) wins when present; otherwise the localhost launcher
+  // (`/p/<id>` on the front door) resolves on whichever machine the click
+  // happens — redirecting to, or first building, that machine's own copy of
+  // the fix. So the link is offered whenever a run has pushed a branch, live
+  // or not; there is no longer a runner-only localhost URL to hide.
   const previewUrl = run?.preview_url?.startsWith("https://")
     ? run.preview_url
-    : previewLive
-      ? (run?.preview_url ?? null)
+    : run?.branch
+      ? previewLauncherUrl(report.id)
       : null;
   // The interactive embed still waits for a server that is genuinely up — there
   // is NO offline placeholder (contracts § Task page layout).
@@ -382,7 +384,7 @@ export function TaskView({
           status={report.status}
           runStatus={run?.status}
           previewStatus={run?.preview_status}
-          previewUrl={run?.preview_url}
+          previewUrl={previewUrl}
         />
       </div>
       <Pipeline status={report.status} detail />

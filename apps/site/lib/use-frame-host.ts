@@ -33,6 +33,19 @@ export interface FrameHostHandlers {
   onMessage?: (data: FrameHostMessage, event: MessageEvent) => void;
 }
 
+/**
+ * An embed whose src is the preview launcher starts at the launcher's origin
+ * (`http://localhost:<agent port>`) and lands, after the front door's redirect,
+ * on the preview's own port — a DIFFERENT localhost origin, unknowable in
+ * advance because the port is picked at start time. Both are this machine, so
+ * when the expected origin is localhost, the whole localhost family is the
+ * trust boundary; every other expected origin stays an exact match.
+ */
+function originAllowed(allowed: string, actual: string): boolean {
+  if (actual === allowed) return true;
+  return allowed.startsWith('http://localhost') && actual.startsWith('http://localhost:');
+}
+
 export function useFrameHost(allowedOrigin: string | null, handlers: FrameHostHandlers): void {
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
@@ -50,7 +63,7 @@ export function useFrameHost(allowedOrigin: string | null, handlers: FrameHostHa
 
     const onMessage = (event: MessageEvent) => {
       // Origin gate: only the embedded copy of the host app may talk to us.
-      if (event.origin !== allowedOrigin) return;
+      if (!originAllowed(allowedOrigin, event.origin)) return;
       const data = event.data as FrameHostMessage | null;
       if (!data || typeof data !== 'object') return;
 

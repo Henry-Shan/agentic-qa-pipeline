@@ -5,7 +5,19 @@ import { fileURLToPath } from 'node:url';
 
 export type PreviewMode = 'local' | 'tunnel';
 
+/**
+ * What this process IS on this machine (QA_ROLE):
+ *  - `runner`  — the full worker: claims reports, dispatches claude, owns the
+ *    shared DB's run state. Exactly ONE machine runs this.
+ *  - `preview` — a tester machine's preview agent: serves `/p/<reportId>` on the
+ *    front door and builds previews locally on demand from the run's branch.
+ *    Reads the DB, never writes run state — so any number of machines can run it
+ *    alongside the single runner without fighting over shared rows.
+ */
+export type WorkerRole = 'runner' | 'preview';
+
 export interface WorkerConfig {
+  role: WorkerRole;
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   runnerRepo: string;
@@ -118,11 +130,16 @@ export function loadConfig(): WorkerConfig {
   if (previewMode !== 'local' && previewMode !== 'tunnel') {
     throw new Error(`PREVIEW_MODE must be local|tunnel, got "${previewMode}"`);
   }
+  const role = process.env.QA_ROLE ?? 'runner';
+  if (role !== 'runner' && role !== 'preview') {
+    throw new Error(`QA_ROLE must be runner|preview, got "${role}"`);
+  }
   const rawHome = process.env.QA_HOME;
   const qaHome = rawHome
     ? path.resolve(rawHome.replace(/^~(?=\/|$)/, os.homedir()))
     : path.join(os.homedir(), '.qa-pipeline');
   return {
+    role,
     supabaseUrl,
     supabaseServiceRoleKey,
     runnerRepo: process.env.RUNNER_REPO ?? '/Users/YOU/qa-pipeline-runner/the host app',

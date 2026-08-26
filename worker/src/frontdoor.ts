@@ -1,37 +1,55 @@
+import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { API_PREFIX, previewHostname, startPreview } from './preview';
+import { ensureAgentPreview } from './agent-preview';
+import { API_PREFIX, listeningPid, previewHostname, startPreview } from './preview';
 import type { Ctx, PreviewHandle } from './state';
 import { log } from './util';
 
 /**
- * Front door for every `qa-preview-<task>.<zone>` request (contracts §Preview).
+ * Front door for preview traffic (contracts §Preview), on every machine.
  *
- * cloudflared sends ALL preview traffic here, and this decides what happens:
+ * It answers two kinds of request:
  *
- *  - preview up   → proxy to its dev server, rewriting the request's origin
- *  - preview down → start it, and hold the browser on a self-reloading page
+ *  1. **The launcher, `/p/<reportId>`** — the machine-independent preview URL
+ *     the site links to. `localhost:<wakePort>` resolves on whichever machine
+ *     the click happens, so the same link works for every tester: if this
+ *     machine has the preview serving (the runner's own, or one the preview
+ *     agent built from the run's branch), the visitor is redirected to its
+ *     local port; otherwise they get the self-reloading waiting page while it
+ *     is built here. Redirect rather than proxy: the app then runs on its own
+ *     genuine localhost origin, so none of the header rewriting below applies.
  *
- * **Why the rewrite.** Next 16 refuses cross-origin requests to `/_next/*` unless
- * the origin is in `allowedDevOrigins` (block-cross-site-dev.ts). A preview
- * served at qa-preview-46.example.com is cross-origin by that rule, so HMR and
- * the dev chunks 403 — the HTML renders and then nothing hydrates, so the page
- * looks alive but no click does anything. The fix belongs here rather than in the
- * app's next.config: the worktree's diff becomes the PR, and a preview-only
- * config change has no business in it. So we present each request to the dev
- * server as though it came from localhost, which is what it in fact is.
+ *  2. **Tunnel hostnames, `qa-preview-<task>.<zone>`** (PREVIEW_MODE=tunnel) —
+ *     cloudflared sends ALL preview traffic here:
+ *     - preview up   → proxy to its dev server, rewriting the request's origin
+ *     - preview down → start it, and hold the browser on a self-reloading page
  *
- * Bound to 127.0.0.1 — only the local cloudflared process can reach it.
+ * **Why the rewrite (tunnel only).** Next 16 refuses cross-origin requests to
+ * `/_next/*` unless the origin is in `allowedDevOrigins`
+ * (block-cross-site-dev.ts). A preview served at qa-preview-46.example.com is
+ * cross-origin by that rule, so HMR and the dev chunks 403 — the HTML renders
+ * and then nothing hydrates, so the page looks alive but no click does
+ * anything. The fix belongs here rather than in the app's next.config: the
+ * worktree's diff becomes the PR, and a preview-only config change has no
+ * business in it. So we present each request to the dev server as though it
+ * came from localhost, which is what it in fact is.
+ *
+ * Bound to 127.0.0.1 — only this machine's browser and the local cloudflared
+ * process can reach it.
  */
-export function startFrontDoor(ctx: Ctx): http.Server | null {
-  if (ctx.cfg.previewMode !== 'tunnel') return null;
-
+export function startFrontDoor(ctx: Ctx): http.Server {
   // One wake per task at a time: the reloading page must not spawn a dev server
   // on every poll while the first is still compiling.
   const waking = new Set<number>();
 
   const server = http.createServer((req, res) => {
+    const launcher = parseLauncher(req.url ?? '');
+    if (launcher) {
+      void handleLauncher(ctx, req, res, launcher.reportId, launcher.rest, waking);
+      return;
+    }
     const publicHost = hostOf(req.headers.host);
     const reportId = reportIdFromHost(ctx, publicHost);
     if (reportId === null) {
@@ -67,7 +85,7 @@ export function startFrontDoor(ctx: Ctx): http.Server | null {
     const building = ctx.state.startingReports.has(reportId);
     if (!building && !waking.has(reportId)) {
       waking.add(reportId);
-      void wake(ctx, reportId).finally(() => waking.delete(reportId));
+      void ensureLocal(ctx, reportId).finally(() => waking.delete(reportId));
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(
@@ -102,9 +120,69 @@ export function startFrontDoor(ctx: Ctx): http.Server | null {
   });
 
   server.listen(ctx.cfg.wakePort, '127.0.0.1', () => {
-    log('preview', `front door on 127.0.0.1:${ctx.cfg.wakePort} — proxies live previews, wakes asleep ones`);
+    log('preview', `front door on 127.0.0.1:${ctx.cfg.wakePort} — serves /p/<task> launchers, proxies live previews, wakes asleep ones`);
   });
   return server;
+}
+
+/** `/p/47`, `/p/47/qa-session`, `/p/47?x=1` → the task and everything after it. */
+function parseLauncher(url: string): { reportId: number; rest: string } | null {
+  const m = /^\/p\/(\d+)((?:\/|\?).*)?$/.exec(url);
+  if (!m?.[1]) return null;
+  return { reportId: Number(m[1]), rest: m[2] ?? '' };
+}
+
+/**
+ * The launcher: send the visitor to THIS machine's copy of the preview, building
+ * it first if need be. The redirect target is a plain localhost origin, so the
+ * URL fragment (the auto-login `#token_hash=…`) survives — browsers re-attach
+ * the original fragment when a Location header carries none.
+ */
+async function handleLauncher(
+  ctx: Ctx,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  reportId: number,
+  rest: string,
+  waking: Set<number>,
+): Promise<void> {
+  const port = await launcherPort(ctx, reportId);
+  if (port !== null) {
+    const suffix = rest === '' ? '/' : rest.startsWith('?') ? `/${rest}` : rest;
+    res.writeHead(302, { location: `http://localhost:${port}${suffix}`, 'cache-control': 'no-store' });
+    res.end();
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(503, { 'content-type': 'text/plain' });
+    res.end('preview asleep');
+    return;
+  }
+  const building = ctx.state.startingReports.has(reportId);
+  if (!building && !waking.has(reportId)) {
+    waking.add(reportId);
+    void ensureLocal(ctx, reportId).finally(() => waking.delete(reportId));
+  }
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(
+    building
+      ? page('Building this preview…', `Task #${reportId} is being compiled on this machine. This usually takes a few minutes — this page refreshes itself.`, true)
+      : page('Starting this preview…', `Task #${reportId} is starting up on this machine. This page refreshes itself.`, true),
+  );
+}
+
+/** A port on THIS machine that is genuinely serving this report, or null. */
+async function launcherPort(ctx: Ctx, reportId: number): Promise<number | null> {
+  const runner = previewFor(ctx, reportId);
+  if (runner) {
+    if ((await listeningPid(runner.port)) !== null) return runner.port;
+    // Dead behind our back (sleep, crash) — same recovery as the proxy path.
+    ctx.state.previews.delete(runner.runId);
+    void ctx.db.updateRun(runner.runId, { preview_status: 'down' }).catch(() => undefined);
+  }
+  const agent = ctx.state.agentPreviews.get(reportId);
+  if (agent && (await listeningPid(agent.port)) !== null) return agent.port;
+  return null;
 }
 
 function hostOf(header: string | undefined): string {
@@ -186,7 +264,7 @@ function proxy(
       log('preview', `task ${reportId}: dev server on ${handle.port} is gone — restarting it`);
       if (!waking.has(reportId)) {
         waking.add(reportId);
-        void wake(ctx, reportId).finally(() => waking.delete(reportId));
+        void ensureLocal(ctx, reportId).finally(() => waking.delete(reportId));
       }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       res.end(page('Starting this preview…', `Task #${reportId} is waking up. This takes about a minute — this page refreshes itself.`, true));
@@ -268,16 +346,24 @@ function reportIdFromHost(ctx: Ctx, host: string): number | null {
   return previewHostname(ctx, id) === host ? id : null;
 }
 
-async function wake(ctx: Ctx, reportId: number): Promise<void> {
-  const run = await ctx.db.latestRunForReport(reportId);
-  if (!run?.worktree) {
-    log('preview', `wake: task ${reportId} has nothing to wake (no run with a worktree)`);
-    return;
+/**
+ * Bring this report's preview up on THIS machine, whichever way this machine
+ * can: the run's own worktree when it lives here (the runner), else a fresh
+ * build from the pushed branch (the preview agent — also the runner's own
+ * fallback once a merged task's worktree has been torn down).
+ */
+async function ensureLocal(ctx: Ctx, reportId: number): Promise<void> {
+  if (ctx.cfg.role === 'runner') {
+    const run = await ctx.db.latestRunForReport(reportId);
+    if (run?.worktree && fs.existsSync(run.worktree)) {
+      if (ctx.state.previews.has(run.id)) return; // already up; the reload will find it
+      log('preview', `wake: task ${reportId} — starting run ${run.id}'s preview on demand`);
+      // skipExam: this is a visitor opening a link, not a fresh fix to be judged.
+      await startPreview(ctx, run, true);
+      return;
+    }
   }
-  if (ctx.state.previews.has(run.id)) return; // already up; the reload will find it
-  log('preview', `wake: task ${reportId} — starting run ${run.id}'s preview on demand`);
-  // skipExam: this is a visitor opening a link, not a fresh fix to be judged.
-  await startPreview(ctx, run, true);
+  await ensureAgentPreview(ctx, reportId);
 }
 
 function page(title: string, detail: string, reload: boolean): string {

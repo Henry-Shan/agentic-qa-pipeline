@@ -684,6 +684,26 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   LRU: >MAX_PREVIEWS → kill oldest idle, **except the published run** (evicting the one
   link outsiders hold would 530 it silently). Teardown on shipped/cancelled via repo's
   `teardown-worktree.sh`.
+- **Preview agent (`QA_ROLE=preview`, `agent-preview.ts`)** — previews on EVERY tester's
+  own localhost, without the tunnel. The site links previews as
+  `http://localhost:<WAKE_PORT>/p/<reportId>` (the **launcher**; `NEXT_PUBLIC_PREVIEW_AGENT_PORT`
+  overrides the port, default 4521). `localhost` resolves on whichever machine the click
+  happens, so the same link works for everyone: the front door there 302s to this machine's
+  own serving copy of the fix — path and query ride along, and the auto-login `#token_hash`
+  fragment survives because the Location carries no fragment. No copy yet → the standard
+  self-reloading waiting page while one is produced locally: fetch the run's `branch` from
+  origin, `git worktree add --detach` under `<WORKTREE_BASE>/agent-preview-<reportId>`,
+  build (same pipeline as the runner: `producePreviewBuild`, dev-mode degrade, build lanes),
+  serve, and remember the built sha (`.qa/agent-built-sha`) so a rework (branch moved)
+  rebuilds while an unchanged branch re-serves instantly. Start it with `npm run dev:agent`.
+  **The shared DB is read-only from this role.** `qa_runs.preview_*` describes the runner
+  machine's server, so an agent never writes it; all agent state is per-machine
+  (`state.agentPreviews`, keyed by report). None of the runner's loops (claim, steer, ship,
+  reconcile, preview-sync) run under this role — each of them treats shared rows as
+  descriptions of the local machine, which is exactly what a second full worker gets wrong.
+  ONE machine runs `QA_ROLE=runner` (the default); any number run `preview`.
+  The runner serves `/p/<reportId>` too — from its own worktree preview, falling back to the
+  agent path when the worktree is gone (e.g. torn down after merge).
 - **Per-task preview URL** (PREVIEW_MODE=tunnel): every task has ONE permanent address,
   `qa-preview-<reportId>.example.com` — keyed by report, not run, so a rework keeps the
   same link. One label deep on purpose: the zone's existing `*.example.com` certificate
@@ -699,9 +719,11 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `qa` or the apex, so no misconfiguration can aim a DNS write at production;
   `PROTECTED_HOSTS` is a second, redundant check. Enforced in `startPreview` and
   per-record in the DNS loop. 23 unit cases.
-- **Front door** (`frontdoor.ts`, 127.0.0.1:`WAKE_PORT`, tunnel mode only): cloudflared's
-  ingress is a SINGLE catch-all rule pointing here — no per-hostname rules, so starting or
-  stopping a preview never rewrites the config or restarts cloudflared. It routes by Host:
+- **Front door** (`frontdoor.ts`, 127.0.0.1:`WAKE_PORT`, every machine and both modes): the
+  single entry point for preview traffic. It serves the machine-independent **launcher**
+  `/p/<reportId>` (below) always, and in tunnel mode additionally fronts cloudflared:
+  the ingress is a SINGLE catch-all rule pointing here — no per-hostname rules, so starting
+  or stopping a preview never rewrites the config or restarts cloudflared. It routes by Host:
   - preview up → **proxy** to its dev server (HTTP + the `/_next/webpack-hmr` websocket)
   - preview down → start it and hold the browser on a self-reloading page
   - host not `<prefix><digits>.<zone>` → 404
