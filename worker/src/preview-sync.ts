@@ -1,8 +1,14 @@
-import { listeningPid, stopPreview } from './preview';
+import { buildMatches, expectedPreviewUrl, listeningPid, stopPreview } from './preview';
 import type { Ctx } from './state';
 import { log } from './util';
 
 const SYNC_MS = 60_000;
+
+/** What a build for this preview should have inlined as its API base. */
+function apiBaseFor(ctx: Ctx, reportId: number, port: number): string {
+  const url = expectedPreviewUrl(ctx, reportId, port);
+  return url.startsWith('https://') ? `${url}/__api` : ctx.cfg.previewApiOrigin;
+}
 
 /**
  * Keep `qa_runs.preview_status` honest while the worker runs.
@@ -37,9 +43,23 @@ export async function syncPreviewRows(ctx: Ctx): Promise<void> {
     const run = await ctx.db.getRun(handle.runId);
     if (!run) continue;
 
-    if (alive && run.preview_status !== 'live') {
-      await ctx.db.updateRun(handle.runId, { preview_status: 'live' });
-      log('preview', `run ${handle.runId}: row said ${run.preview_status} but port ${handle.port} is serving — corrected to live`);
+    // A preview re-attached after a config change keeps SERVING, but its bundle
+    // was compiled for the old addresses — switching off the tunnel left builds
+    // calling a `/__api` host that no longer resolves, so the page loads and
+    // every request inside it fails. Retire it; opening the link rebuilds.
+    const url = expectedPreviewUrl(ctx, handle.reportId, handle.port);
+    if (alive && !buildMatches(ctx, handle.worktree, apiBaseFor(ctx, handle.reportId, handle.port))) {
+      await stopPreview(ctx, handle, 'built for a different address');
+      continue;
+    }
+    if (alive && (run.preview_status !== 'live' || run.preview_url !== url)) {
+      await ctx.db.updateRun(handle.runId, { preview_status: 'live', preview_url: url });
+      if (run.preview_status !== 'live') {
+        log('preview', `run ${handle.runId}: row said ${run.preview_status} but port ${handle.port} is serving — corrected to live`);
+      }
+      if (run.preview_url !== url) {
+        log('preview', `run ${handle.runId}: preview_url was ${run.preview_url ?? 'null'} — corrected to ${url}`);
+      }
     } else if (!alive) {
       // Gone without telling us: drop the handle so the next request wakes it
       // rather than proxying into a dead port.

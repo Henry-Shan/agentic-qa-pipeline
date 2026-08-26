@@ -34,14 +34,16 @@ export function StatusPill({
   let title: string | undefined;
 
   if (!paused && status === 'preview' && previewStatus !== 'live') {
-    // A localhost URL is only openable on the machine that built it, so it does
-    // not count as deployed for anyone reading this board.
-    if (previewUrl?.startsWith('https://')) {
+    // Previews are served on the worker's own machine (http://localhost:33xx), so
+    // "waiting" is the honest word whether the URL is local or public: it exists,
+    // it just is not running this second. Only a task with no preview URL at all
+    // has nothing to offer.
+    if (previewUrl) {
       pill = { label: 'Preview waiting', cls: 'bg-line-soft text-ink-2' };
-      title = 'The preview is asleep. Opening it starts it back up — about a minute.';
+      title = 'The preview is not running right now. Opening it starts it again — about a minute.';
     } else {
-      pill = { label: 'Preview not deployed', cls: 'bg-line-soft text-ink-3' };
-      title = 'A preview was built but is not reachable from here.';
+      pill = { label: 'No preview yet', cls: 'bg-line-soft text-ink-3' };
+      title = 'This task has not produced a preview.';
     }
   }
 

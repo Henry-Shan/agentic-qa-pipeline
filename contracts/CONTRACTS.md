@@ -42,7 +42,12 @@ the worker's envelope instructions direct Claude to reproduce/verify as that rol
 - `CLAUDE_BIN=/opt/homebrew/bin/claude`
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
-- `PREVIEW_MODE=local|tunnel` · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
+- `PREVIEW_MODE=local|tunnel` — **local is the current setting**: previews are served at
+  `http://localhost:33xx` on the worker's own Mac and no tunnel runs. The production API
+  allows any `http://localhost:` origin (`main.go` `isAllowedOrigin`), so a local preview calls
+  `https://api.example.com` directly and `/__api` proxying is not used. The tunnel code stays
+  in place and inert; flipping the variable back turns it on
+- (tunnel-only) · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
 - `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
 - `PREVIEW_SUPABASE_URL` · `PREVIEW_SUPABASE_ANON_KEY` — inlined into the preview build;
   ANON key only, the worker refuses a `service_role` JWT
@@ -761,6 +766,16 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
     down, so the next request wakes it instead of proxying into a dead port.
   Caching what the row *probably* says does not work: that cache goes stale exactly the way
   the row does (tried, and it failed the test — the correction never fired).
+- **A build records what it was built FOR** (`<worktree>/.qa/build-target.json`: apiBase +
+  supabaseUrl). Reuse compares that marker, and a mismatch forces a rebuild. Grepping the
+  bundle for the expected URLs does NOT work — the app carries `https://api.example.com` as a
+  hardcoded fallback in `getPublicEnv()`, so the string is present whether or not the build
+  used it, and a stale build passed the check and kept serving after the tunnel was switched
+  off. The sync loop retires a live preview whose marker no longer matches, so a settings
+  change cannot leave pages that load while every request inside them fails.
+- **`preview_url` is derived from the current mode, never from when the preview started.**
+  Switching tunnel → local otherwise left every live row advertising a `https://qa-preview-*`
+  address whose tunnel no longer existed.
 - **A waiting preview says WHY** (`qa_runs.preview_detail`, db/0019). `preview_status` alone
   renders as "Preview waiting", which is true and useless — evicted, queued, building and
   broken all look identical, and the real reason was only ever going to the worker log that

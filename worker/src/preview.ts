@@ -272,7 +272,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   // built, so reuse it — that is what makes wake-from-sleep quick. But only if
   // that build points at the right backend: builds made before this check exists,
   // or made while the env was wrong, must not be handed back.
-  if (waking && fs.existsSync(buildId) && bundleTargets(worktree, mustBeInBundle(ctx, apiBase))) return true;
+  if (waking && buildMatches(ctx, worktree, apiBase)) return true;
 
   // Belt and braces on the env, because getting this wrong is silent: the build
   // succeeds and the app calls the wrong backend.
@@ -313,16 +313,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
   if (r.exitCode === 0 && fs.existsSync(buildId)) {
     // A build that silently baked in the wrong backend is worse than no build:
     // it looks fine and every request is refused. Prove the URL is in the bundle.
-    if (!bundleTargets(worktree, mustBeInBundle(ctx, apiBase))) {
-      log('preview', `run ${run.id}: built in ${secs}s but the bundle is missing ${mustBeInBundle(ctx, apiBase).join(' / ')} — serving dev mode`);
-      await ctx.db.insertEvent({
-        report_id: run.report_id,
-        run_id: run.id,
-        type: 'system',
-        message: `preview build did not inline what it needs (expected ${mustBeInBundle(ctx, apiBase).join(' and ')}) — falling back to the dev server`,
-      });
-      return false;
-    }
+    recordBuildTarget(ctx, worktree, apiBase);
     log('preview', `run ${run.id}: built in ${secs}s → ${apiBase}`);
     return true;
   }
@@ -361,29 +352,48 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
  * Measured on a real worktree: 25s clone + 13s install, once per worktree.
  */
 async function ensureDeps(ctx: Ctx, worktree: string, runId: number): Promise<void> {
-  if (depsAreLocal(worktree)) return;
+  if (depsAreUsable(worktree)) return;
 
   const started = Date.now();
-  const src = path.join(ctx.cfg.runnerRepo, 'node_modules');
-  if (fs.existsSync(src)) {
-    const nodeModules = path.join(worktree, 'node_modules');
-    const clone = await execa('bash', ['-c', `rm -rf ${shq(nodeModules)} && cp -Rc ${shq(src)} ${shq(nodeModules)}`], {
-      reject: false,
-      timeout: 10 * 60_000,
-    });
-    if (clone.exitCode !== 0) {
-      log('preview', `run ${runId}: dependency clone failed (${clone.stderr ?? ''}) — falling back to a plain install`);
-    }
-  }
-  // Reconciles what THIS branch adds, and covers having nothing to clone from.
+  // A clean install, not a copy. Cloning the runner's node_modules looked
+  // cheaper, but npm then relocates `next` into apps/web for the workspace
+  // layout and leaves the bin link behind NEITHER there nor at the root — so
+  // `next build` dies with exit 127, "command not found", and the preview falls
+  // back to dev mode. Wiping first and letting npm build the tree itself takes
+  // ~18s against a warm cache, which is faster than the clone was anyway.
+  const wipe = ['node_modules', 'apps/web/node_modules', 'packages/shared-core/node_modules', 'packages/shared-react/node_modules']
+    .map((d) => shq(path.join(worktree, d)))
+    .join(' ');
+  await execa('bash', ['-c', `rm -rf ${wipe}`], { reject: false, timeout: 5 * 60_000 });
   const install = await execa('npm', ['install', '--no-audit', '--no-fund'], {
     cwd: worktree,
     reject: false,
     timeout: 20 * 60_000,
   });
   const secs = Math.round((Date.now() - started) / 1000);
-  if (install.exitCode === 0) log('preview', `run ${runId}: dependencies materialised in ${secs}s`);
-  else log('preview', `run ${runId}: npm install exited ${install.exitCode} after ${secs}s — building anyway`);
+  if (install.exitCode === 0 && depsAreUsable(worktree)) {
+    log('preview', `run ${runId}: dependencies installed in ${secs}s`);
+  } else {
+    log('preview', `run ${runId}: npm install exited ${install.exitCode} after ${secs}s and the next binary is ${depsAreUsable(worktree) ? 'present' : 'still missing'} — building anyway`);
+  }
+}
+
+/**
+ * Can this worktree actually RUN a build?
+ *
+ * Not "does node_modules exist", and not even "does `next` resolve" — the build
+ * script runs `next build`, so what matters is that the executable is linked
+ * where npm puts it for this workspace. A tree can resolve `next/package.json`
+ * perfectly and still fail with exit 127 because `.bin/next` was never created,
+ * which is exactly how tasks 59 and 62 ended up with no preview at all.
+ */
+function depsAreUsable(worktree: string): boolean {
+  const bins = [
+    path.join(worktree, 'apps/web/node_modules/.bin/next'),
+    path.join(worktree, 'node_modules/.bin/next'),
+  ];
+  if (!bins.some((b) => fs.existsSync(b))) return false;
+  return depsAreLocal(worktree);
 }
 
 /**
@@ -405,40 +415,6 @@ function depsAreLocal(worktree: string): boolean {
   }
 }
 
-/**
- * Does the built client bundle carry EVERY value the preview needs?
- *
- * Checking only the API URL was not enough: a build made before the worker
- * supplied Supabase env still contained the right `/__api` base, so the reuse
- * path accepted it — and served an app whose login page reads "Supabase is not
- * configured for the web app", because NEXT_PUBLIC_SUPABASE_URL was never
- * inlined. Anything the preview cannot run without belongs in this check, or a
- * stale build survives forever.
- */
-function bundleTargets(worktree: string, values: string[]): boolean {
-  const wanted = values.filter(Boolean);
-  if (wanted.length === 0) return true;
-  const found = new Set<string>();
-  const dir = path.join(worktree, 'apps/web/.next/static/chunks');
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir, { recursive: true }) as string[];
-  } catch {
-    return false;
-  }
-  for (const f of files) {
-    const full = path.join(dir, f);
-    try {
-      if (!fs.statSync(full).isFile() || !full.endsWith('.js')) continue;
-      const text = fs.readFileSync(full, 'utf8');
-      for (const value of wanted) if (text.includes(value)) found.add(value);
-      if (found.size === wanted.length) return true;
-    } catch {
-      // unreadable chunk — keep looking
-    }
-  }
-  return false;
-}
 
 async function enforcePreviewCap(ctx: Ctx): Promise<void> {
   while (ctx.state.previews.size > maxPreviews(ctx)) {
@@ -567,12 +543,65 @@ function explainStop(ctx: Ctx, reason: string): string {
     return 'Replaced by a newer run for this task.';
   }
   if (reason === 'shipped') return 'Shipped — the preview was torn down.';
+  if (reason === 'built for a different address') {
+    return 'This preview was built for the old public URL, which no longer exists. Opening the link rebuilds it for localhost — a few minutes.';
+  }
   return reason;
 }
 
-/** The values a served preview is broken without. */
-function mustBeInBundle(ctx: Ctx, apiBase: string): string[] {
-  return [apiBase, ctx.cfg.previewSupabaseUrl].filter(Boolean);
+/**
+ * Where this preview should be reachable RIGHT NOW.
+ *
+ * Derived from the current mode, never from what was stored when the preview
+ * first started: switching PREVIEW_MODE from tunnel to local left every live row
+ * advertising a `https://qa-preview-*` address whose tunnel no longer exists, so
+ * the board offered links that could not resolve.
+ */
+export function expectedPreviewUrl(ctx: Ctx, reportId: number, port: number): string {
+  if (ctx.cfg.previewMode === 'tunnel') {
+    const host = previewHostname(ctx, reportId);
+    if (!refusesToServe(ctx, host)) return `https://${host}`;
+  }
+  return `http://localhost:${port}`;
+}
+
+/**
+ * What a build was made FOR, recorded beside it.
+ *
+ * Grepping the bundle for the expected URLs cannot work: the app carries
+ * `https://api.example.com` as a hardcoded fallback in getPublicEnv(), so that
+ * string is present whether or not the build actually used it — a stale build
+ * passed the check and kept serving after the tunnel was switched off. A marker
+ * written at build time says exactly what went in, with no guessing.
+ */
+interface BuildTarget {
+  apiBase: string;
+  supabaseUrl: string;
+}
+
+function targetPath(worktree: string): string {
+  return path.join(worktree, '.qa', 'build-target.json');
+}
+
+export function recordBuildTarget(ctx: Ctx, worktree: string, apiBase: string): void {
+  try {
+    fs.mkdirSync(path.join(worktree, '.qa'), { recursive: true });
+    const target: BuildTarget = { apiBase, supabaseUrl: ctx.cfg.previewSupabaseUrl };
+    fs.writeFileSync(targetPath(worktree), JSON.stringify(target));
+  } catch {
+    // best effort: a missing marker just means the next start rebuilds
+  }
+}
+
+/** Was the build in this worktree made for exactly these settings? */
+export function buildMatches(ctx: Ctx, worktree: string, apiBase: string): boolean {
+  if (!fs.existsSync(path.join(worktree, 'apps/web/.next/BUILD_ID'))) return false;
+  try {
+    const saved = JSON.parse(fs.readFileSync(targetPath(worktree), 'utf8')) as BuildTarget;
+    return saved.apiBase === apiBase && saved.supabaseUrl === ctx.cfg.previewSupabaseUrl;
+  } catch {
+    return false; // no marker → built before this existed, or unreadable
+  }
 }
 
 function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
