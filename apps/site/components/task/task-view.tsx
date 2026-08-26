@@ -25,6 +25,7 @@ import { PreviewEmbed } from "@/components/task/preview-embed";
 import { ReplayPlayer } from "@/components/task/replay-player";
 import { ResultCard } from "@/components/task/result-card";
 import { RerunTask } from "@/components/task/rerun-task";
+import { BuildProgress } from "@/components/task/build-progress";
 import { MarkShipped } from "@/components/task/mark-shipped";
 import { SteerBox } from "@/components/task/steer-box";
 import { TerminalPanel } from "@/components/task/terminal-panel";
@@ -386,11 +387,18 @@ export function TaskView({
       </div>
       <Pipeline status={report.status} detail />
 
+      {/* While it is being built, show the phase and how long it has been going —
+          "PR ready" on its own reads as finished and leaves the reader waiting
+          without knowing what for. */}
+      {run?.preview_status === "starting" && run?.preview_detail ? (
+        <BuildProgress detail={run.preview_detail} since={run.preview_detail_at} />
+      ) : null}
+
       {/* "Preview waiting" is true and useless on its own — evicted, building,
           queued and broken all render identically. The worker records why at
           every transition (db/0019); this is where the reader asks the question,
           so this is where the answer belongs. */}
-      {report.status === "preview" && !previewLive && run?.preview_detail ? (
+      {report.status === "preview" && !previewLive && run?.preview_status !== "starting" && run?.preview_detail ? (
         <p className="mt-2 text-[12.5px] leading-[1.55] text-ink-2">
           <span className="font-semibold text-ink">Why it is waiting: </span>
           {run.preview_detail}

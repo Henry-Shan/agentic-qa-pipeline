@@ -86,6 +86,7 @@ export interface QaRun {
   preview_url: string | null;
   preview_port: number | null;
   preview_detail?: string | null;
+  preview_detail_at?: string | null;
   preview_status: PreviewStatus;
   grounding: GroundingChip[] | null;
   files_changed: FileChanged[] | null;
@@ -308,6 +309,13 @@ export class Db {
     const r = await this.c.from('qa_runs').select('*').eq('status', 'running').order('id', { ascending: true });
     if (r.error) throw new Error(`runningRuns: ${r.error.message}`);
     return (r.data as QaRun[] | null) ?? [];
+  }
+
+  /** Every run that has ever advertised a preview URL (for address hygiene). */
+  async previewRunsAll(): Promise<QaRun[]> {
+    const r = await this.c.from('qa_runs').select('*').not('preview_url', 'is', null);
+    if (r.error) throw new Error(`previewRunsAll: ${r.error.message}`);
+    return (r.data ?? []) as QaRun[];
   }
 
   async previewRuns(): Promise<QaRun[]> {

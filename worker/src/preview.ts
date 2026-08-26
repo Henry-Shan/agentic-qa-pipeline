@@ -88,7 +88,9 @@ async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
  * exists at every one of these points — it was only ever going into the log.
  */
 async function setPreviewState(ctx: Ctx, runId: number, status: PreviewStatus, detail: string): Promise<void> {
-  await ctx.db.updateRun(runId, { preview_status: status, preview_detail: detail }).catch(() => undefined);
+  await ctx.db
+    .updateRun(runId, { preview_status: status, preview_detail: detail, preview_detail_at: new Date().toISOString() })
+    .catch(() => undefined);
 }
 
 export async function startPreview(ctx: Ctx, run: QaRun, skipExam = false): Promise<void> {
@@ -233,6 +235,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
     preview_url: url,
     preview_port: port,
     preview_detail: built ? 'Running the built version of the fix.' : 'Running in dev mode — the production build failed, so pages load slowly.',
+    preview_detail_at: new Date().toISOString(),
   });
   // Health wait can take up to 120s: only pr_ready may advance to preview, so a
   // late-healthy dev server never regresses verified/stopped/blocked.

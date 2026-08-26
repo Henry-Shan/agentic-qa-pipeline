@@ -35,6 +35,20 @@ export function startPreviewSyncLoop(ctx: Ctx): NodeJS.Timeout {
 }
 
 export async function syncPreviewRows(ctx: Ctx): Promise<void> {
+  // Rows we are NOT holding a handle for can still advertise an address from a
+  // previous PREVIEW_MODE. In local mode nothing can serve a https://qa-preview-*
+  // link — there is no tunnel and no wake service — so leaving it there offers a
+  // link that cannot work. Clear it; the next start writes the real one.
+  for (const run of await ctx.db.previewRunsAll()) {
+    if (ctx.state.previews.has(run.id)) continue;
+    if (!run.preview_url) continue;
+    const localMode = ctx.cfg.previewMode !== 'tunnel';
+    const stale = localMode ? run.preview_url.startsWith('https://') : run.preview_url.startsWith('http://localhost');
+    if (!stale) continue;
+    await ctx.db.updateRun(run.id, { preview_url: null }).catch(() => undefined);
+    log('preview', `run ${run.id}: dropped ${run.preview_url} — nothing serves that address in ${ctx.cfg.previewMode} mode`);
+  }
+
   for (const handle of [...ctx.state.previews.values()]) {
     // A preview mid-start has no settled row yet; leave it to startPreview.
     if (ctx.state.startingPreviews.has(handle.runId)) continue;

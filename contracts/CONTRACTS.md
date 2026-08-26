@@ -320,6 +320,17 @@ the run, most specific first:
 Re-run sits IN the card: it is the answer for the interrupted case, and hunting for it
 elsewhere on the page is friction at exactly the wrong moment. 7 branch cases.
 
+**`pr_ready` lives in Fixing, not Done.** A PR with no preview yet is still being turned into
+something you can click, and "PR ready" reads as finished — so the reader waits without
+knowing what for. It moves to Done when the preview comes up. The pill says
+**"Building preview"** (amber, working dot) while `preview_status = 'starting'`.
+
+**Build progress is a phase and a clock, never a percentage.** The worker knows which phase it
+is in and when that phase began (`preview_detail_at`, db/0020); it does not know how far
+through a bundler is. The task page shows the phase, live elapsed time, the four steps with
+the finished ones ticked, and how long that phase usually takes — which answers "is this
+stuck?", the only question being asked. A bar that stalls at 90% answers nothing.
+
 **Board buckets — four, total, no "All".** Every status lands in exactly one, so nothing can
 hide: `Fixing` (queued · running · rework — the machine has it), `Done` (pr_ready · preview ·
 blocked · failed · stopped · cancelled — the machine is finished and it is waiting on a

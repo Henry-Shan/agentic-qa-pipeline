@@ -33,6 +33,13 @@ export function StatusPill({
     : STATUS_PILL[status];
   let title: string | undefined;
 
+  // A PR with a preview still compiling should say so — "PR ready" reads as
+  // finished, and the person then waits without knowing what for.
+  if (!paused && status === 'pr_ready' && previewStatus === 'starting') {
+    pill = { label: 'Building preview', cls: 'bg-amber-soft text-amber', working: true };
+    title = 'The PR is open; a runnable copy is being built.';
+  }
+
   if (!paused && status === 'preview' && previewStatus !== 'live') {
     // Previews are served on the worker's own machine (http://localhost:33xx), so
     // "waiting" is the honest word whether the URL is local or public: it exists,

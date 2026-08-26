@@ -168,6 +168,8 @@ export interface QaRun {
   preview_status: PreviewStatus;
   /** Why it is in that state, in words (db/0019). */
   preview_detail?: string | null;
+  /** When that phase began (db/0020) — the site shows elapsed time from it. */
+  preview_detail_at?: string | null;
   /**
    * Storage path of the "after the fix" rrweb recording — the replay executed
    * against this run's preview build, e.g. report-7/after-replay-12.json

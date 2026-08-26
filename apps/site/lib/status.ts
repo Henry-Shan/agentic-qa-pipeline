@@ -4,9 +4,11 @@ import type { ReportStatus } from '@/lib/types';
 // tab to fall through to and nothing can hide. The names describe who the task
 // is waiting on, not the machine's internal state:
 //
-//   Fixing    the machine has it (queued counts — it is waiting to be picked up)
-//   Done      the machine is finished; it is waiting on YOUR judgment, whether
-//             that finished as a PR, a block, or a failure
+//   Fixing    the machine still has work to do — queued, running, and pr_ready,
+//             because a PR with no preview yet is still being turned into
+//             something you can click
+//   Done      there is something to look at or decide: a live preview, or a run
+//             that stopped and needs a person
 //   Verified  you said it works
 //   Shipped   the PR is merged
 export type TabKey = 'fixing' | 'done' | 'verified' | 'shipped';
@@ -24,13 +26,16 @@ export function tabOf(status: ReportStatus): TabKey {
     case 'queued':
     case 'running':
     case 'rework':
+    // pr_ready is NOT done: the PR exists but the preview is still being built,
+    // and until it is there is nothing to click. It moves to Done when the
+    // preview comes up.
+    case 'pr_ready':
       return 'fixing';
     case 'verified':
       return 'verified';
     case 'shipped':
       return 'shipped';
-    // pr_ready · preview · blocked · failed · stopped · cancelled — the machine
-    // is done with it either way, and each needs a person to look.
+    // preview · blocked · failed · stopped · cancelled — each needs a person.
     default:
       return 'done';
   }
