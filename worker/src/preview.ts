@@ -15,7 +15,7 @@ const PORT_SCAN_STEP = 10;
 const PORT_SCAN_END = 3990;
 const HEALTH_TIMEOUT_MS = 120_000;
 
-function shq(s: string): string {
+export function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -30,11 +30,16 @@ function portFree(port: number): Promise<boolean> {
 }
 
 /** Picks AND reserves a port — caller must releasePort() on every exit path. */
-async function findFreePort(ctx: Ctx): Promise<number | null> {
+export async function findFreePort(ctx: Ctx): Promise<number | null> {
   const taken = new Set([...ctx.state.previews.values()].map((p) => p.port));
+  for (const p of ctx.state.agentPreviews.values()) taken.add(p.port);
   for (const p of ctx.state.reservedPorts) taken.add(p);
   for (let port = PORT_SCAN_START; port <= PORT_SCAN_END; port += PORT_SCAN_STEP) {
     if (taken.has(port)) continue;
+    // The bind test alone misses wildcard listeners: SO_REUSEADDR lets a
+    // 127.0.0.1 bind succeed while another server holds *:<port> (macOS), and a
+    // preview registered on someone else's port serves someone else's app.
+    if ((await listeningPid(port)) !== null) continue;
     if (await portFree(port)) {
       ctx.state.reservedPorts.add(port);
       return port;
@@ -65,7 +70,9 @@ export async function listeningPid(port: number): Promise<number | null> {
   return null;
 }
 
-async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
+export { HEALTH_TIMEOUT_MS };
+
+export async function waitHealthy(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -270,13 +277,44 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
  */
 async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: string, logPath: string, waking: boolean): Promise<boolean> {
   if (!ctx.cfg.previewBuild || ctx.cfg.previewCmd) return false;
-  const buildId = path.join(worktree, 'apps/web/.next/BUILD_ID');
   // Waking an evicted preview re-serves code that has not changed since it was
   // built, so reuse it — that is what makes wake-from-sleep quick. But only if
   // that build points at the right backend: builds made before this check exists,
   // or made while the env was wrong, must not be handed back.
   if (waking && buildMatches(ctx, worktree, apiBase)) return true;
 
+  await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: 'building preview…' });
+  await setPreviewState(ctx, run.id, 'starting', 'Queued to build. Builds run two at a time, so this waits its turn.');
+  const built = await producePreviewBuild(ctx, {
+    worktree,
+    apiBase,
+    logPath,
+    label: `run ${run.id}`,
+    onCompiling: () => setPreviewState(ctx, run.id, 'starting', 'Compiling the fixed build. This takes a few minutes the first time.'),
+  });
+  if (!built.ok) {
+    await ctx.db.insertEvent({
+      report_id: run.report_id,
+      run_id: run.id,
+      type: 'system',
+      message: `preview build failed — falling back to the slower dev server. ${built.tail}`,
+    });
+  }
+  return built.ok;
+}
+
+/**
+ * The build itself, with no opinion about the shared DB — the runner wraps it in
+ * events and preview_detail updates above; the preview agent (contracts §Preview
+ * agent) calls it directly, because the run row's preview_* columns belong to
+ * the runner machine and an agent must not write them.
+ */
+export async function producePreviewBuild(
+  ctx: Ctx,
+  opts: { worktree: string; apiBase: string; logPath: string; label: string; onCompiling?: () => Promise<void> },
+): Promise<{ ok: boolean; tail: string }> {
+  const { worktree, apiBase, logPath, label } = opts;
+  const buildId = path.join(worktree, 'apps/web/.next/BUILD_ID');
   // Belt and braces on the env, because getting this wrong is silent: the build
   // succeeds and the app calls the wrong backend.
   //  1. `.env.production.local` — highest precedence of Next's env files, and
@@ -292,17 +330,15 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
       `${Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')}\n`,
     );
   } catch (e) {
-    log('preview', `run ${run.id}: could not pin preview env: ${(e as Error).message}`);
+    log('preview', `${label}: could not pin preview env: ${(e as Error).message}`);
   }
-  log('preview', `run ${run.id}: building preview (${ctx.cfg.previewBuildCmd})`);
-  await ctx.db.insertEvent({ report_id: run.report_id, run_id: run.id, type: 'system', message: 'building preview…' });
-  await setPreviewState(ctx, run.id, 'starting', 'Queued to build. Builds run two at a time, so this waits its turn.');
+  log('preview', `${label}: building preview (${ctx.cfg.previewBuildCmd})`);
   // Timed inside the queue: including the wait would report a 5-minute build for
   // something that took 80 seconds behind three others.
   let started = Date.now();
   const r = await queueBuild(async () => {
-    await ensureDeps(ctx, worktree, run.id);
-    await setPreviewState(ctx, run.id, 'starting', 'Compiling the fixed build. This takes a few minutes the first time.');
+    await ensureDeps(ctx, worktree, label);
+    await opts.onCompiling?.();
     started = Date.now();
     return execa('bash', ['-c', ctx.cfg.previewBuildCmd], {
       cwd: worktree,
@@ -317,8 +353,8 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
     // A build that silently baked in the wrong backend is worse than no build:
     // it looks fine and every request is refused. Prove the URL is in the bundle.
     recordBuildTarget(ctx, worktree, apiBase);
-    log('preview', `run ${run.id}: built in ${secs}s → ${apiBase}`);
-    return true;
+    log('preview', `${label}: built in ${secs}s → ${apiBase}`);
+    return { ok: true, tail: '' };
   }
   try {
     fs.appendFileSync(logPath, `\n--- preview build failed (${secs}s) ---\n${r.stdout ?? ''}\n${r.stderr ?? ''}\n`);
@@ -326,14 +362,8 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
     // the log is a convenience; never fail the preview over it
   }
   const tail = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.trim().split('\n').slice(-3).join(' · ').slice(0, 300);
-  log('preview', `run ${run.id}: build failed in ${secs}s — serving dev mode instead`);
-  await ctx.db.insertEvent({
-    report_id: run.report_id,
-    run_id: run.id,
-    type: 'system',
-    message: `preview build failed — falling back to the slower dev server. ${tail}`,
-  });
-  return false;
+  log('preview', `${label}: build failed in ${secs}s — serving dev mode instead`);
+  return { ok: false, tail };
 }
 
 /**
@@ -354,7 +384,7 @@ async function ensureBuild(ctx: Ctx, run: QaRun, worktree: string, apiBase: stri
  * (a task that adds a dependency — `xlsx`, say — is not in the runner's tree).
  * Measured on a real worktree: 25s clone + 13s install, once per worktree.
  */
-async function ensureDeps(ctx: Ctx, worktree: string, runId: number): Promise<void> {
+async function ensureDeps(ctx: Ctx, worktree: string, label: string): Promise<void> {
   if (depsAreUsable(worktree)) return;
 
   const started = Date.now();
@@ -375,9 +405,9 @@ async function ensureDeps(ctx: Ctx, worktree: string, runId: number): Promise<vo
   });
   const secs = Math.round((Date.now() - started) / 1000);
   if (install.exitCode === 0 && depsAreUsable(worktree)) {
-    log('preview', `run ${runId}: dependencies installed in ${secs}s`);
+    log('preview', `${label}: dependencies installed in ${secs}s`);
   } else {
-    log('preview', `run ${runId}: npm install exited ${install.exitCode} after ${secs}s and the next binary is ${depsAreUsable(worktree) ? 'present' : 'still missing'} — building anyway`);
+    log('preview', `${label}: npm install exited ${install.exitCode} after ${secs}s and the next binary is ${depsAreUsable(worktree) ? 'present' : 'still missing'} — building anyway`);
   }
 }
 
@@ -450,6 +480,19 @@ export async function stopPreview(ctx: Ctx, handle: PreviewHandle, reason: strin
 export async function stopAllPreviews(ctx: Ctx): Promise<void> {
   for (const handle of [...ctx.state.previews.values()]) {
     await stopPreview(ctx, handle, 'worker shutting down');
+  }
+  // Agent-built previews are local state only — kill the servers, touch no rows.
+  for (const [reportId, agent] of [...ctx.state.agentPreviews]) {
+    try {
+      process.kill(-agent.pid, 'SIGTERM');
+    } catch {
+      try {
+        process.kill(agent.pid, 'SIGTERM');
+      } catch {
+        // already dead
+      }
+    }
+    ctx.state.agentPreviews.delete(reportId);
   }
   if (cfChild) {
     try {
@@ -607,7 +650,7 @@ export function buildMatches(ctx: Ctx, worktree: string, apiBase: string): boole
   }
 }
 
-function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
+export function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
   const env: Record<string, string> = {
     NEXT_PUBLIC_API_BASE_URL: apiBase,
     NEXT_PUBLIC_OCR_BASE_URL: apiBase,

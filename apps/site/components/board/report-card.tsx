@@ -5,6 +5,7 @@ import { initialOf, relativeAge } from "@/lib/format";
 import { useDisplayName } from "@/lib/display-names";
 import type { QaReport, QaRun } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
+import { previewLauncherUrl } from "@/lib/preview";
 import { Pipeline } from "@/components/pipeline";
 import { firstLine } from "@/components/needs-human-text";
 
@@ -83,7 +84,9 @@ export function ReportCard({
           status={report.status}
           runStatus={run?.status}
           previewStatus={run?.preview_status}
-          previewUrl={run?.preview_url}
+          // A pushed branch means the launcher can open (or build) this preview
+          // on any machine, so the pill must not claim there is nothing to open.
+          previewUrl={run?.preview_url ?? (run?.branch ? previewLauncherUrl(report.id) : null)}
         />
       </div>
 

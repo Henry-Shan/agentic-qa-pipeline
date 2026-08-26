@@ -23,6 +23,23 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
   const ctx: Ctx = { cfg, db: new Db(cfg), state: new WorkerState() };
   const releaseLock = acquireLock(cfg);
   try {
+    // Preview agent (contracts §Preview agent): a tester machine that serves
+    // `/p/<reportId>` and builds previews locally from each run's branch. It
+    // reads the shared DB and writes nothing — none of the runner's loops
+    // (claim, steer, ship, reconcile, preview-sync) may run here, because every
+    // one of them treats the shared rows as descriptions of THIS machine.
+    if (cfg.role === 'preview') {
+      const frontDoor = startFrontDoor(ctx);
+      log('worker', `up — preview agent · open previews at http://localhost:${cfg.wakePort}/p/<task> · repo ${cfg.runnerRepo}`);
+      return {
+        ctx,
+        async stop(): Promise<void> {
+          await new Promise<void>((resolve) => frontDoor.close(() => resolve()));
+          releaseLock();
+        },
+      };
+    }
+
     // Before reconcile: reconcile re-publishes the tunnel, and every preview
     // request goes through this. Starting it after would leave a window where
     // every task URL 502s.
@@ -39,7 +56,7 @@ export async function startWorker(cfg: WorkerConfig): Promise<WorkerHandle> {
       async stop(): Promise<void> {
         for (const t of timers) clearInterval(t);
         closeTerminals();
-        if (frontDoor) await new Promise<void>((resolve) => frontDoor.close(() => resolve()));
+        await new Promise<void>((resolve) => frontDoor.close(() => resolve()));
         await new Promise<void>((resolve) => shim.close(() => resolve()));
         releaseLock();
       },

@@ -25,6 +25,23 @@ export interface PreviewHandle {
   startedAt: number;
 }
 
+/**
+ * A preview this machine built FOR ITSELF from the run's branch — the preview
+ * agent's unit of state (contracts §Preview agent). Unlike PreviewHandle it is
+ * keyed by report and never mirrored into the shared DB: the run row's
+ * preview_* columns belong to the runner machine alone.
+ */
+export interface AgentPreviewHandle {
+  reportId: number;
+  worktree: string;
+  port: number;
+  pid: number;
+  /** Commit actually checked out — a rework moves origin/<branch>, and a stale
+   *  sha is what tells the agent to rebuild instead of redirect. */
+  sha: string;
+  startedAt: number;
+}
+
 export interface Ctx {
   cfg: WorkerConfig;
   db: Db;
@@ -35,6 +52,8 @@ export class WorkerState {
   private readonly bySession = new Map<string, RunHandle>();
   private readonly byReport = new Map<number, RunHandle>();
   readonly previews = new Map<number, PreviewHandle>();
+  /** Previews built locally from a branch by the preview agent, keyed by report. */
+  readonly agentPreviews = new Map<number, AgentPreviewHandle>();
   /** Ports handed out by findFreePort but not yet bound/registered — concurrent
    *  startPreview calls (reconcile restarts, simultaneous runinfo) must not
    *  pick the same port before the first server binds it. */

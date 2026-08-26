@@ -67,6 +67,29 @@ switch modes until you confirm Access is in place, flips `PREVIEW_MODE=tunnel`, 
 worker, and tells you how to verify (and how to revert). Until then previews stay
 `PREVIEW_MODE=local` — visible only on this machine, which is the safe default.
 
+## 3b. Preview agent — previews on a tester's own machine (no tunnel needed)
+
+Any tester can see every task's preview on their **own** localhost by running the preview
+agent. The site links previews as `http://localhost:4521/p/<task>`; that URL resolves on
+whichever machine clicks it, and the agent there builds the task's branch locally and
+redirects to it. First open of a task costs a local build (a few minutes); after that it is
+instant until the branch changes.
+
+One-time setup on the tester's Mac (same prerequisites as §0 — Node ≥22, `gh` authed with
+repo access; `claude` is NOT needed):
+
+1. Clone this repo, `npm install`.
+2. Clone the host app as the runner repo (worktree source): `git clone <the host app> ~/qa-pipeline-runner/the host app`.
+3. `worker/.env` with at minimum: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (transfer
+   securely), `RUNNER_REPO`, `WORKTREE_BASE`, and the preview values
+   (`PREVIEW_SUPABASE_URL`, `PREVIEW_SUPABASE_ANON_KEY`). Leave `QA_BASE_SESSION*` unset.
+4. Run it: `npm run dev:agent` (that is `QA_ROLE=preview` — front door + local builds only).
+
+The agent **reads** the shared DB and never writes run state, so any number of testers can
+run one alongside the single real worker. Do NOT run `npm run dev:worker` (the full runner
+role) on a second machine — its reconcile/steer loops assume the shared rows describe the
+local machine and will fight the real worker.
+
 ## 4. Worker as a service (launchd)
 
 ```bash

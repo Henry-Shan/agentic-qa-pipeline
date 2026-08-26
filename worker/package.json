@@ -6,6 +6,7 @@
   "description": "Mac daemon: claims queued qa_reports, dispatches headless ship-task runs, serves the localhost shim, manages previews and verdict loops.",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "agent": "QA_ROLE=preview tsx src/index.ts",
     "start": "node dist/worker.js",
     "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/worker.js --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\"",
     "typecheck": "tsc --noEmit",

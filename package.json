@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev --workspace=apps/site",
     "dev:worker": "npm run dev --workspace=worker",
+    "dev:agent": "npm run agent --workspace=worker",
     "build": "npm run build:widget && npm run build --workspace=apps/site",
     "build:widget": "npm run build --workspace=packages/widget",
     "build:worker": "npm run build --workspace=worker",
