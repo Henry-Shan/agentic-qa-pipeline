@@ -4,7 +4,7 @@ import type { QaReport } from './db';
 import type { Ctx } from './state';
 import { log } from './util';
 
-// Copied from docs/specs/2026-07-30-qa-pipeline-design.md §Grounding — the
+// Grounding requirements — the
 // dispatch prompt's hard requirements before any edit.
 const GROUNDING_INSTRUCTIONS = `GROUNDING INSTRUCTIONS (do these BEFORE any code edit)
 
@@ -12,9 +12,8 @@ const GROUNDING_INSTRUCTIONS = `GROUNDING INSTRUCTIONS (do these BEFORE any code
    location. Do not conclude the bug lives there until the trace proves it.
 2. Read every file listed under "screenshots" below AS AN IMAGE (Read tool) and
    confirm it matches the description before anything else.
-3. Traverse the vertical slice (component -> hook/store -> shared-core API
-   client -> Go handler -> DB) using graphify-out/graph.json, the
-   project memory MCP (search_memory), and the "area_notes" below distilled
+3. Traverse the vertical slice (UI component -> hook/store -> API
+   client -> server handler -> DB) using whatever code-graph or project-memory tooling the repo provides, and the "area_notes" below distilled
    from previous QA runs in this area.
 4. Reproduce at the API, not the UI: the report's network_log usually contains
    the exact failing request — replay it (curl) to reproduce before the fix and
@@ -30,9 +29,9 @@ const GROUNDING_INSTRUCTIONS = `GROUNDING INSTRUCTIONS (do these BEFORE any code
    fixtures the reporter attached — the exact PDF/CSV/spreadsheet that triggers
    the bug. Reproduce WITH them; a recording cannot carry a file's bytes.
 9. report.reproduce_as, when set, overrides the role to reproduce as.
-10. The reporter's the host app roles are in report.app_context.reporterRoles
-   (scope lab/department/institution + role name). Reproduce and verify AS THAT
-   ROLE — a bug a departmental admin hits may be invisible to a lab member, and
+10. The reporter's roles in the host app (when the host exposes qa_reporter_roles) are in
+   report.app_context.reporterRoles ({scope, name, role, is_admin}). Reproduce and verify AS
+   THAT ROLE — a bug an org admin hits may be invisible to a regular member, and
    RBAC/permission gates are frequent root causes. Pick test accounts and
    permission fixtures to match.`;
 

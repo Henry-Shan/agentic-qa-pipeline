@@ -1,7 +1,7 @@
 # Data flow — tester input → Claude's ship-task skill
 
 From what the tester types/clicks/records in the browser, through Supabase, to the
-headless `claude` run on the dev Mac — and the results flowing back.
+headless `claude` run on the worker machine — and the results flowing back.
 
 ```mermaid
 flowchart TD
@@ -17,7 +17,7 @@ flowchart TD
     DISP["POST /api/docs/dispatch"]
   end
 
-  subgraph SB["Supabase (shared the host app project)"]
+  subgraph SB["Supabase (your Supabase project)"]
     SEC[("qa_doc_sections<br/>title · body · context · click_trail")]
     REP[("qa_reports — status: queued<br/>+ app_context.reporterRoles<br/>(qa_reporter_roles RPC)")]
     STOR[("Storage: qa-screenshots<br/>report-N/marked*.png · replay.json")]
@@ -32,11 +32,11 @@ flowchart TD
   SEC -- "Send to Claude ▸" --> DISP
   DISP -- "insert + copy evidence<br/>+ doc_section_id" --> REP
 
-  subgraph MAC["Dev Mac — worker daemon (~/qa-pipeline)"]
+  subgraph MAC["Worker machine — daemon (~/qa-pipeline)"]
     CLAIM["claim loop (3s poll)<br/>queued → running (conditional update)"]
     ENV["envelope.json<br/>· grounding instructions<br/>· full report row<br/>· screenshots downloaded to local files<br/>· area + last 10 area_notes"]
     CLA["headless claude CLI<br/>opus / xhigh + QA-worker preamble<br/>(shim token, beacons, '(auto qa)' title,<br/>stop at PR-ready)"]
-    SHIP["<b>ship-task skill</b> (runner repo)<br/>worktree off origin/develop →<br/>blind tests → implement → verify →<br/>feature-test → PR"]
+    SHIP["<b>ship-task skill</b> (runner repo)<br/>worktree off the base branch →<br/>blind tests → implement → verify →<br/>feature-test → PR"]
     SHIM["localhost shim :4519<br/>progress / runinfo / ask"]
     PREV["preview server<br/>localhost:33xx (worktree)"]
   end
@@ -45,7 +45,7 @@ flowchart TD
   STOR -- "screenshot download" --> ENV
   SHIP -- "beacons + runinfo" --> SHIM
   SHIM -- "qa_runs / qa_events /<br/>status pr_ready" --> REP
-  SHIP -- "branch + PR '(auto qa) …'" --> GH["GitHub<br/>your-org/the host app → develop"]
+  SHIP -- "branch + PR '(auto qa) …'" --> GH["GitHub<br/>your-org/your-app → base branch"]
   SHIM --> PREV
 
   subgraph BACK["Feedback to the tester"]

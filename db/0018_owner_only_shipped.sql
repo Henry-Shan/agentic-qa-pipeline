@@ -6,7 +6,7 @@
 --
 -- Ownership follows the name a person PICKED at login (qa_allowed_emails
 -- .display_name), not an address. One person signs in from several accounts:
--- albatross.the host app+aa-dep-head-1@ and +gg-member-1@ are both "owner", while
+-- alice+admin@ and alice+member@ are both "owner", while
 -- admin@example.com is nobody's login. An email allowlist gets this wrong, and
 -- did — the owner saw no button at all.
 --

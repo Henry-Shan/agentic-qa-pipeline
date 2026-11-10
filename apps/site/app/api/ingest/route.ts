@@ -6,7 +6,14 @@ import { scrubSecrets } from '@/lib/ingest/scrub';
 
 export const runtime = 'nodejs';
 
-const STATIC_ORIGINS = new Set(['https://example.com', 'https://www.example.com']);
+// Origins allowed to file reports: QA_HOST_ORIGINS (comma-separated), falling
+// back to the origin of NEXT_PUBLIC_CAPTURE_URL. Localhost is always allowed.
+const STATIC_ORIGINS = new Set(
+  (process.env.QA_HOST_ORIGINS ?? process.env.NEXT_PUBLIC_CAPTURE_URL ?? '')
+    .split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean),
+);
 const LOCALHOST_RE = /^http:\/\/localhost(:\d+)?$/;
 
 // Hard request cap: primary screenshot + up to 3 additional (each ≤4 MB PNG,
@@ -120,8 +127,8 @@ export async function POST(request: NextRequest) {
   // JWT path: the reporter is whoever the token verified as — never the body's claim.
   if (verifiedEmail) body.reporterEmail = verifiedEmail;
 
-  // Role snapshot for dispatch context: the reporter's the host app memberships
-  // (lab/department/institution + role names). Failure-tolerant — a report
+  // Role snapshot for dispatch context: the reporter's host-app memberships
+  // (via an optional `profiles` table and `qa_reporter_roles(uid)` RPC in the host project). Failure-tolerant — a report
   // must still file if the lookup breaks.
   let appContext: Record<string, unknown> = { ...(body.appContext ?? {}) };
   if (body.reporterEmail) {
@@ -141,7 +148,7 @@ export async function POST(request: NextRequest) {
       // best-effort enrichment only
     }
   }
-  // The tester's chosen QA display name wins over the the host app profile name
+  // The tester's chosen QA display name wins over the host-app profile name
   // (which stays as the fallback set above).
   if (verifiedDisplayName) appContext.reporterName = verifiedDisplayName;
 

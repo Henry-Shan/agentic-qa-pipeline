@@ -23,7 +23,7 @@ function latestNeedsHuman(events: QaEvent[]): Record<number, QaEvent> {
 const TAB_KEY = 'qa.board.tab';
 
 const EMPTY: Record<TabKey, string> = {
-  fixing: 'Nothing being worked on — reports filed from the widget inside example.com land here first.',
+  fixing: 'Nothing being worked on — reports filed from the widget inside your app land here first.',
   done: 'Nothing waiting on you.',
   verified: 'Nothing verified yet — check a Done task and say whether it works.',
   shipped: 'Nothing shipped yet — a task ships when its PR is merged.',

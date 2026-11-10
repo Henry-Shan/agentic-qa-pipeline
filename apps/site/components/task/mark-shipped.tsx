@@ -25,8 +25,8 @@ import { guardReport } from '@/lib/report-gone';
 /**
  * Ownership is a PERSON, not an address.
  *
- * Henry signs in from more than one account — `albatross.the host app+aa-dep-head-1@`
- * and `+gg-member-1@` both resolve to the display name "owner" — so an email
+ * One person signs in from more than one account — `alice+admin@`
+ * and `alice+member@` both resolve to the display name "owner" — so an email
  * allowlist gets this wrong, and did: the first version keyed on
  * admin@example.com, which is nobody's login, so the owner saw no button at all
  * and reasonably concluded it had not been built.

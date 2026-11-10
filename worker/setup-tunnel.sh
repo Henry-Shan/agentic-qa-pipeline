@@ -9,7 +9,7 @@
 # swaps it.
 #
 # The link is open to anyone who has it. That is safe because the app behind it
-# still requires a the host app login: an anonymous visitor gets the same public
+# still requires a host-app login: an anonymous visitor gets the same public
 # landing page as example.com.
 #
 # Run:  ./worker/setup-tunnel.sh

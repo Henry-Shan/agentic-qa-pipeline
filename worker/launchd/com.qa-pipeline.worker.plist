@@ -24,12 +24,12 @@
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/YOU/qa-pipeline/node_modules/tsx/dist/cli.mjs</string>
+    <string>/path/to/qa-pipeline/node_modules/tsx/dist/cli.mjs</string>
     <string>src/index.ts</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/YOU/qa-pipeline/worker</string>
+  <string>/path/to/qa-pipeline/worker</string>
 
   <!-- launchd hands processes a minimal PATH; the worker shells out to claude,
        git, gh and npm, so spell it out or dispatch fails with ENOENT. -->

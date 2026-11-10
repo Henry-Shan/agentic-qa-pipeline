@@ -154,7 +154,7 @@ async function ensureInner(ctx: Ctx, reportId: number): Promise<void> {
     ctx.state.reservedPorts.delete(port);
   };
 
-  const webDir = shq(path.join(worktree, 'apps/web'));
+  const webDir = shq(path.join(worktree, ctx.cfg.previewAppDir));
   const cmd = ctx.cfg.previewCmd
     ? `${ctx.cfg.previewCmd} ${port}`
     : built

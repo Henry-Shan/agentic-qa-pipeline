@@ -15,7 +15,7 @@ function codeMatches(provided: string, expected: string): boolean {
 /**
  * Self-enroll into the tester list + save the tester's display name.
  * Body: `{ code?, name? }`.
- * - Enrollment: any authenticated the host app account plus the team access code
+ * - Enrollment: any authenticated host-app account plus the team access code
  *   (QA_ACCESS_CODE) becomes a tester; already-enrolled users pass regardless
  *   of the code.
  * - Name (when present, trimmed, 1-24 chars, kept as given): upsert into

@@ -5,7 +5,7 @@
 // Claude Code terminal to YOUR checkout:
 //
 //   cd agent && npm install
-//   node term-agent.mjs --repo ~/the host app
+//   node term-agent.mjs --repo ~/your-app
 //
 // The task page connects to 127.0.0.1 — i.e. to whatever machine the BROWSER
 // is on. So every tester runs their own agent and gets their own terminal; no
@@ -47,18 +47,18 @@ const SUPABASE_ANON_KEY = flag(
   '<SUPABASE_ANON_KEY>',
 );
 
-const ALLOWED_ORIGINS = new Set([
-  'https://qa.example.com',
-  'http://localhost:3200',
-  'http://127.0.0.1:3200',
-]);
+// Your QA site's origin (--site-origin or QA_SITE_ORIGIN) plus localhost dev.
+const SITE_ORIGIN = flag('site-origin', process.env.QA_SITE_ORIGIN ?? '').replace(/\/$/, '');
+const ALLOWED_ORIGINS = new Set(
+  [SITE_ORIGIN, 'http://localhost:3200', 'http://127.0.0.1:3200'].filter(Boolean),
+);
 
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 const MAX_TERMINALS = 4;
 const live = new Map(); // reportId → { proc, socket, idleTimer }
 
 if (!fs.existsSync(REPO)) {
-  console.error(`No such repo: ${REPO}\nRun with --repo /path/to/the host app`);
+  console.error(`No such repo: ${REPO}\nRun with --repo /path/to/your-app`);
   process.exit(1);
 }
 
@@ -234,7 +234,7 @@ console.log(`QA Pipeline terminal agent
   repo       ${REPO}
   claude     ${CLAUDE_BIN}
 
-Open a task on qa.example.com and press "Attach terminal".`);
+Open a task on your QA site and press "Attach terminal".`);
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {

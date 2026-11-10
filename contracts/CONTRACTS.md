@@ -19,43 +19,49 @@ Root `package.json` workspaces: `["apps/site","packages/widget","worker"]`. Node
 ## Environment
 
 `apps/site/.env.local` (and Vercel env):
-- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — shared the host app project
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase project
 - `SUPABASE_SERVICE_ROLE_KEY` — server routes only
 - `QA_INGEST_TOKEN` — random 32-byte hex; widget bundle build stamps NOTHING secret; token is
   passed to the widget at runtime by the host page (see Widget § config)
-- `QA_ACCESS_CODE` — team access code; any authed the host app account that presents it on the
+- `QA_ACCESS_CODE` — team access code; any authed host-app account that presents it on the
   login form is self-enrolled into `qa_allowed_emails` via `POST /api/enroll` (middleware
   exempts that route for authed users; already-enrolled users pass regardless of code)
 - `NEXT_PUBLIC_SITE_URL` — https://qa.example.com (http://localhost:3200 in dev)
-- `NEXT_PUBLIC_CAPTURE_URL` — the the host app instance embedded full-screen by `/capture`
-  (default https://example.com; local dogfood http://localhost:3005)
+- `NEXT_PUBLIC_CAPTURE_URL` — your app, embedded full-screen by `/capture`
+  (local dogfood against a dev build: http://localhost:3005)
+- `QA_HOST_ORIGINS` — comma-separated origins allowed to POST to `/api/ingest`; defaults to the
+  origin of `NEXT_PUBLIC_CAPTURE_URL`; localhost is always allowed
+- `NEXT_PUBLIC_QA_OWNER_NAME` — display name of the one person who may mark a task shipped
+  (keep in step with `owner_name` in db/0018)
 
-Ingest role enrichment: the server resolves the reporter's the host app memberships via the
+Ingest role enrichment: the server resolves the reporter's host-app memberships via the
 security-definer RPC `qa_reporter_roles(uid)` (service-role only) and stores them as
 `app_context.reporterRoles: [{scope, name, role, is_admin}]` plus `app_context.reporterName`;
 the worker's envelope instructions direct Claude to reproduce/verify as that role.
 
 `worker/.env`:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `RUNNER_REPO=/Users/YOU/qa-pipeline-runner/the host app`
-- `WORKTREE_BASE=/Users/YOU/qa-pipeline-worktrees`
+- `RUNNER_REPO=/path/to/your-app`
+- `WORKTREE_BASE=/path/to/qa-pipeline-worktrees`
 - `CLAUDE_BIN=/opt/homebrew/bin/claude`
 - `SHIM_PORT=4519` · `MAX_RUNS=2` · `MAX_PREVIEWS=3` · `RUNS_PER_DAY=25`
   — `MAX_RUNS`/`MAX_PREVIEWS` are only **fallbacks**: live values come from `qa_settings` (below)
 - `PREVIEW_MODE=local|tunnel` — **local is the current setting**: previews are served at
-  `http://localhost:33xx` on the worker's own Mac and no tunnel runs. The production API
-  allows any `http://localhost:` origin (`main.go` `isAllowedOrigin`), so a local preview calls
-  `https://api.example.com` directly and `/__api` proxying is not used. The tunnel code stays
+  `http://localhost:33xx` on the worker's own Mac and no tunnel runs. If your API's CORS
+  allowlist accepts `http://localhost:` origins, a local preview calls `PREVIEW_API_ORIGIN`
+  directly and `/__api` proxying is not used. The tunnel code stays
   in place and inert; flipping the variable back turns it on
 - (tunnel-only) · `CF_TUNNEL_NAME=qa-pipeline` · `WAKE_PORT=4521`
-- `PREVIEW_API_ORIGIN=https://api.example.com` — where a preview's `/__api/*` calls go
+- `PREVIEW_API_ORIGIN=https://api.example.com` — your app's API origin; where a preview's `/__api/*` calls go
+- `PREVIEW_APP_DIR=` — directory of the web app inside the repo ("" = root, `apps/web` for a monorepo)
+- `PROTECTED_HOSTS=` — extra hostnames the worker must never create DNS for (apex + www/api/app/qa of `PREVIEW_ZONE` are always protected)
 - `PREVIEW_SUPABASE_URL` · `PREVIEW_SUPABASE_ANON_KEY` — inlined into the preview build;
   ANON key only, the worker refuses a `service_role` JWT
-- `PREVIEW_BUILD=1` · `PREVIEW_BUILD_CMD='npx turbo run build --filter=web'` — previews serve a
+- `PREVIEW_BUILD=1` · `PREVIEW_BUILD_CMD='npm run build'` — previews serve a
   production build; `PREVIEW_BUILD=0` falls back to the much slower `next dev`
 - `PREVIEW_HOST_PREFIX=qa-preview-` · `PREVIEW_ZONE=example.com` — a task's permanent
   preview address is `<prefix><reportId>.<zone>`; ONE label deep so `*.<zone>` TLS covers it
-- `SITE_URL=https://qa.example.com`
+- `SITE_URL=https://qa.example.com` — the QA site's public URL
 
 ## Worker settings (`qa_settings`, migration 0008)
 
@@ -113,7 +119,7 @@ runs their own host and gets their own terminal, and nobody can reach anyone els
 Two hosts, one protocol and one auth model:
 - `worker/src/term.ts` — built into the worker (the machine that produces runs).
 - `agent/term-agent.mjs` — a standalone agent any tester runs: `cd agent && npm i && npm start
-  -- --repo ~/the host app`. See `agent/README.md`.
+  -- --repo ~/your-app`. See `agent/README.md`.
 
 **What it runs** depends on whether the machine has that run's transcript
 (`~/.claude/projects/<repo-as-dashes>/<session>.jsonl`):
@@ -196,7 +202,7 @@ until a UI sets them:
 ## Base context + per-task model (db/0011)
 
 A run can START from an existing Claude Code session instead of cold — the **base-context**
-session, which already holds an accumulated understanding of the the host app codebase.
+session, which already holds an accumulated understanding of the host-app codebase.
 
 - **Fork, don't continue.** The spawn becomes
   `claude --resume <base> --fork-session --session-id <new uuid> …`. Verified behavior: the
@@ -247,16 +253,16 @@ and an examiner model judges whether the expected result is there. No test is wr
   frames the examiner read (`GET /api/exam-shot/[examId]?i=N`). Reports with no recorded steps
   are not examined. Boot-restarted previews are not re-examined. `QA_EXAM=0` disables the loop.
 
-## Preview auto-login (site ↔ the host app web)
+## Preview auto-login (site ↔ host-app web)
 
-The task page's preview embed (and its open-in-tab button) never shows the the host app login
+The task page's preview embed (and its open-in-tab button) never shows the host-app login
 form. Flow: embed POSTs `/api/preview-token` (middleware-gated to testers) → the site's
 service role mints `auth.admin.generateLink({type:'magiclink'})` and returns its
 `hashed_token` → the iframe/tab loads `<preview>/qa-session#token_hash=…&next=/` → that
-the host app-web page (`apps/web/app/(auth)/qa-session/page.tsx`) calls
+the host app's `/qa-session` page calls
 `verifyOtp({type:'email'})`, establishing a fresh independent session (single-use token;
 one minted per embed/tab; the QA site's own session is never shared). On preview hosts
-(`localhost`, `127.0.0.1`, `*.qa-preview.example.com`) the host app web writes its auth
+(`localhost`, `127.0.0.1`, `*.qa-preview.example.com`) host-app web writes its auth
 cookies `SameSite=None; Secure` so the cross-site iframe can send them; example.com
 keeps `Lax`.
 
@@ -274,11 +280,11 @@ to `cancelled` immediately when queueing a destroy so it disappears from views; 
 deletion lands when the worker completes.
 
 **Display names**: `qa_allowed_emails.display_name` (chosen at login from `qa_tester_names`,
-which testers may append to; seeded: owner, mika) is the identity ALL UI surfaces show —
+which testers may append to; seeded by you) is the identity ALL UI surfaces show —
 board cards, canvas stickies, task meta, events, `updated_by` labels — falling back to the
 email local-part when unset. `reporter_email` remains the auth truth; the login flow saves the
 choice via `POST /api/enroll` (`{code?, name}`), and ingest copies it into
-`app_context.reporterName` (taking precedence over the the host app profile name).
+`app_context.reporterName` (taking precedence over the host-app profile name).
 
 `qa_runs.phase` (live pipeline label): `starting | grounding | testing | implementing | verifying | feature_test | pr | preview | done`
 
@@ -434,7 +440,7 @@ status `queued`; insert `qa_events` (type `system`, "filed by <email>").
 ## Widget host integration — frame handshake (the host app ⇄ QA site)
 
 The widget never loads for direct visitors to example.com. The host loader
-(`apps/web/components/qa/QAWidgetLoader.tsx` in the the host app repo) is FRAME-GATED: it renders
+(a loader component in the host app's repo) is FRAME-GATED: it renders
 null and does nothing unless the app runs inside an iframe AND an origin-verified postMessage
 handshake with the QA site's `/capture` page completes. (This REPLACES the former
 `NEXT_PUBLIC_QA_TESTER_EMAILS`/`NEXT_PUBLIC_QA_TESTER_DOMAINS` email gating.)
@@ -466,9 +472,9 @@ Messages (exact shapes, implement exactly):
    the embedded app is logged out); the host `getToken` bridge and static token are fallbacks.
 
 Env — QA site: `NEXT_PUBLIC_CAPTURE_URL` (embedded the host app URL), `NEXT_PUBLIC_SITE_URL`
-(the activate endpoint). the host app: `NEXT_PUBLIC_QA_WIDGET_URL` (widget bundle URL; unset =
+(the activate endpoint). Host app: `NEXT_PUBLIC_QA_WIDGET_URL` (widget bundle URL; unset =
 feature fully dormant), `NEXT_PUBLIC_QA_SITE_ORIGINS` (parent origins allowed to activate,
-e.g. `https://qa-pipeline.vercel.app,http://localhost:3200`).
+e.g. `https://your-qa-site.vercel.app,http://localhost:3200`).
 
 ### Replay (embedded preview on the task page)
 
@@ -509,7 +515,7 @@ display name (email only in the tooltip).
 
 Security property: activation requires a parent whose origin is in
 `NEXT_PUBLIC_QA_SITE_ORIGINS` — direct visitors to example.com never see the widget.
-Submission auth is unchanged: the embedded the host app session's JWT (via the `getToken` bridge)
+Submission auth is unchanged: the embedded host-app session's JWT (via the `getToken` bridge)
 is verified server-side against `qa_allowed_emails` (see § Widget → Site).
 
 ## Site pages
@@ -648,23 +654,20 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   task. Turbopack rejects that: it resolves `next` to its real path, infers THAT as the
   workspace root, and refuses to compile anything outside it — so every preview build failed
   and silently fell back to dev mode, the 19x-heavier thing the build exists to avoid.
-  `ensureDeps()` checks the exact condition that matters — does `next` resolve from `apps/web`
+  `ensureDeps()` checks the exact condition that matters — does `next` resolve from `PREVIEW_APP_DIR`
   to a path INSIDE the worktree — then materialises with `cp -Rc` (APFS clone: copy-on-write,
   cheap) and runs `npm install` to reconcile branch-added dependencies. Both worktree layouts
-  (root-hoisted and apps/web) pass the check untouched.
+  (root-hoisted and under `PREVIEW_APP_DIR`) pass the check untouched.
 - **Preview**: on pr_ready — free port scan from 3300 step 10; in worktree, build first
-  (`PREVIEW_BUILD_CMD`, default `npx turbo run build --filter=web`) then
-  `npm --prefix apps/web run start -- --port <p>`.
-  **Backend URLs must be forced, three ways.** `apps/web/.env.local` is symlinked into every
-  worktree from the main checkout and points at a local dev stack (`localhost:8082` API,
-  `localhost:8080` OCR) — nothing listens there on a tester's machine, so an inherited value
+  (`PREVIEW_BUILD_CMD`, default `npm run build`, run in `PREVIEW_APP_DIR`) then
+  `npm --prefix <PREVIEW_APP_DIR> run start -- --port <p>`.
+  **Backend URLs must be forced, three ways.** A developer's `.env.local` may be symlinked or
+  copied into a worktree and point at a local dev stack — nothing listens there on a tester's machine, so an inherited value
   means ERR_CONNECTION_REFUSED on every call. So the worker (a) writes
-  `apps/web/.env.production.local` (Next's highest-precedence env file, and gitignored, so it
+  `<PREVIEW_APP_DIR>/.env.production.local` (Next's highest-precedence env file, and gitignored, so it
   never reaches the PR diff), (b) passes the values in the process env — which beats every
-  env file, but only survives turbo with `--env-mode=loose`, since turbo 2 filters variables
-  it was not told about, and (c) after building, greps the client bundle for the expected URL
-  and falls back to dev mode if it is absent. Both `NEXT_PUBLIC_API_BASE_URL` and
-  `NEXT_PUBLIC_OCR_BASE_URL` are set (production serves both from the API host).
+  env file, and (c) after building, greps the client bundle for the expected URL
+  and falls back to dev mode if it is absent. `NEXT_PUBLIC_API_BASE_URL` is set to the preview's API base.
   The same check gates build REUSE on wake, so a bundle built with the wrong backend
   self-heals instead of being handed back forever.
   **Not `next dev`.** Measured on this app: dev serves one page as 25.8 MB over 123 requests
@@ -744,8 +747,8 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
   `https://<its own host>/__api`, and the front door forwards that prefix to
   `PREVIEW_API_ORIGIN` (default `https://api.example.com`), stripping `origin`/`referer`
   so it arrives as a plain server-to-server call.
-  **Why.** The API's CORS allowlist is `example.com` plus localhost (`main.go`
-  `isAllowedOrigin`). A preview hostname is neither, so calling the API directly fails
+  **Why.** Your API's CORS allowlist is typically your app's origin plus localhost
+  (`isAllowedOrigin` or equivalent). A preview hostname is neither, so calling the API directly fails
   preflight — "No 'Access-Control-Allow-Origin' header is present" — and every request dies
   as `ERR_FAILED`, which looks exactly like the backend being down. The alternative was
   adding preview hosts to that allowlist, i.e. editing and redeploying the PRODUCTION API to
@@ -838,8 +841,8 @@ is verified server-side against `qa_allowed_emails` (see § Widget → Site).
     crash or a killed port leaves a handle pointing at nothing and the proxy answered 502.
     On ECONNREFUSED/ECONNRESET/EHOSTUNREACH the front door now drops the stale handle,
     marks the run down, triggers a wake and serves the waiting page.
-- **Preview env comes from the worker, never from a symlink.** `apps/web/.env.local` is a
-  symlink into the developer's checkout that only SOME worktrees have; a build without it
+- **Preview env comes from the worker, never from a symlink.** A developer's `.env.local` may be
+  present in only SOME worktrees; a build without it
   produces an app whose login page reads "Supabase is not configured for the web app"
   (observed on tasks 45 and 60). The worker writes `NEXT_PUBLIC_SUPABASE_URL` /
   `NEXT_PUBLIC_SUPABASE_ANON_KEY` alongside the API URLs, from `PREVIEW_SUPABASE_*`.

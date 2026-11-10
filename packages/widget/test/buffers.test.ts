@@ -297,11 +297,11 @@ describe('input trail recording', () => {
         <input id="dn" data-testid="display-name" />
       </section>`;
     const input = document.querySelector('input') as HTMLInputElement;
-    input.value = 'Henry';
+    input.value = 'Alice';
     fire(input, 'change');
     const entry = buffers.clickTrail().at(-1);
     expect(entry?.kind).toBe('input');
-    expect(entry?.value).toBe('Henry');
+    expect(entry?.value).toBe('Alice');
     expect(entry?.selector).toBe('[data-testid="display-name"]');
     expect(entry?.testid).toBe('display-name');
     expect(entry?.component).toBe('ProfileForm');

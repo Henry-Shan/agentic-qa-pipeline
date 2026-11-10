@@ -2,13 +2,13 @@
 //
 // A run can START from an existing Claude Code session instead of cold — the
 // "base-context" session, which already holds an accumulated understanding of
-// the the host app codebase. The spawn becomes `--resume <base> --fork-session`,
+// the host-app codebase. The spawn becomes `--resume <base> --fork-session`,
 // which branches: the fork inherits the parent's context and the PARENT IS
 // NEVER WRITTEN TO (verified — the parent transcript gains nothing).
 //
 // The one constraint: Claude Code scopes sessions to the project directory
 // derived from cwd. base-context lives under the user's own checkout
-// (~/the host app) while runs execute from the runner clone, so `--resume` there
+// (~/your-app) while runs execute from the runner clone, so `--resume` there
 // finds nothing. We therefore STAGE a copy of the transcript into the runner's
 // project directory. The copy is read-only input; forks write new session ids.
 

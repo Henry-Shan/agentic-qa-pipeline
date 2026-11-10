@@ -19,7 +19,7 @@ import { log } from './util';
 const RUNBOOK_TIMEOUT_MS = 5 * 60_000;
 
 function prompt(report: QaReport, outPath: string): string {
-  return `A tester reported the problem below. It has been routed as INFRASTRUCTURE: the fix is not a change to the the host app application code — it lives in a cloud console, DNS, environment variables, a deploy pipeline, a third-party dashboard, or an account/quota.
+  return `A tester reported the problem below. It has been routed as INFRASTRUCTURE: the fix is not a change to the host-app application code — it lives in a cloud console, DNS, environment variables, a deploy pipeline, a third-party dashboard, or an account/quota.
 
 Do NOT write or change any code. Do NOT create a PR. Write a RUNBOOK a competent engineer can follow.
 

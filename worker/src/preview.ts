@@ -161,7 +161,7 @@ async function startPreviewInner(ctx: Ctx, run: QaRun, skipExam: boolean): Promi
   // built is 1.38 MB over 16 requests in a 64 MB server. A preview shows frozen
   // code, so nothing about dev mode is worth 19x the bytes.
   const built = await ensureBuild(ctx, run, run.worktree, apiBase, logPath, skipExam);
-  const webDir = shq(path.join(run.worktree, 'apps/web'));
+  const webDir = shq(path.join(run.worktree, ctx.cfg.previewAppDir));
   const cmd = ctx.cfg.previewCmd
     ? `${ctx.cfg.previewCmd} ${port}`
     : built
@@ -314,11 +314,11 @@ export async function producePreviewBuild(
   opts: { worktree: string; apiBase: string; logPath: string; label: string; onCompiling?: () => Promise<void> },
 ): Promise<{ ok: boolean; tail: string }> {
   const { worktree, apiBase, logPath, label } = opts;
-  const buildId = path.join(worktree, 'apps/web/.next/BUILD_ID');
+  const buildId = path.join(worktree, ctx.cfg.previewAppDir, '.next/BUILD_ID');
   // Belt and braces on the env, because getting this wrong is silent: the build
   // succeeds and the app calls the wrong backend.
   //  1. `.env.production.local` — highest precedence of Next's env files, and
-  //     gitignored (apps/web/.gitignore), so it never reaches the PR diff.
+  //     gitignored (<PREVIEW_APP_DIR>/.gitignore), so it never reaches the PR diff.
   //  2. the process env, which beats every env file — but only if it survives
   //     turbo, hence `--env-mode=loose` in the default build command. Turbo 2
   //     filters unknown variables by default, which is exactly how the dev
@@ -326,7 +326,7 @@ export async function producePreviewBuild(
   const env = previewEnv(ctx, apiBase);
   try {
     fs.writeFileSync(
-      path.join(worktree, 'apps/web/.env.production.local'),
+      path.join(worktree, ctx.cfg.previewAppDir, '.env.production.local'),
       `${Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')}\n`,
     );
   } catch (e) {
@@ -385,16 +385,16 @@ export async function producePreviewBuild(
  * Measured on a real worktree: 25s clone + 13s install, once per worktree.
  */
 async function ensureDeps(ctx: Ctx, worktree: string, label: string): Promise<void> {
-  if (depsAreUsable(worktree)) return;
+  if (depsAreUsable(worktree, ctx.cfg.previewAppDir)) return;
 
   const started = Date.now();
   // A clean install, not a copy. Cloning the runner's node_modules looked
-  // cheaper, but npm then relocates `next` into apps/web for the workspace
+  // cheaper, but npm then relocates `next` into <PREVIEW_APP_DIR> for the workspace
   // layout and leaves the bin link behind NEITHER there nor at the root — so
   // `next build` dies with exit 127, "command not found", and the preview falls
   // back to dev mode. Wiping first and letting npm build the tree itself takes
   // ~18s against a warm cache, which is faster than the clone was anyway.
-  const wipe = ['node_modules', 'apps/web/node_modules', 'packages/shared-core/node_modules', 'packages/shared-react/node_modules']
+  const wipe = [...new Set(['node_modules', path.join(ctx.cfg.previewAppDir, 'node_modules')])]
     .map((d) => shq(path.join(worktree, d)))
     .join(' ');
   await execa('bash', ['-c', `rm -rf ${wipe}`], { reject: false, timeout: 5 * 60_000 });
@@ -404,10 +404,10 @@ async function ensureDeps(ctx: Ctx, worktree: string, label: string): Promise<vo
     timeout: 20 * 60_000,
   });
   const secs = Math.round((Date.now() - started) / 1000);
-  if (install.exitCode === 0 && depsAreUsable(worktree)) {
+  if (install.exitCode === 0 && depsAreUsable(worktree, ctx.cfg.previewAppDir)) {
     log('preview', `${label}: dependencies installed in ${secs}s`);
   } else {
-    log('preview', `${label}: npm install exited ${install.exitCode} after ${secs}s and the next binary is ${depsAreUsable(worktree) ? 'present' : 'still missing'} — building anyway`);
+    log('preview', `${label}: npm install exited ${install.exitCode} after ${secs}s and the next binary is ${depsAreUsable(worktree, ctx.cfg.previewAppDir) ? 'present' : 'still missing'} — building anyway`);
   }
 }
 
@@ -420,13 +420,13 @@ async function ensureDeps(ctx: Ctx, worktree: string, label: string): Promise<vo
  * perfectly and still fail with exit 127 because `.bin/next` was never created,
  * which is exactly how tasks 59 and 62 ended up with no preview at all.
  */
-function depsAreUsable(worktree: string): boolean {
+function depsAreUsable(worktree: string, appDir: string): boolean {
   const bins = [
-    path.join(worktree, 'apps/web/node_modules/.bin/next'),
+    path.join(worktree, appDir, 'node_modules/.bin/next'),
     path.join(worktree, 'node_modules/.bin/next'),
   ];
   if (!bins.some((b) => fs.existsSync(b))) return false;
-  return depsAreLocal(worktree);
+  return depsAreLocal(worktree, appDir);
 }
 
 /**
@@ -434,13 +434,13 @@ function depsAreUsable(worktree: string): boolean {
  *
  * That is exactly Turbopack's requirement, and it is not the same as "a
  * node_modules exists". Worktrees come in two shapes — deps hoisted to the
- * worktree root, or under apps/web — and both are fine as long as the resolved
+ * worktree root, or under <PREVIEW_APP_DIR> — and both are fine as long as the resolved
  * path stays inside the worktree. A symlink into the runner checkout resolves
  * OUTSIDE it, which is the case that breaks the build.
  */
-function depsAreLocal(worktree: string): boolean {
+function depsAreLocal(worktree: string, appDir: string): boolean {
   try {
-    const from = createRequire(path.join(worktree, 'apps/web', 'package.json'));
+    const from = createRequire(path.join(worktree, appDir, 'package.json'));
     const resolved = fs.realpathSync(from.resolve('next/package.json'));
     return resolved.startsWith(`${fs.realpathSync(worktree)}${path.sep}`);
   } catch {
@@ -531,17 +531,19 @@ function queueBuild<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Hostnames this worker must NEVER touch. `cloudflared tunnel route dns` writes
- * a DNS record in the example.com zone, so a typo in PREVIEW_DOMAIN could
+ * a DNS record in the example.com zone, so a typo in PREVIEW_ZONE could
  * otherwise repoint the live app or the API at a laptop. Previews are not worth
  * that risk: refuse, loudly, and serve nothing.
  */
-const PROTECTED_HOSTS = new Set([
-  'example.com',
-  'www.example.com',
-  'api.example.com',
-  'qa.example.com',
-  'app.example.com',
-]);
+const EXTRA_PROTECTED_HOSTS = (process.env.PROTECTED_HOSTS ?? '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+/** Apex + the usual production labels of the preview zone, plus PROTECTED_HOSTS. */
+function protectedHosts(zone: string): Set<string> {
+  return new Set([zone, ...['www', 'api', 'app', 'qa'].map((l) => `${l}.${zone}`), ...EXTRA_PROTECTED_HOSTS]);
+}
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -559,7 +561,7 @@ function allowedHost(ctx: Ctx): RegExp {
 
 function refusesToServe(ctx: Ctx, hostname: string): boolean {
   const h = hostname.trim().toLowerCase().replace(/\.$/, '');
-  return PROTECTED_HOSTS.has(h) || !allowedHost(ctx).test(h);
+  return protectedHosts(ctx.cfg.previewZone).has(h) || !allowedHost(ctx).test(h);
 }
 
 /** Same-origin path the preview's API calls go through; forwarded by the front door. */
@@ -568,11 +570,9 @@ export const API_PREFIX = '/__api';
 /**
  * Backend URLs a preview must NOT inherit from the developer's `.env.local`.
  *
- * `apps/web/.env.local` is symlinked into every worktree from the main checkout,
- * where it points at a local dev stack (`localhost:8082` API, `localhost:8080`
- * OCR). Nothing is listening on those ports on a tester's machine, so a preview
- * that inherits them answers every call with ERR_CONNECTION_REFUSED. Production
- * serves both from the same API host, so both point at the same place here.
+ * A developer's `.env.local` may be symlinked or copied into a worktree and point
+ * at a local dev stack. Nothing is listening on those ports on a tester's machine,
+ * so a preview that inherits it answers every call with ERR_CONNECTION_REFUSED.
  */
 /** Turn an internal stop reason into something worth reading on the task page. */
 function explainStop(ctx: Ctx, reason: string): string {
@@ -641,7 +641,7 @@ export function recordBuildTarget(ctx: Ctx, worktree: string, apiBase: string): 
 
 /** Was the build in this worktree made for exactly these settings? */
 export function buildMatches(ctx: Ctx, worktree: string, apiBase: string): boolean {
-  if (!fs.existsSync(path.join(worktree, 'apps/web/.next/BUILD_ID'))) return false;
+  if (!fs.existsSync(path.join(worktree, ctx.cfg.previewAppDir, '.next/BUILD_ID'))) return false;
   try {
     const saved = JSON.parse(fs.readFileSync(targetPath(worktree), 'utf8')) as BuildTarget;
     return saved.apiBase === apiBase && saved.supabaseUrl === ctx.cfg.previewSupabaseUrl;
@@ -653,9 +653,8 @@ export function buildMatches(ctx: Ctx, worktree: string, apiBase: string): boole
 export function previewEnv(ctx: Ctx, apiBase: string): Record<string, string> {
   const env: Record<string, string> = {
     NEXT_PUBLIC_API_BASE_URL: apiBase,
-    NEXT_PUBLIC_OCR_BASE_URL: apiBase,
   };
-  // Supabase too, for the same reason: `apps/web/.env.local` is a symlink into
+  // Supabase too, for the same reason: `<PREVIEW_APP_DIR>/.env.local` is a symlink into
   // the developer's checkout that only SOME worktrees have, and a build without
   // it produces an app whose login page reads "Supabase is not configured".
   // A preview must not depend on a file that may or may not be there.

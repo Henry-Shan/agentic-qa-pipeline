@@ -68,7 +68,7 @@ if (mode === 'blocked') {
     session_id: sessionId,
     worktree,
     branch: 'qa/selftest-mock',
-    pr_url: 'https://github.com/your-org/the host app/pull/9999',
+    pr_url: 'https://github.com/your-org/your-app/pull/9999',
     pr_number: 9999,
     test_plan: '1. Open the preview URL.\n2. Page shows "ok".\n✅ Success = page loads.',
     files_changed: [{ file: 'apps/web/mock.tsx', add: 1, del: 0 }],
@@ -81,6 +81,6 @@ if (mode === 'blocked') {
     type: 'result',
     subtype: 'success',
     is_error: false,
-    result: 'PR ready: https://github.com/your-org/the host app/pull/9999',
+    result: 'PR ready: https://github.com/your-org/your-app/pull/9999',
   });
 }

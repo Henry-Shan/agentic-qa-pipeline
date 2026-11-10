@@ -22,10 +22,10 @@ describe('deriveArea', () => {
 
 describe('parsePrNumber', () => {
   it('extracts the PR number from a GitHub URL', () => {
-    expect(parsePrNumber('https://github.com/your-org/the host app/pull/9999')).toBe(9999);
+    expect(parsePrNumber('https://github.com/your-org/your-app/pull/9999')).toBe(9999);
   });
   it('returns null for non-PR urls', () => {
-    expect(parsePrNumber('https://github.com/your-org/the host app')).toBeNull();
+    expect(parsePrNumber('https://github.com/your-org/your-app')).toBeNull();
     expect(parsePrNumber(null)).toBeNull();
   });
 });

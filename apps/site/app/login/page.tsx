@@ -76,7 +76,7 @@ export default function LoginPage() {
       setError(signInError.message);
       return;
     }
-    // Any the host app account + the team access code = tester (self-enroll).
+    // Any host-app account + the team access code = tester (self-enroll).
     // Already-enrolled users pass regardless of what's typed in the code field.
     const enroll = await fetch('/api/enroll', {
       method: 'POST',
@@ -151,7 +151,7 @@ export default function LoginPage() {
             <div className="text-center">
               <div className="text-sm font-semibold">Not on the tester list yet</div>
               <p className="mt-2 text-[13px] text-ink-2">
-                Your the host app login works, but <b>{deniedEmail}</b> isn&apos;t enrolled in QA yet. Sign
+                Your host-app login works, but <b>{deniedEmail}</b> isn&apos;t enrolled in QA yet. Sign
                 out, then sign in again with the team access code — or ask an admin to add you.
               </p>
               <button
@@ -237,7 +237,7 @@ export default function LoginPage() {
           {mode === 'form' && (
             <form onSubmit={onSubmit}>
               <p className="mb-4 text-[13px] text-ink-2">
-                Sign in with your existing the host app account — same email and password as the app.
+                Sign in with your existing host-app account — same email and password as the app.
               </p>
               <label className="cap-label block" htmlFor="email">
                 Email

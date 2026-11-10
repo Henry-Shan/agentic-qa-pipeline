@@ -1,139 +1,82 @@
-# Setup — QA Pipeline
+# Setup
 
-One-time setup on the dev Mac + cloud. Everything here assumes the repo lives at
-`~/qa-pipeline` and the runner clone at `~/qa-pipeline-runner/the host app` (already provisioned).
+Three runtimes, one npm workspace:
 
-## 0. Prerequisites (already done on this machine)
+- **QA site** (`apps/site`) — Next.js on Vercel (or anywhere Next runs). Board, task pages, ingest API, serves `widget.js`.
+- **Worker** (`worker`) — a Node 22 daemon on a machine that has `claude`, `gh`, and a checkout of *your* app.
+- **Widget** (`packages/widget`) — built into the site, loaded by your app when a tester is filing a report.
 
-- Node ≥22, npm ≥11, `claude` CLI, `gh` (authed), `cloudflared` (brew)
-- Supabase: `qa_` tables migrated into the shared the host app project; bucket `qa-screenshots`
-- `apps/site/.env.local` and `worker/.env` exist with real values (never commit)
+Every interface and environment variable is specified in [`contracts/CONTRACTS.md`](contracts/CONTRACTS.md).
 
-## 1. Site → Vercel  ✅ DONE
+## 0. Prerequisites
 
-Deployed and live at **https://qa-pipeline.vercel.app** (project `qa-pipeline`, all env vars set,
-`NEXT_PUBLIC_SITE_URL=https://qa-pipeline.vercel.app`). Redeploy: `cd apps/site && vercel --prod`.
+- Node ≥ 22, npm ≥ 11
+- A Supabase project your app already uses for auth — testers sign in to the QA site with the accounts they already have
+- On the worker machine: the `claude` CLI, `gh` authenticated with push access to your app's repo, and a clone of your app with the `ship-task` Claude Code skill installed
+- Optional: `cloudflared` for previews reachable off the worker machine
 
-Optional custom domain (qa.example.com): in Cloudflare (example.com zone) add `qa` as CNAME →
-`cname.vercel-dns.com`, run `vercel domains add qa.example.com`, then update
-`NEXT_PUBLIC_SITE_URL` env + the the host app `NEXT_PUBLIC_QA_WIDGET_URL` accordingly.
+## 1. Database
 
-## 2. Testers
+Apply `db/*.sql` in order to your Supabase project (SQL editor, `supabase db push`, or the Supabase MCP). Everything is `qa_`-prefixed and additive; migration 0001 also creates the private storage bucket `qa-screenshots`.
 
-**Self-enroll (default):** any the host app account signs in at the QA site with the team
-**access code** (env `QA_ACCESS_CODE`, currently set) — first successful sign-in adds them to
-`qa_allowed_emails` automatically. Rotate the code: update the env var on Vercel + redeploy.
+Then two decisions:
 
-Manual add / remove:
+- **Who may mark a task shipped.** Set `owner_name` in `db/0018_owner_only_shipped.sql` and `NEXT_PUBLIC_QA_OWNER_NAME` to that person's QA display name (the name they pick at login, stored in `qa_allowed_emails.display_name`).
+- **Role enrichment (optional).** If the host project exposes a security-definer function `qa_reporter_roles(uid uuid)` returning `[{scope, name, role, is_admin}]` and a `profiles(id, email, first_name, last_name)` table, every report carries the reporter's roles and the agent is instructed to reproduce and verify *as that role*. Without them, reports still file; the agent just doesn't know the reporter's permissions.
+
+## 2. QA site
+
+```bash
+cp apps/site/.env.example apps/site/.env.local   # fill in
+npm install
+npm run build:widget                              # → apps/site/public/widget.js
+npm run dev                                       # http://localhost:3200
+```
+
+Deploy with the same variables (`cd apps/site && vercel --prod`), and set `NEXT_PUBLIC_SITE_URL` to the public URL. `QA_HOST_ORIGINS` must list every origin your app is served from, or `/api/ingest` will reject the widget's POST.
+
+## 3. Testers
+
+Any account in your Supabase project that signs in to the QA site with the team access code (`QA_ACCESS_CODE`) is enrolled into `qa_allowed_emails` on first login. Rotate the code by changing the env var and redeploying. Manual add / remove:
 
 ```sql
-insert into qa_allowed_emails (email, added_by) values ('tester@lab.edu', 'admin');
-delete from qa_allowed_emails where email = 'former@lab.edu';
+insert into qa_allowed_emails (email, added_by) values ('tester@example.com', 'admin');
+delete from qa_allowed_emails where email = 'former@example.com';
 ```
 
-Each report automatically captures the reporter's the host app roles
-(lab/department/institution + role name, via `qa_reporter_roles()`) into
-`app_context.reporterRoles`, and Claude's dispatch instructions tell it to reproduce as that
-role — so a departmental-admin bug is tested with departmental-admin permissions.
+## 4. Widget in your app
 
-## 3. Preview tunnel (remote testers see worktree previews)
+The widget is **frame-gated**: your app only loads it when it is embedded by the QA site's `/capture` page, so end users never see it. Add a loader to your app that
+
+1. when `window.self !== window.top`, posts `{type:'qa-pipeline:hello'}` to the parent until it receives `qa-pipeline:activate` from an origin in your allowlist (the QA site), then
+2. injects `<script src="<NEXT_PUBLIC_SITE_URL>/widget.js" data-qa-endpoint=… data-qa-email=…>` once, with a `window.QAPipeline = { getToken }` bridge that returns the signed-in user's Supabase access token.
+
+Protocol and a reference loader: [`packages/widget/README.md`](packages/widget/README.md) and CONTRACTS § *Widget host integration*. For the sharpest reports, have your build emit `data-component` / `data-element` / `data-source-file` attributes on rendered elements — element pick resolves straight to a source file.
+
+Optional: a `/qa-session` page in your app that accepts a magic-link `token_hash` lets the task page's preview embed sign the tester in without typing credentials (CONTRACTS § *Preview auto-login*).
+
+## 5. Worker
 
 ```bash
-cloudflared tunnel login                 # opens browser, pick example.com zone
-cloudflared tunnel create qa-pipeline    # note the tunnel UUID
+cp worker/.env.example worker/.env   # RUNNER_REPO, WORKTREE_BASE, PREVIEW_API_ORIGIN, PREVIEW_SUPABASE_* at minimum
+npm run dev:worker
+npm run selftest                      # end-to-end with a mock dispatcher; cleans up after itself
 ```
 
-Wildcard DNS: `*.qa-preview.example.com` CNAME → `<TUNNEL_UUID>.cfargotunnel.com` (Cloudflare
-dashboard; wildcard routes can't be created by `cloudflared tunnel route dns`).
-Then in `worker/.env` set `PREVIEW_MODE=tunnel`, `PREVIEW_DOMAIN=qa-preview.example.com`,
-`CF_TUNNEL_NAME=qa-pipeline`. The worker maintains the ingress file and the cloudflared child
-process itself.
+The worker claims `queued` reports every 3 s, builds the evidence envelope, launches headless `claude` in a fresh worktree off `RUNNER_REPO`, and serves a production build of each result as a preview. `PREVIEW_BUILD_CMD` is whatever builds your app inside a worktree (`npm run build` by default); `PREVIEW_APP_DIR` is where the web app lives if it isn't the repo root (`apps/web` in a monorepo). Previews are served with `next start`, so the app is expected to be a Next.js app; the injected `.env.production.local` sets `NEXT_PUBLIC_API_BASE_URL` and the Supabase public vars.
 
-**Cloudflare Access is REQUIRED, not recommended.** A preview is an in-progress build wired to
-the real Supabase and the real API, so an unauthenticated hostname would put lab data on the
-public internet. Zero Trust → Access → Applications → Self-hosted, domain
-`*.qa-preview.example.com`, policy Allow · Emails → the tester list, identity One-time PIN.
+Run it as a service: on macOS edit the paths in [`worker/launchd/com.qa-pipeline.worker.plist`](worker/launchd/com.qa-pipeline.worker.plist), copy it to `~/Library/LaunchAgents/`, and `launchctl load -w` it; on Linux a systemd unit running `node_modules/.bin/tsx worker/src/index.ts` with `WorkingDirectory=<repo>/worker` does the same. State lives in `~/.qa-pipeline/` (`worker.log`, `runs/<reportId>/`, `PAUSED`).
 
-**Certificate prerequisite (this is what blocks it today).** Cloudflare's Universal SSL covers
-`example.com` and `*.example.com` but NOT a second-level wildcard like
-`*.qa-preview.example.com` — so `preview-50.qa-preview.example.com` gets no certificate and
-TLS fails before Access is even consulted (verified: `sslv3 alert handshake failure`, while
-`qa.example.com` serves a cert normally). Enable **Advanced Certificate Manager** on the zone
-(~$10/mo) with a `*.qa-preview.example.com` cert, and everything else here already works — the
-tunnel connects, DNS records are created per run, and the Access policy is in place.
+## 6. Previews
 
-Then run `./worker/setup-tunnel.sh`. It authenticates checks, creates the tunnel, refuses to
-switch modes until you confirm Access is in place, flips `PREVIEW_MODE=tunnel`, restarts the
-worker, and tells you how to verify (and how to revert). Until then previews stay
-`PREVIEW_MODE=local` — visible only on this machine, which is the safe default.
-
-## 3b. Preview agent — previews on a tester's own machine (no tunnel needed)
-
-Any tester can see every task's preview on their **own** localhost by running the preview
-agent. The site links previews as `http://localhost:4521/p/<task>`; that URL resolves on
-whichever machine clicks it, and the agent there builds the task's branch locally and
-redirects to it. First open of a task costs a local build (a few minutes); after that it is
-instant until the branch changes.
-
-One-time setup on the tester's Mac (same prerequisites as §0 — Node ≥22, `gh` authed with
-repo access; `claude` is NOT needed):
-
-1. Clone this repo, `npm install`.
-2. Clone the host app as the runner repo (worktree source): `git clone <the host app> ~/qa-pipeline-runner/the host app`.
-3. `worker/.env` with at minimum: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (transfer
-   securely), `RUNNER_REPO`, `WORKTREE_BASE`, and the preview values
-   (`PREVIEW_SUPABASE_URL`, `PREVIEW_SUPABASE_ANON_KEY`). Leave `QA_BASE_SESSION*` unset.
-4. Run it: `npm run dev:agent` (that is `QA_ROLE=preview` — front door + local builds only).
-
-The agent **reads** the shared DB and never writes run state, so any number of testers can
-run one alongside the single real worker. Do NOT run `npm run dev:worker` (the full runner
-role) on a second machine — its reconcile/steer loops assume the shared rows describe the
-local machine and will fight the real worker.
-
-## 4. Worker as a service (launchd)
-
-```bash
-cp worker/launchd/com.qa-pipeline.worker.plist ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/com.qa-pipeline.worker.plist
-tail -f ~/.qa-pipeline/worker.log
-```
-
-The agent runs the TypeScript source through tsx, so there is no build step and
-no risk of a stale `dist` serving old code. It starts at login and restarts on
-crash (verified: `kill -9` → back in seconds under a new pid). Sleep still
-pauses everything — a sleeping Mac runs nothing — but waking resumes the poll
-loop and queued reports are claimed within ~3s.
-
-Useful commands:
-
-```bash
-launchctl list | grep qa-worker                 # pid + last exit status
-launchctl kickstart -k gui/$UID/com.qa-pipeline.worker   # restart (after code changes)
-launchctl unload ~/Library/LaunchAgents/com.qa-pipeline.worker.plist  # stop for good
-```
-
-Dev mode instead: `npm run dev:worker`.
-
-## 5. Widget in the host app (branch `feature/qa-widget`)
-
-Merge the branch via the normal PR flow, then set in the the host app web deployment env:
-
-```
-NEXT_PUBLIC_QA_WIDGET_URL=https://qa.example.com/widget.js
-NEXT_PUBLIC_QA_TESTER_DOMAINS=example.com        # and/or explicit emails:
-NEXT_PUBLIC_QA_TESTER_EMAILS=alice@lab.edu,bob@lab.edu
-```
-
-Unset = widget fully dormant. Annotation attributes emitted by the build:
-`data-component`, `data-element`, `data-source-file`.
+- **`PREVIEW_MODE=local`** (default) — `http://localhost:<port>` on the worker machine. Safe; visible only there.
+- **Preview agent** — any tester can see every task's preview on their *own* machine by running `npm run dev:agent` (`QA_ROLE=preview`). The site links previews as `http://localhost:4521/p/<task>`; the agent builds that task's branch locally on first open. It only reads the shared DB, so any number can run alongside the single real worker.
+- **`PREVIEW_MODE=tunnel`** — `https://<PREVIEW_HOST_PREFIX><reportId>.<PREVIEW_ZONE>` through a managed `cloudflared` tunnel. Previews are one label deep so the zone's existing `*.<zone>` certificate covers them. **Put Cloudflare Access (or equivalent) in front** — a preview is a real build wired to real data. `./worker/setup-tunnel.sh` walks through it and refuses to flip modes until you confirm. The worker never writes DNS for the zone apex, `www`, `api`, `app`, `qa`, or anything in `PROTECTED_HOSTS`.
 
 ## Daily ops
 
 - Pause dispatch: `touch ~/.qa-pipeline/PAUSED` (remove to resume)
-- Budget: `RUNS_PER_DAY` in `worker/.env` (default 25)
-- Concurrency: `max_runs` / `max_previews` live in the `qa_settings` table — edit from the
-  site's gear menu (top bar); the worker applies changes within ~10s. `worker/.env`
-  `MAX_RUNS`/`MAX_PREVIEWS` are only fallbacks when the table is missing.
-- Worktrees live in `~/qa-pipeline-worktrees`; merged reports tear down automatically; manual:
-  `~/qa-pipeline-runner/the host app/.claude/skills/ship-task/teardown-worktree.sh <name>`
-- Logs: `~/.qa-pipeline/runs/<reportId>/`, worker log `~/.qa-pipeline/worker.log`
+- Budget: `RUNS_PER_DAY` in `worker/.env`
+- Concurrency: `max_runs` / `max_previews` live in `qa_settings` — edit from the site's gear menu; the worker applies changes within ~10 s
+- Worktrees: `WORKTREE_BASE`; merged reports tear theirs down automatically
+- Logs: `~/.qa-pipeline/worker.log`, per-run `~/.qa-pipeline/runs/<reportId>/`

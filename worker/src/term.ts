@@ -83,7 +83,7 @@ async function verifyTester(ctx: Ctx, accessToken: string): Promise<string | nul
 function originAllowed(ctx: Ctx, origin: string | undefined): boolean {
   if (!origin) return false; // a browser always sends one; anything else is not a browser
   const allowed = new Set(
-    [ctx.cfg.siteUrl, 'https://qa.example.com', 'http://localhost:3200', 'http://127.0.0.1:3200'].map((o) =>
+    [ctx.cfg.siteUrl, 'http://localhost:3200', 'http://127.0.0.1:3200'].map((o) =>
       o.replace(/\/$/, ''),
     ),
   );

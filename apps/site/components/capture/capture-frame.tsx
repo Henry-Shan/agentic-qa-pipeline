@@ -80,7 +80,7 @@ export function CaptureFrame() {
 
       <iframe
         src={CAPTURE_URL}
-        title="the host app — report an issue"
+        title="Report an issue"
         className="block h-[calc(100dvh-3rem)] w-full border-0"
       />
     </>

@@ -9,7 +9,7 @@ machine**, in _your_ checkout. Everyone runs their own — the page connects to
 ```bash
 cd agent
 npm install                      # builds node-pty from source
-npm run start -- --repo ~/the host app
+npm run start -- --repo ~/your-app
 ```
 
 If `npm install` skips the native build (npm ≥11 asks first):
@@ -27,6 +27,7 @@ Leave it running. Then open any task on qa.example.com and press
 |---|---|---|
 | `--repo` | cwd | your the host app checkout — the terminal opens here |
 | `--port` | `4520` | localhost port the page connects to |
+| `--site-origin` | (none) | your QA site's origin, e.g. `https://qa.example.com` — the only non-localhost origin allowed to open the socket |
 | `--claude` | `/opt/homebrew/bin/claude` | the Claude Code binary |
 
 ## What it runs

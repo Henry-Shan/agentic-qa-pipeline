@@ -23,7 +23,7 @@ const REPLAY_DELAY_MS = 750;
 
 /**
  * Auto-login URL for a preview: mint a one-time token for the signed-in tester
- * (POST /api/preview-token) and point at the the host app app's /qa-session page,
+ * (POST /api/preview-token) and point at the host app's /qa-session page,
  * which signs them in and enters the app — no credentials in the iframe.
  * Tokens are single-use, so every embed/tab mints its own. Null on any failure
  * (caller falls back to the bare preview URL and its normal login page).

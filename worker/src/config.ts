@@ -55,6 +55,10 @@ export interface WorkerConfig {
   previewMode: PreviewMode;
   /** Label prefix for per-task preview hostnames: <prefix><reportId>.<zone>. */
   previewHostPrefix: string;
+  /** PREVIEW_APP_DIR — directory of the web app inside the repo, relative to the worktree
+   *  root ("" = the root itself; "apps/web" for a monorepo). Builds, `next start` and the
+   *  injected .env.production.local all happen there. */
+  previewAppDir: string;
   /** Zone the preview hostnames live in. ONE label deep, so the zone's existing
    *  `*.<zone>` certificate covers them — a second level would need a paid cert. */
   previewZone: string;
@@ -142,8 +146,8 @@ export function loadConfig(): WorkerConfig {
     role,
     supabaseUrl,
     supabaseServiceRoleKey,
-    runnerRepo: process.env.RUNNER_REPO ?? '/Users/YOU/qa-pipeline-runner/the host app',
-    worktreeBase: process.env.WORKTREE_BASE ?? '/Users/YOU/qa-pipeline-worktrees',
+    runnerRepo: process.env.RUNNER_REPO ?? path.join(os.homedir(), 'qa-pipeline-runner', 'your-app'),
+    worktreeBase: process.env.WORKTREE_BASE ?? path.join(os.homedir(), 'qa-pipeline-worktrees'),
     claudeBin: process.env.CLAUDE_BIN ?? '/opt/homebrew/bin/claude',
     claudeModel: process.env.QA_CLAUDE_MODEL?.trim() || 'opus',
     claudeEffort: process.env.QA_CLAUDE_EFFORT?.trim() || 'xhigh',
@@ -151,7 +155,7 @@ export function loadConfig(): WorkerConfig {
     examinerEffort: process.env.QA_EXAMINER_EFFORT?.trim() || 'high',
     examEnabled: process.env.QA_EXAM !== '0',
     baseSession: process.env.QA_BASE_SESSION?.trim() ?? '',
-    baseSessionRepo: process.env.QA_BASE_SESSION_REPO?.trim() || '/Users/YOU/the host app',
+    baseSessionRepo: process.env.QA_BASE_SESSION_REPO?.trim() || path.join(os.homedir(), 'your-app'),
     routerEnabled: process.env.QA_ROUTER !== '0',
     routerModel: process.env.QA_ROUTER_MODEL?.trim() || 'opus',
     routerEffort: process.env.QA_ROUTER_EFFORT?.trim() || 'low',
@@ -163,6 +167,7 @@ export function loadConfig(): WorkerConfig {
     runsPerDay: intEnv('RUNS_PER_DAY', 25),
     previewMode,
     previewHostPrefix: process.env.PREVIEW_HOST_PREFIX ?? 'qa-preview-',
+    previewAppDir: (process.env.PREVIEW_APP_DIR ?? '').trim().replace(/^\/+|\/+$/g, ''),
     previewZone: process.env.PREVIEW_ZONE ?? 'example.com',
     wakePort: intEnv('WAKE_PORT', 4521),
     previewApiOrigin: process.env.PREVIEW_API_ORIGIN ?? 'https://api.example.com',
@@ -170,12 +175,9 @@ export function loadConfig(): WorkerConfig {
     previewSupabaseUrl: process.env.PREVIEW_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '',
     previewSupabaseAnonKey: process.env.PREVIEW_SUPABASE_ANON_KEY ?? '',
     previewBuild: process.env.PREVIEW_BUILD !== '0',
-    // --env-mode=loose: turbo 2 filters environment variables it was not told
-    // about, which silently drops the preview's API URL and lets the developer's
-    // .env.local win.
-    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npx turbo run build --filter=web --env-mode=loose',
+    previewBuildCmd: process.env.PREVIEW_BUILD_CMD ?? 'npm run build',
     cfTunnelName: process.env.CF_TUNNEL_NAME ?? 'qa-pipeline',
-    siteUrl: process.env.SITE_URL ?? 'https://qa.example.com',
+    siteUrl: process.env.SITE_URL ?? 'http://localhost:3200',
     defaultAssignee: process.env.QA_DEFAULT_ASSIGNEE?.trim() || 'owner',
     qaHome,
     mockDispatch: process.env.QA_MOCK_DISPATCH === '1',

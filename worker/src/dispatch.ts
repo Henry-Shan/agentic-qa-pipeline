@@ -70,10 +70,10 @@ THE TEST GUIDE (test_plan) is for a non-engineer tester to verify the fix by
 hand on the preview URL the worker will start: concise numbered steps, each
 naming which account/role to log in as, where to go, what to click, and what
 they should see, ending with a "✅ Success =" line. Use real seeded test
-accounts from the repo / project memory — never invent one. Under ~12 lines.
+accounts from the repo or project notes — never invent one. Under ~12 lines.
 
 INVESTIGATE BEFORE ASKING. Resolve unknowns yourself first: read the repo, the
-task envelope, query project memory. Only escalate a genuine PREFERENCE you
+task envelope, consult project notes. Only escalate a genuine PREFERENCE you
 cannot determine from evidence, with your recommendation:
   1. POST {"session_id":"${sessionId}","question":"<plain question>","options":["<opt>"],"context":"<why + your recommendation>"} to ${url}/api/ask
   2. Poll ${url}/api/answer?session_id=${sessionId} every 10s until "answer" is
@@ -126,7 +126,7 @@ OTHERWISE, do exactly this:
    words, their "done when", any constraints, and the screenshots.
 3. Prove it: typecheck and lint the affected workspace, plus any existing test
    that already covers the touched file. Do not write new tests for this lane.
-4. Commit, push, open a PR to develop titled "(auto qa) <subject>".
+4. Commit, push, open a PR to the base branch ship-task detected titled "(auto qa) <subject>".
 5. Report it (this is what makes the preview and the examination happen):
    curl -s -X POST ${url}/api/runinfo -H 'Content-Type: application/json' \\
      -d '{"session_id":"${sessionId}","pr_url":"<PR url>","branch":"<branch>","worktree":"<abs worktree path>","test_plan":"<3-6 line manual check>","files_changed":[{"file":"<path>","add":0,"del":0}],"grounding":[{"label":"<what you changed and why>","file":"<path>"}]}'
